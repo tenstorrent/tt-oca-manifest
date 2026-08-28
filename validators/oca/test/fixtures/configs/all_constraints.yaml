@@ -1,0 +1,46 @@
+# Exercises every field family the validator knows: three ID families,
+# three lifecycle levels, three version ranges (with mixed half presence),
+# and demotion_control in named-flag form.
+manifest_format: oca-classic
+manifest_identifier: "ALLCON"
+description: "all-constraints fixture"
+secure_boot: 0
+timestamp: 1764633600
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+usage_constraints:
+  # Per-byte identity selection on all three families.
+  chiplet_id:
+    0: 0xDE
+    1: 0xAD
+  package_id:
+    0: 0xBE
+    1: 0xEF
+  system_id:
+    0: 0xCA
+    1: 0xFE
+  # Lifecycle states on all three levels (same set for simplicity — the
+  # CLI uses one --lifecycle token reported by the callback for all three).
+  lifecycle_chiplet_states: [TEST_DEV, PROD_END]
+  lifecycle_package_states: [TEST_DEV, PROD_END]
+  lifecycle_system_states:  [TEST_DEV, PROD_END]
+  # Mixed half presence: chiplet has both halves, package has min-only,
+  # system has max-only.
+  version_range_chiplet:
+    major_min: 1
+    minor_min: 0
+    major_max: 2
+    minor_max: 255
+  version_range_package:
+    major_min: 3
+    minor_min: 4
+  version_range_system:
+    major_max: 5
+    minor_max: 6
+  # Named-flag demotion control.
+  demotion_control: [BL1_DEMOTION_VALID, BL1_DEMOTION_ENABLE]
+payload_images:
+  - type: "ALLCONXXBLSTAGE1"
+    path: "examples/oca_classic_basic/dummy_image.bin"

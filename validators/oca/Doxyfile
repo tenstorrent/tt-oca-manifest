@@ -1,0 +1,60 @@
+# Doxygen as the entity-discovery gate for the OCA validator library.
+#
+# Nothing is generated — the run exists for its warnings. Doxygen models C, so
+# it finds the declarations a regex scanner drops and reports each one carrying
+# no documentation.
+#
+# Run from this directory:  doxygen Doxyfile   (exit 0 = clean)
+#
+# Not with doxygen 1.9.8 (what `apt install doxygen` gets on current Ubuntu):
+# that release reports every documented function in a file containing an
+# #include as undocumented, so this gate fails on a fully documented tree
+# (upstream: https://github.com/doxygen/doxygen/issues/11147, mis-fired
+# warnings when only XML is generated; fixed in 1.13.0).
+# tests/test_oca_c_doxygen.py proves the installed binary against a canary
+# header before trusting it; CI pins 1.18.0, which is clean.
+
+PROJECT_NAME           = "OCA validator"
+INPUT                  = lib
+FILE_PATTERNS          = *.c *.h
+RECURSIVE              = NO
+
+# Offset-macro-only headers: no functions, no types, nothing to discover.
+# Mirrors SKIPPED_FILES in lib/scripts/check_doc_comments.py.
+EXCLUDE                = lib/oca_layout.h \
+                         lib/oca_layout_classic.h \
+                         lib/oca_layout_pqc.h
+
+# Doxygen fails outright with no output format selected, so it gets the
+# cheapest one and writes it into the gitignored build tree. Nothing reads it —
+# the warnings on stderr are the whole product of this run.
+#
+# One path component, not build/doxygen: doxygen creates the output directory
+# but not its parents, so a nested path is an error on a tree where build/ does
+# not exist yet — a fresh clone, or after `make clean`. The XML lands in
+# build/xml/ alongside the make outputs. tests/test_oca_c_doxygen.py overrides
+# this with a temp directory and does not depend on it.
+GENERATE_HTML          = NO
+GENERATE_LATEX         = NO
+GENERATE_XML           = YES
+XML_PROGRAMLISTING     = NO
+OUTPUT_DIRECTORY       = build
+QUIET                  = YES
+
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_IF_INCOMPLETE_DOC = YES
+WARN_NO_PARAMDOC       = YES
+
+# FAIL_ON_WARNINGS rather than YES: YES stops at the first warning, so fixing a
+# batch becomes one round trip per warning.
+WARN_AS_ERROR          = FAIL_ON_WARNINGS
+
+# EXTRACT_ALL = NO is load-bearing. YES implicitly documents every entity and
+# thereby disables WARN_IF_UNDOCUMENTED — the gate would pass on an entirely
+# undocumented library. EXTRACT_STATIC = YES brings the file-scoped helpers in
+# the .c files into scope.
+EXTRACT_ALL            = NO
+EXTRACT_STATIC         = YES
+OPTIMIZE_OUTPUT_FOR_C  = YES

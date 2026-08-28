@@ -1,0 +1,30 @@
+# OCA Post-Quantum (PQC) manifest example — non-secure-boot, single payload image.
+# See README.md ("OCA manifest variants") for the full guide.
+#
+# Build from the repository root:
+#   python -m tt_boot_manifest.pack_images \
+#       --config configs/oca_pqc_example.yaml --out out/oca_pqc_demo.bin -v
+#
+# The PQC manifest (magic OCAP, 36864-byte body) is a superset of the Classic
+# manifest: every shared field sits at the same offset, with the PQC-only fields
+# added. PQC-native signing (ML-DSA / SLH-DSA) and KEM (ML-KEM) are not yet
+# supported and are rejected; this example uses the non-secure path. A PQC
+# manifest may also be signed with a classic RSA-3072 / ECC P-256 key.
+
+manifest_format: oca-pqc
+manifest_identifier: "PQCDEMO1"          # 1-8 printable ASCII chars
+description: "OCA-PQC example bundle (non-secure)"
+
+secure_boot: 0
+
+# Pinning the timestamp makes the build byte-deterministic across runs.
+timestamp: 1764633600
+
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+
+payload_images:
+  - type: "PQCDEMO1BLSTAGE1"
+    path: "tests/oca_fixtures/dummy_image.bin"

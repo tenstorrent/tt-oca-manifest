@@ -1,0 +1,23 @@
+# Secure-boot bundle with an AES-128-CBC encrypted payload (oca-pqc). The payload
+# secret is supplied to the validator via encrypted_aes_pqc.flags.
+manifest_format: oca-pqc
+manifest_identifier: "ENCAES"
+description: "AES-128-CBC encrypted payload fixture"
+secure_boot: 1
+signature_type: 0x01
+signing_authority: local
+signing_key_name: "test_dev_rom_key_0"
+signing_key_id: "1234567890"
+signing_key_file: "tests/signing_keys/rsa_private_key.dev0.pem"
+public_key_select_classic: 0x01
+encrypted_payload: 1
+encryption_type: 0x01
+encryption_key_derivation_function: 0x0001
+encryption_secret: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+encryption_iv: "101112131415161718191a1b1c1d1e1f"
+encryption_kdf_input: "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8"
+timestamp: 1764633600
+manifest_content_version: { major: 1, minor: 0, patch: 0 }
+payload_images:
+  - type: "ENCAESXXBLSTAGE1"
+    path: "examples/oca_classic_basic/dummy_image.bin"

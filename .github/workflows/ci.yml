@@ -1,0 +1,204 @@
+name: CI
+
+# Producer (Python packer/signer) and Consumer (C validator) are tested
+# together, because the consumer suite drives the producer: the fixture sweep
+# packs each YAML config with `tt_boot_manifest.pack_images` and then validates
+# the resulting binary with the C CLI. A job that has one without the other
+# cannot run the tests that matter most.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the floor declared by requires-python; 3.12 is the newest
+        # version the classifiers claim. Local development runs 3.14, which is
+        # deliberately not tested here until the classifiers say so.
+        python-version: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # The consumer tests build the C CLI on demand and link it against
+      # OpenSSL. Installed before anything runs, because their absence does not
+      # fail the suite -- it silently shrinks it. See the assertion below.
+      - name: Install C toolchain and OpenSSL headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev
+
+      # doxygen is the entity-discovery documentation gate: absent, its test
+      # skips rather than failing, so it is installed here and asserted below.
+      #
+      # Not installed from apt: current Ubuntu (noble and plucky alike) 
+      # packages doxygen 1.9.8, and that release reports every documented 
+      # function in a file containing an #include directive as undocumented. 
+      # So "parameters of member X are not documented" against complete 
+      # @param/@return blocks.
+      
+      # Upstream this is https://github.com/doxygen/doxygen/issues/11147 :
+      # the warnings mis-fire when only XML is generated, which is exactly how
+      # the gate's Doxyfile runs.  This was fixed in 1.13.0 by PR #11151. Bug
+      # reproduced in a clean noble container against a one-function header;
+      # 1.15.0 and 1.18.0 are clean on the identical input, and no Doxyfile
+      # setting works around it (ENABLE_PREPROCESSING=NO does not help, and
+      # WARN_NO_PARAMDOC=NO would drop the check the gate exists to make).
+      # tests/test_oca_c_doxygen.py proves the installed binary against a
+      # canary header and skips on this bug, so without the pin the gate would
+      # not fail here -- it would quietly stop running, which the assertion
+      # below turns back into a loud failure.
+      - name: Install doxygen 1.18.0, pinned by checksum
+        run: |
+          version=1.18.0
+          sha256=14fa81bdc34171edb5f1f02b1d60e74802f0439b77fa44e592565d517d72df90
+          curl -fsSL -o "$RUNNER_TEMP/doxygen.tar.gz" \
+            "https://github.com/doxygen/doxygen/releases/download/Release_${version//./_}/doxygen-${version}.linux.bin.tar.gz"
+          echo "$sha256  $RUNNER_TEMP/doxygen.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/doxygen.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/doxygen-$version/bin" >> "$GITHUB_PATH"
+
+      # tests/test_oca_c_validator_integration.py calls pytest.skip() when make
+      # or pkg-config is missing, and tests/test_oca_c_doxygen.py when doxygen
+      # is absent or exhibits the 1.9.8 false-positive bug, so a broken
+      # toolchain would read as a green run with a quietly smaller suite. Fail
+      # here instead, where the cause is obvious. The doxygen check pins the
+      # exact version so a stray apt doxygen shadowing the pinned one cannot
+      # skip the gate silently.
+      - name: Assert the consumer prerequisites are present
+        run: |
+          make --version
+          pkg-config --modversion openssl
+          case "$(doxygen --version)" in
+            1.18.0*) doxygen --version ;;
+            *) echo "::error::expected pinned doxygen 1.18.0, got '$(doxygen --version)'"
+               exit 1 ;;
+          esac
+
+      # The `aws` extra is required even though the AWS tests are deselected
+      # below: tests/test_manifest_signing.py imports botocore at module scope,
+      # so collection fails outright without it. `dev` alone cannot run the
+      # suite.
+      - name: Install the package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev,aws]'
+
+      # Deselected rather than skipped: the AWS KMS tests need live credentials,
+      # and `-m "not aws"` makes their absence an explicit exclusion instead of
+      # nine skips that look like a partial failure. Expect 0 skipped.
+      - name: Run the producer and consumer test suites
+        run: python -m pytest -m "not aws"
+
+  c-validator:
+    name: C validator (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install C toolchain and OpenSSL headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang pkg-config libssl-dev
+
+      # `make check` runs a fixture sweep that packs manifests with the producer,
+      # so the Python package has to be importable by the interpreter the
+      # Makefile picks up. PYTHON= is passed explicitly below rather than relying
+      # on its search order.
+      - name: Install the package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev,aws]'
+
+      # Logged to RUNNER_TEMP rather than the workspace so a local reproduction
+      # of these steps cannot leave an untracked file in the tree.
+      - name: Build the library and CLI, run the C unit tests and fixture sweep
+        run: |
+          set -o pipefail
+          make -C validators/oca \
+            CC=${{ matrix.cc }} PYTHON="$(command -v python)" check 2>&1 \
+            | tee "$RUNNER_TEMP/check.log"
+
+      # `make check` exits 0 down several "nothing to build" paths left over
+      # from the skeleton phase -- an empty lib/, a missing test/unit_test.c,
+      # zero fixtures. Each prints a notice and succeeds, which is
+      # indistinguishable from a real pass in a CI log. Require positive
+      # evidence instead of trusting the exit code.
+      - name: Reject a vacuous pass
+        run: |
+          log="$RUNNER_TEMP/check.log"
+          if grep -qE 'skipping archive|skipping link|no fixtures yet' "$log"; then
+            echo "::error::make check declined to build something and still succeeded"
+            grep -nE 'skipping archive|skipping link|no fixtures yet' "$log"
+            exit 1
+          fi
+          # Two independent "N/N passed" summaries are expected: the C unit-test
+          # driver, then the fixture sweep.
+          summaries=$(grep -cE '^[0-9]+/[0-9]+ passed' "$log" || true)
+          if [ "$summaries" -lt 2 ]; then
+            echo "::error::expected 2 'N/N passed' summaries in the check output, saw $summaries"
+            exit 1
+          fi
+          for artifact in \
+            validators/oca/build/lib/liboca_validator.a \
+            validators/oca/build/test/oca-validate \
+            validators/oca/build/test/unit_test; do
+            test -s "$artifact" || { echo "::error::missing build artifact $artifact"; exit 1; }
+          done
+
+      # -Wdocumentation is Clang-only, so the Makefile probes for it and adds it
+      # only when the compiler accepts it. A probe that fails for the wrong
+      # reason -- a shell quirk, a wrapper that swallows the exit status -- still
+      # builds green, with the doc gate simply absent. Assert the outcome the
+      # probe is supposed to reach on each compiler instead, reading the recorded
+      # flag stamp rather than the compile log.
+      - name: Assert the doc-comment warnings resolved as the probe intends
+        run: |
+          stamp=validators/oca/build/lib/.cflags
+          test -s "$stamp" || { echo "::error::no flag stamp at $stamp"; exit 1; }
+          if grep -q -- -Wdocumentation "$stamp"; then present=yes; else present=no; fi
+          case "${{ matrix.cc }}:$present" in
+            clang:yes|gcc:no) echo "${{ matrix.cc }}: -Wdocumentation present=$present, as expected" ;;
+            clang:no)  echo "::error::clang accepts -Wdocumentation but the probe dropped it"; exit 1 ;;
+            gcc:yes)   echo "::error::-Wdocumentation reached a gcc build; the probe is not gating"; exit 1 ;;
+          esac
+
+      # A consumer that must never accept a variant compiles it out via the
+      # OCA_SUPPORT_* gates. All three configurations have to keep building, or
+      # the gate has quietly stopped being an option.
+      - name: Build the variant-gated configurations
+        run: |
+          for target in both classic-only pqc-only; do
+            make -C validators/oca CC=${{ matrix.cc }} "$target"
+            binary="validators/oca/build/$target/test/oca-validate"
+            test -x "$binary" || { echo "::error::$target produced no CLI at $binary"; exit 1; }
+          done

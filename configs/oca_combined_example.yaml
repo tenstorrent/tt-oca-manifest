@@ -1,0 +1,41 @@
+# Combined OCA deployable image: assemble multiple manifest+payload banks (and
+# optional raw data regions) into one flat binary for initial flash provisioning.
+# See README.md, section "Combined deployable images", for the full guide.
+#
+# Build from the repository root:
+#   python -m tt_boot_manifest.pack_images \
+#       --config configs/oca_combined_example.yaml --out out/full_image.bin -v
+
+manifest_format: oca-combined
+name: "OCA combined example image"
+
+# Optional. Target image size in bytes; all regions must fit and the output is
+# padded to exactly this size. Omit to size the image to the highest region.
+total_size: 0x20000
+
+# Optional. Byte used to fill gaps (and total-size padding). Defaults to 0xFF,
+# the erased state of typical flash.
+pad_byte: 0xFF
+
+# Each combo is one bootable bank: a manifest body placed at manifest_offset and
+# its payload placed at payload_offset (a single base, or a list of per-image
+# offsets). Offsets are absolute byte positions within the image.
+combos:
+  - name: primary
+    config: configs/oca_classic_example.yaml
+    manifest_offset: 0x0
+    payload_offset: 0x1000
+
+  - name: secondary
+    config: examples/oca_classic_basic/config.yaml
+    manifest_offset: 0x8000
+    payload_offset: 0x9000
+
+# Optional opaque data regions (for example storage-device parameters or
+# device-state metadata) copied verbatim at fixed offsets. Uncomment and point
+# at your own binary file:
+#
+# auxiliary_regions:
+#   - name: storage_params
+#     path: path/to/storage_params.bin
+#     offset: 0x1F000

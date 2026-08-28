@@ -1,0 +1,21 @@
+# OCA-classic example configuration — minimal non-secure-boot single-image bundle.
+# Mirrors quickstart.md Scenario A. Used by tests under tests/test_oca_*.
+
+manifest_format: oca-classic
+manifest_identifier: "OCADEMO1"          # 1-8 printable ASCII chars (right-padded if shorter)
+description: "OCA-classic example bundle (non-secure)"
+
+secure_boot: 0
+
+# Optional; defaults to {0, 0, 0} when omitted.
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+
+# Optional. When absent, current wall-clock time is used (logged at run time).
+timestamp: 1764633600
+
+payload_images:
+  - type: "OCADEMO1BLSTAGE1"
+    path: "tests/oca_fixtures/dummy_image.bin"

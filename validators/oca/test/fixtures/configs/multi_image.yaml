@@ -1,0 +1,46 @@
+# Non-secure multi-image OCA-classic bundle exercising the full Payload TOC
+# entry layout: every optional Table-6 field (security_version, load_addr,
+# entry_point, target_chiplet_id, description) is set to a distinct non-zero
+# value per image, so the fixture sweep validates that the C consumer reads each
+# field — and each entry's `hash` at offset 80 — from where the spec puts it.
+#
+# Three images also give the payload_hash_chain and the per-entry hash loop more
+# than one entry to walk.
+manifest_format: oca-classic
+manifest_identifier: "MULTIMG"
+description: "multi-image TOC entry layout fixture"
+secure_boot: 0
+timestamp: 1764633600
+manifest_content_version:
+  major: 2
+  minor: 1
+  patch: 0
+payload_images:
+  - type: "MULTIMG BLSTAGE1"
+    path: "examples/oca_classic_basic/dummy_image.bin"
+    group: 1
+    version:
+      major: 2
+      minor: 1
+      patch: 0
+    security_version: 0x0000000000000003
+    load_addr: 0x0000000080000000
+    entry_point: 0x0000000000000040
+    target_chiplet_id: 0x00000000000000A1
+    description: "stage-1 bootloader, SEP ROM load target"
+  - type: "MULTIMG BLSTAGE2"
+    path: "examples/oca_classic_basic/dummy_image.bin"
+    group: 1
+    version:
+      major: 2
+      minor: 1
+      patch: 1
+    security_version: 0x0000000000000001
+    load_addr: 0x0000000090000000
+    entry_point: 0x0000000000000200
+    target_chiplet_id: 0x00000000000000A2
+    description: "stage-2 bootloader"
+  - type: "MULTIMG BLMEMMAP"
+    path: "examples/oca_classic_basic/dummy_image.bin"
+    group: 1
+    description: "memory map for the stage-1 image (no load address)"

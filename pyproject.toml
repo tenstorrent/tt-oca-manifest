@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Distribution name; the import package remains `tt_boot_manifest` so existing
+# `python -m tt_boot_manifest.pack_images` workflows are a drop-in.
+name = "tt-oca-manifest"
+version = "0.5.0"
+description = "Open Chiplet Atlas (OCA) boot manifest generation tooling and parsing library"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Tenstorrent", email = "info@tenstorrent.com"}
+]
+keywords = ["tenstorrent", "oca", "firmware", "secure-boot", "manifest", "signing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+# Core dependencies required for basic functionality
+dependencies = [
+    "cryptography>=41.0.0",
+    "ruamel.yaml>=0.17.0",
+]
+
+[project.optional-dependencies]
+# AWS KMS signing support
+aws = [
+    "boto3>=1.40.0",
+]
+
+# Development and testing dependencies
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+# All optional dependencies
+all = [
+    "boto3>=1.40.0",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+aws-sso = "tools.aws_sso:main"
+
+[tool.setuptools]
+packages = ["tt_boot_manifest", "tt_boot_manifest.oca", "tools"]
+package-dir = {"tt_boot_manifest" = "src"}
+
+# Pytest configuration lives in pytest.ini, which takes precedence over this file.
+# Do not add a [tool.pytest.ini_options] table here — pytest ignores it whenever
+# pytest.ini exists, so the two silently drift apart.
+#
+# The [tool.coverage.*] tables below are NOT pytest config; coverage.py reads them
+# directly (via pytest-cov), so they stay here.
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/tests/*", "*/test_*.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

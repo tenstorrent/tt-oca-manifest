@@ -1,0 +1,103 @@
+# OCA-classic production secure-boot example — ROOT-key selection & revocation,
+# anti-rollback security version, and the device-state update controls.
+#
+# Build from the repository root:
+#   python -m tt_boot_manifest.pack_images \
+#       --config configs/oca_secure_boot_production_example.yaml \
+#       --out out/oca_secure_boot_demo.bin -v
+#
+# The fields below only take effect when secure boot is enabled. A consumer that
+# enforces secure boot reads them at boot to decide whether the signing key is
+# still trusted (revocation), whether the manifest is fresh enough to run
+# (anti-rollback), and whether to advance its own stored security state.
+
+manifest_format: oca-classic
+manifest_identifier: "PRODSB1"
+description: "OCA-classic production secure-boot example"
+
+secure_boot: 1
+signature_type: 0x01                     # RSA-3072 PKCS#1 v1.5 / SHA-256
+signing_authority: local
+signing_key_file: "tests/signing_keys/rsa_private_key.dev0.pem"
+
+# --- ROOT public-key selection & revocation ---
+# public_key_select_classic and public_key_classic_revoke are 128-bit bitmaps.
+# Keys are organized in 7 groups of 16 (bits 0..111); the top 16 bits (127:112)
+# are reserved. A set bit selects, or revokes, the key in that slot.
+#
+# Authorize the key this manifest is signed with — group 1, slot 0.
+public_key_select_classic: 0x01
+#
+# Revoke keys that must never again verify a manifest — here group 1 slots 1 and
+# 2 (0b110 = 0x06), e.g. keys that were retired or are believed compromised. On a
+# successful, authenticated boot the consumer folds these revocations into its
+# own stored (write-once) revocation state, so the retired keys stay revoked on
+# every later boot. Do NOT revoke the slot you select above: a consumer refuses
+# to use a revoked key and would reject this manifest.
+public_key_classic_revoke: 0x06
+
+# --- Anti-rollback security version ---
+# manifest_security_version is a 128-bit field of independent, vendor-defined
+# security-posture flags — NOT a linear counter. Set one bit per resolved
+# vulnerability or hardened state. A consumer rejects the manifest unless its
+# flags are a bit-superset of the value already recorded on the device, so a
+# manifest missing a flag the device has is refused as a rollback. On a
+# successful boot the consumer OR-s these flags into the device value (bits only
+# ever turn on). Example below: three posture flags set (bits 0, 1, 2).
+manifest_security_version: 0x07
+
+# --- Device-state update controls ---
+# manifest_security_control holds six update-disable bits [5:0]. Production
+# manifests leave this 0x00 so the device's revocation, security-version, and
+# signature-posture state advance automatically on each successful boot.
+# Development / bring-up manifests set 0x3F to suppress those one-time fuse
+# writes while iterating on a device.
+#   bit0 - suppress the manifest-security-version update
+#   bit1 - suppress the ROOT-key-revocation update
+#   bit2 - suppress the verifier-security-version update
+#   bit3 - suppress the verifier-key-revocation update
+#   bit4 - suppress the signature-cohort-enforcement update
+#   bit5 - suppress the signature-class-revocation update
+manifest_security_control: 0x00
+
+# --- Signature posture registers ---
+# Both are device control registers OR'd into vendor storage (typically OTP)
+# after a fully verified boot. Neither takes any part in verifying the manifest
+# that carries them — they govern how signatures are treated on SUBSEQUENT
+# boots, so a producer stages a posture change in one manifest and sees it take
+# effect from the next boot onward. Because the updates accumulate by OR,
+# restrictions only ever tighten.
+
+# signature_cohort_enforce assigns a 4-bit nibble to each signed entity:
+#   b[3:0]  ROOT key      b[7:4]  verifier key      b[11:8]..b[39:36] co-signers 1..8
+# Within a nibble, bit0 requires a classical signature and bit1 a post-quantum
+# one; bits [3:2] are reserved. Each entity advances independently, which is what
+# lets a deployment require PQC of the ROOT key before demanding it everywhere.
+# 0x01 here demands a classical ROOT signature — what this manifest carries.
+signature_cohort_enforce: 0x01
+
+# signature_class_revoke disables algorithm classes permanently.
+#   b[7:0]   classical per-class bits   b[15:8]  classical GROUP CODE
+#   b[31:24] PQC per-class bits         b[39:32] PQC GROUP CODE
+# A group code is a single constant, not a bitmask: 0xCA disables every classical
+# algorithm, 0xAC every PQC one. Each group byte must be exactly 0x00 or exactly
+# its constant — a fragment is rejected, because the device-side register
+# accumulates by OR and fragments from separate manifests would otherwise add up
+# to a group-wide revocation no single manifest ever declared.
+#
+# WARNING: setting BOTH group codes while secure boot is enforced leaves the
+# device permanently unable to verify any manifest. Make the surviving cohort
+# mandatory via signature_cohort_enforce before revoking the group it replaces.
+signature_class_revoke: 0x00
+
+# Pinning the timestamp makes the build byte-deterministic across runs.
+timestamp: 1764633600
+
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+
+payload_images:
+  - type: "PRODSB1XBLSTAGE1"
+    path: "tests/oca_fixtures/dummy_image.bin"

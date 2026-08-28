@@ -1,0 +1,21 @@
+# Ergonomic usage_constraints exercising chiplet_id + lifecycle + version_range.
+manifest_format: oca-classic
+manifest_identifier: "COMBO"
+description: "control-plane fixture"
+secure_boot: 0
+timestamp: 1764633600
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+usage_constraints:
+  chiplet_id:
+    0: 0xDE
+    1: 0xAD
+  lifecycle_chiplet_states: [TEST_DEV, PROD_END]
+  version_range_chiplet:
+    major_min: 1
+    minor_min: 0
+payload_images:
+  - type: "COMBOXXXBLSTAGE1"
+    path: "examples/oca_classic_basic/dummy_image.bin"

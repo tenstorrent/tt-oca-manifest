@@ -1,0 +1,14 @@
+# Non-secure single-image OCA-PQC bundle. Exercises the validator's PQC
+# variant dispatch (magic OCAP, 36864-byte body) end-to-end via make check.
+manifest_format: oca-pqc
+manifest_identifier: "PQCBASIC"
+description: "basic non-secure PQC fixture"
+secure_boot: 0
+timestamp: 1764633600
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+payload_images:
+  - type: "PQCBASICBLSTAGE1"
+    path: "examples/oca_classic_basic/dummy_image.bin"
