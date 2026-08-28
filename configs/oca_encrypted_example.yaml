@@ -1,0 +1,56 @@
+# OCA bundle with an encrypted payload (AES-128-CBC) — secure boot.
+#
+# The whole payload (TOC + images) is encrypted with AES-128-CBC. The cipher key
+# is derived from a pre-shared secret via the NIST SP 800-108r1 Counter Mode
+# (HMAC-SHA-256) key-derivation function — the secret is never used directly as
+# the key and is never written into the manifest.
+#
+# Build from the repository root:
+#   python -m tt_boot_manifest.pack_images \
+#       --config configs/oca_encrypted_example.yaml --out out/oca_encrypted_demo.bin -v
+#
+# Encryption requires secure boot. Encryption applies identically to the
+# oca-pqc variant. KEM-wrapped keys and any cipher / KDF other than the ones
+# below are not yet supported and are rejected.
+
+manifest_format: oca-classic
+manifest_identifier: "ENCDEMO"
+description: "OCA encrypted-payload example (AES-128-CBC)"
+
+secure_boot: 1
+signature_type: 0x01                     # RSA-3072 PKCS#1 v1.5 / SHA-256
+signing_authority: local
+signing_key_file: "tests/signing_keys/rsa_private_key.dev0.pem"
+public_key_select_classic: 0x01
+
+# --- Payload encryption ---
+encrypted_payload: 1
+encryption_type: 0x01                    # AES-128-CBC (0x01) or AES-256-CBC (0x02)
+encryption_key_derivation_function: 0x0001  # SP 800-108r1 CTR HMAC-SHA-256
+
+# Which provisioned pre-shared secret the consumer feeds the KDF. This is an
+# index recorded in the manifest for the decrypting client (indices start at 1);
+# it is not itself a decryption input. Defaults to 1.
+encryption_shared_secret_select: 1
+
+# The 32-byte pre-shared secret: inline hex OR a key file.
+encryption_secret: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+# encryption_secret_file: "path/to/secret.bin"
+
+# The IV (16 bytes) and KDF input (32 bytes) may be supplied for a reproducible
+# build. Omit either to have the build generate a random value and record it in
+# a side-car file `encrypt_inputs_<last 8 hex of the manifest hash>.json`.
+encryption_iv: "101112131415161718191a1b1c1d1e1f"
+encryption_kdf_input: "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8"
+
+# Pinning the timestamp makes the build byte-deterministic across runs.
+timestamp: 1764633600
+
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+
+payload_images:
+  - type: "ENCDEMO1BLSTAGE1"
+    path: "tests/oca_fixtures/dummy_image.bin"

@@ -1,0 +1,23 @@
+# RSA-3072 signed manifest with a PKCS#1 DER public key at exponent 3, which
+# encodes to 396 bytes rather than F4's 398. A consumer that hardcoded the DER
+# key length, or ignored public_key_size_classic, passes secure_rsa_der and
+# fails here.
+manifest_format: oca-classic
+manifest_identifier: "RSAE3D"
+description: "RSA-3072 signed fixture (secure_rsa_e3_der)"
+secure_boot: 1
+signature_type: 0x01
+signing_authority: local
+signing_key_name: "test_dev_rom_key_0"
+signing_key_id: "1234567890"
+signing_key_file: "tests/signing_keys/rsa_private_key.e3.pem"
+public_key_select_classic: 0x01
+public_key_encoding: 0x01   # PKCS#1 RSAPublicKey
+timestamp: 1764633600
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+payload_images:
+  - type: "RSAE3DXXBLSTAGE1"
+    path: "examples/oca_classic_basic/dummy_image.bin"

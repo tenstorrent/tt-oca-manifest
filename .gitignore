@@ -1,0 +1,71 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+# NOTE: lib/ and lib64/ are anchored to the repo root (leading /) so they only
+# ignore the Python packaging artifacts created there — not legitimate nested
+# source directories such as validators/oca/lib/ (the C validator library).
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+/lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+out/
+*.bin
+!examples/**/*.bin
+!tests/oca_fixtures/*.bin
+# C build artifacts (the validator library builds into build/, but object files
+# from an ad-hoc or out-of-tree compile — e.g. the doc-comment object-equivalence
+# gate — must never be committed)
+*.o
+*.a

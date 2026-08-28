@@ -1,0 +1,32 @@
+# OCA-classic example exercising the usage-constraints control plane.
+# Combines per-byte chiplet_id selection, a lifecycle named-state list, and a
+# min-only version range, all without secure boot.
+
+manifest_format: oca-classic
+manifest_identifier: "COMBO1"
+description: "ID + lifecycle + version range, non-secure"
+
+secure_boot: 0
+timestamp: 1764633600
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+
+usage_constraints:
+  # Per-byte chiplet_id match: bytes 0 and 1.
+  chiplet_id:
+    0: 0xDE
+    1: 0xAD
+
+  # Lifecycle: TEST_DEV (bit 0) OR PROD_END (bit 2) → bitmap 0x05.
+  lifecycle_chiplet_states: [TEST_DEV, PROD_END]
+
+  # Min-only version range on the chiplet level.
+  version_range_chiplet:
+    major_min: 1
+    minor_min: 0
+
+payload_images:
+  - type: "COMBO1XXBLSTAGE1"
+    path: "examples/oca_classic_basic/dummy_image.bin"

@@ -1,0 +1,20 @@
+# Classic-signed (RSA-3072) OCA-PQC manifest — secure boot. Exercises the
+# validator verifying a classic signature over the PQC signed region [0, 5872).
+manifest_format: oca-pqc
+manifest_identifier: "PQCRSA"
+description: "RSA-3072 signed PQC fixture"
+secure_boot: 1
+signature_type: 0x01
+signing_authority: local
+signing_key_name: "test_dev_rom_key_0"
+signing_key_id: "1234567890"
+signing_key_file: "tests/signing_keys/rsa_private_key.dev0.pem"
+public_key_select_classic: 0x01
+timestamp: 1764633600
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+payload_images:
+  - type: "PQCRSAXXBLSTAGE1"
+    path: "examples/oca_classic_basic/dummy_image.bin"

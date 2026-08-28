@@ -1,0 +1,13 @@
+# Non-secure single-image OCA-classic bundle. No usage_constraints.
+manifest_format: oca-classic
+manifest_identifier: "BASIC"
+description: "basic non-secure fixture"
+secure_boot: 0
+timestamp: 1764633600
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+payload_images:
+  - type: "BASICXXXBLSTAGE1"
+    path: "examples/oca_classic_basic/dummy_image.bin"
