@@ -1,0 +1,37 @@
+# Asciidoctor PDF theme for the specifications in this directory.
+#
+# Mirrors the theme used by the OCA harness (the main consumer of this repo,
+# doc/theme.yml there): stock asciidoctor-pdf theme, Letter page, 9pt body,
+# 7pt tables. Keeping the two in step means a spec PDF built here looks like
+# the consumer's documentation set, and it keeps this build dependency-free —
+# every font comes from asciidoctor-pdf itself, so there is nothing to vendor.
+#
+# The small type is also load-bearing, not just house style: asciidoctor-pdf
+# cannot split a table cell across a page boundary and silently truncates any
+# cell taller than one page (logged as an ERROR, which the Makefile promotes to
+# a build failure). Several manifest field Description cells — manifest_security_control
+# is the worst — overflow a page at the stock 10.5pt body / 10.5pt table sizes.
+extends: default
+
+page:
+  layout: portrait
+  size: Letter
+
+base:
+  font_size: 9
+
+table:
+  font_size: 7
+
+role:
+  landscape:
+    page-layout: landscape
+  small:
+    font_size: 7
+  # The manifest field tables color-code rows by manifest variant, and the
+  # legend introducing them refers to the colors through these two roles.
+  # Values match the {set:cellbgcolor:...} values used in the tables themselves.
+  classic-bg:
+    background-color: d4edda
+  pqc-bg:
+    background-color: e2d4f0
