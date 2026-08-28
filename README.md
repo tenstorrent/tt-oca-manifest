@@ -540,6 +540,11 @@ mirrors the theme used by the OCA harness documentation build so the spec PDF
 matches the consumer-side documentation set. It extends the stock asciidoctor-pdf
 theme and vendors no fonts, so the gem is the only dependency.
 
+CI builds the PDF on every push and pull request (the `Specification PDF` job in
+[.github/workflows/ci.yml](.github/workflows/ci.yml)), asserts that the rendered
+document is complete, and uploads it as a build artifact — so a specification
+change can be reviewed as a PDF straight from the pull request.
+
 Two things to know before changing the flags:
 
 - The specification source is written to be **included** in the larger OCA system
