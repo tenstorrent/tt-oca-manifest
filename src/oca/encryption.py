@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """OCA payload encryption: AES-128-CBC or AES-256-CBC with a KDF-derived key.
 
 The cipher key is DERIVED from a pre-shared secret via NIST SP 800-108r1 Counter

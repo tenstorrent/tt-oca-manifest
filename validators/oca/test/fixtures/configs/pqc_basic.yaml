@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # Non-secure single-image OCA-PQC bundle. Exercises the validator's PQC
 # variant dispatch (magic OCAP, 36864-byte body) end-to-end via make check.
 manifest_format: oca-pqc

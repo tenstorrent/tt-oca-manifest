@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Byte-correctness tests for the OCA-classic manifest body.
 
 These tests build a bundle from a minimal in-memory config and assert

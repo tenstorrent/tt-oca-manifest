@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 /*
  * unit_test.c — In-tree C unit tests for the OCA validator library.
  *

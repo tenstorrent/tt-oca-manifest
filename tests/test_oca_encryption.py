@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Tests for OCA payload encryption (AES-128-CBC and AES-256-CBC).
 
 The whole payload (TOC + images) is AES-CBC encrypted under a key derived from a

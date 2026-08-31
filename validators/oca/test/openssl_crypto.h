@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 /*
  * openssl_crypto.h — Host-side crypto callbacks backed by OpenSSL 3.
  * Provides the sha256 and verify_signature callbacks the OCA validator

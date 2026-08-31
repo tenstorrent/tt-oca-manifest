@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """End-to-end integration tests: the C validator CLI against bundles
 produced by the Python packer.
 

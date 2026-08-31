@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # Secure-boot bundle with an AES-128-CBC encrypted payload (oca-classic). The payload
 # secret is supplied to the validator via encrypted_aes.flags.
 manifest_format: oca-classic

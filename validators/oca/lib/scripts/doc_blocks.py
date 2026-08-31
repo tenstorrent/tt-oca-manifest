@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Locating and parsing `/** ... */` comments, shared by the two doc gates.
 
 check_doc_comments.py reads these blocks for house style and check_retval_docs.py

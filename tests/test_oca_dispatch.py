@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Format dispatch in src/pack_images.py.
 
 Tests that every `oca-*` selector routes to its packer, and that a missing

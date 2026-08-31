@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """OCA payload TOC header (32 bytes) and TOC entry (276 bytes) builders.
 
 Source-of-truth byte layouts: contracts/oca-payload-toc.md, which mirrors the

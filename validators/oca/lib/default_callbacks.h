@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 /**
  * @file
  * @brief Internal stubs used when the caller-supplied callback table has NULL

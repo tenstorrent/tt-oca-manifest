@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Assemble several OCA manifest+payload bundles into one deployable image.
 
 This builds a single flat binary that places one or more manifest+payload

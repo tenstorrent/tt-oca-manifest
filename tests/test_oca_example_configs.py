@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Pure-Python build-and-validate coverage for the shipped example configs.
 
 Each `configs/oca_*.yaml` example is packed in-process by the Python producer and

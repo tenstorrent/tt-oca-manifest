@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 /**
  * @file
  * @brief Compare the hardware's current version against the manifest's min/max

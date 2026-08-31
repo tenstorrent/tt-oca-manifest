@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Shared fixture helpers for OCA tests.
 
 Exposes path constants for the existing test signing keys so OCA tests don't

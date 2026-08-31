@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 
 import logging
 import os
@@ -240,7 +242,7 @@ def aws_credentials_verify():
         import boto3
         from botocore.exceptions import ClientError
     except ImportError:
-        raise SigningError("boto3 is required for AWS KMS signing. Install it with: pip install tt-boot-manifest[aws]")
+        raise SigningError("boto3 is required for AWS KMS signing. Install it with: pip install tt-oca-manifest[aws]")
 
     try:
         sts = boto3.client('sts')
@@ -257,7 +259,7 @@ class AWSKey(SigningKey):
         try:
             import boto3
         except ImportError:
-            raise SigningError("boto3 is required for AWS KMS signing. Install it with: pip install tt-boot-manifest[aws]")
+            raise SigningError("boto3 is required for AWS KMS signing. Install it with: pip install tt-oca-manifest[aws]")
 
         # Before we attempt to load any key material, check the available AWS credentials are valid
         # Make sure to run `eval $(python3 aws_sso_emulation_secure.py)` to setup your AWS credentials
@@ -313,7 +315,7 @@ class AWSKey(SigningKey):
             import boto3
             from botocore.exceptions import ClientError
         except ImportError:
-            raise SigningError("boto3 is required for AWS KMS signing. Install it with: pip install tt-boot-manifest[aws]")
+            raise SigningError("boto3 is required for AWS KMS signing. Install it with: pip install tt-oca-manifest[aws]")
 
 
         logger.debug(f'AWS KMS sig generation for data len {len(data)} with key {self.name}')
@@ -354,7 +356,7 @@ class AWSKey(SigningKey):
             import boto3
             from botocore.exceptions import ClientError
         except ImportError:
-            raise SigningError("boto3 is required for AWS KMS signing. Install it with: pip install tt-boot-manifest[aws]")
+            raise SigningError("boto3 is required for AWS KMS signing. Install it with: pip install tt-oca-manifest[aws]")
 
         # Make AWS KMS signature verification request
         client = boto3.client('kms')

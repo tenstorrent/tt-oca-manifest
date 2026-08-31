@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Unit tests for the OCA-classic usage-constraints decoder.
 
 Covers selector_bits derivation for per-byte identity selection, lifecycle

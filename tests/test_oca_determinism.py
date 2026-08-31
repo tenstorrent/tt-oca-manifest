@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Determinism and byte-stability guards for the OCA-classic packer.
 
 The signed region embeds a SHA-256 over manifest bytes, so any non-determinism

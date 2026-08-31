@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # Ergonomic usage_constraints exercising chiplet_id + lifecycle + version_range.
 manifest_format: oca-classic
 manifest_identifier: "COMBO"

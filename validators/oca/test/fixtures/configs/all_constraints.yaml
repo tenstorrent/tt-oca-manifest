@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # Exercises every field family the validator knows: three ID families,
 # three lifecycle levels, three version ranges (with mixed half presence),
 # and demotion_control in named-flag form.

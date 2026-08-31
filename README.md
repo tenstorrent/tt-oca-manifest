@@ -1,4 +1,9 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+<!-- SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc. -->
 # Tenstorrent OCA Boot Manifest
+
+[![CI](https://github.com/tenstorrent/tt-oca-manifest/actions/workflows/ci.yml/badge.svg)](https://github.com/tenstorrent/tt-oca-manifest/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 ## Overview
 
@@ -28,6 +33,11 @@ Key features:
 - **Usage constraints**: chiplet/package/system-ID, lifecycle, version-range, and demotion gating
 - **Device-state security**: ROOT-key revocation and anti-rollback security version checks, enforced by the OCA validator
 - **Python package**: installable via pip for easy integration
+
+Project documents: [CONTRIBUTING.md](CONTRIBUTING.md) ·
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) · [SECURITY.md](SECURITY.md) ·
+[LICENSE](LICENSE) · [LICENSE-DOCS](LICENSE-DOCS) ·
+[LICENSE_understanding.txt](LICENSE_understanding.txt) · [NOTICE](NOTICE)
 
 ## Prerequisites
 
@@ -636,6 +646,33 @@ Secure boot ensures that only authorized firmware can execute on the device. Whe
 - 64-byte signatures (32-byte r + 32-byte s Big Ints)
 - Smaller signature and key sizes, higher security
 
+## Contributing
+
+Contributions are welcome. Bugs are reported through
+[GitHub Issues](https://github.com/tenstorrent/tt-oca-manifest/issues); bug fixes and
+new functionality are submitted as Pull Requests, which are reviewed weekly and
+require at least one approving review before merging.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, the checks a change
+is expected to pass, and the coding standards — in particular the layout-sync and
+Doxygen gates, which fail a change that is otherwise functionally correct. All
+participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md).
+
+To report a security vulnerability, do **not** open a GitHub Issue — follow the
+private disclosure process in [SECURITY.md](SECURITY.md).
+
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+This repository carries two licenses.
+
+| File | Applies to |
+|---|---|
+| [LICENSE](LICENSE) | Overall license for this project, except where specified. Apache License 2.0. |
+| [LICENSE-DOCS](LICENSE-DOCS) | License for all documentation and images only. Creative Commons Attribution 4.0 International (CC-BY-4.0), covering `specifications/` — the format specification and its diagrams — and the repository's Markdown files. |
+
+Every file carries an SPDX header naming which of the two applies to it.
+
+[LICENSE_understanding.txt](LICENSE_understanding.txt) is Tenstorrent's clarification
+of how the Apache 2.0 license applies here; please read it alongside the LICENSE file.
+Copyright attribution and the licenses of third-party dependencies are recorded in
+[NOTICE](NOTICE).

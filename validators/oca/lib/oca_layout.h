@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 /**
  * @file
  * @brief Byte offsets, sizes, and masks SHARED by every OCA boot manifest

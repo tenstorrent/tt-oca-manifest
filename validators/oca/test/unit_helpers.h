@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 /*
  * unit_helpers.h — Tiny zero-dependency test framework for the OCA
  * validator library. Host-side only.

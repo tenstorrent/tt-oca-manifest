@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # Non-secure multi-image OCA-classic bundle exercising the full Payload TOC
 # entry layout: every optional Table-6 field (security_version, load_addr,
 # entry_point, target_chiplet_id, description) is set to a distinct non-zero

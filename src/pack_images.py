@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """CLI entry point and format dispatch for OCA boot-manifest packing.
 
 Selects the packer from the config's `manifest_format` and renders

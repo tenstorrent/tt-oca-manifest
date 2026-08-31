@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # OCA-classic production secure-boot example — ROOT-key selection & revocation,
 # anti-rollback security version, and the device-state update controls.
 #

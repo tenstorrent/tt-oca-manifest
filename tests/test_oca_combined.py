@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Tests for the OCA combined deployable-image assembler.
 
 Covers multi-bank assembly, overlap rejection, isolation/byte-identity of a

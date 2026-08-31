@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # Combined OCA deployable image: assemble multiple manifest+payload banks (and
 # optional raw data regions) into one flat binary for initial flash provisioning.
 # See README.md, section "Combined deployable images", for the full guide.

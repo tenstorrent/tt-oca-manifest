@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 /*
  * openssl_crypto.c — SHA-256 + signature verification via OpenSSL 3 EVP.
  *
