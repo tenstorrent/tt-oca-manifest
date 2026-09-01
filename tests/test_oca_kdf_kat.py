@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Known-answer + domain-separation tests for the payload-decryption KDF.
 
 The payload key is derived via NIST SP 800-108r1 Counter Mode (HMAC-SHA-256)

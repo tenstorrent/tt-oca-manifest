@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Drift-check oca_layout.h against src/oca/constants.py.
 
 Run from anywhere in the project tree:

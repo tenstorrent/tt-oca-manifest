@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Top-level OCA bundle generation entry point (oca-classic and oca-pqc).
 
 Wired into `src/pack_images.py` via deferred import when

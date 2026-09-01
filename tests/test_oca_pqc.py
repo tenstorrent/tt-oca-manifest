@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Tests for OCA Post-Quantum (PQC) manifest assembly.
 
 This pass produces the PQC manifest structure (OCAP magic, 36864-byte body, shared

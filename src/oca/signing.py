@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """OCA signing glue.
 
 Wraps the existing `manifest_signing.SigningKey` factory so OCA producers

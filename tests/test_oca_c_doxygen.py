@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Drift gate: doxygen must report nothing about the OCA validator library.
 
 Doxygen is the entity-discovery half of the documentation gate. It models C

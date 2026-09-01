@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Drift gate: the OCA C validator library's doc comments follow house style.
 
 Two responsibilities, deliberately kept in one file:

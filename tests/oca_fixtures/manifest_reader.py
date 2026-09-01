@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Read the crypto fields back out of a packed OCA-classic manifest.
 
 Shared by the tests that independently verify a manifest's signature without

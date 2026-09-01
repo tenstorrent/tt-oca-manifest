@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # Documentation build for the OCA boot manifest specification.
 #
 # Renders the AsciiDoc specification to PDF with asciidoctor-pdf. This is the

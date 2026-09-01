@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # OCA-classic walkthrough — non-secure-boot, single payload image.
 # See README.md in this directory for the full walkthrough.
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Drift-check between validators/oca/lib/oca_layout.h and src/oca/constants.py.
 
 Any offset, length, or mask the C validator depends on must match the Python

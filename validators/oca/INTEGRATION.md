@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+<!-- SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc. -->
 # OCA validator — integration guide
 
 How to build a consumer on top of `lib/`. The reference implementation is

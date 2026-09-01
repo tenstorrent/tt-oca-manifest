@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Check that documented result codes are ones the function can actually return.
 
 Run from anywhere in the project tree:

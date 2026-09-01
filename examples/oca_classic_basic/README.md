@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+<!-- SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc. -->
 # OCA-Classic Basic Example
 
 A runnable walkthrough for the OCA-classic packer: build a minimal non-secure

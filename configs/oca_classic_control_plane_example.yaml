@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # OCA-classic example exercising the usage-constraints control plane.
 # Combines per-byte chiplet_id selection, a lifecycle named-state list, and a
 # min-only version range, all without secure boot.

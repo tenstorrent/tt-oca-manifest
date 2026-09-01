@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Sign OCA manifests through the existing signing-authority abstraction.
 
 For each algorithm + authority we:

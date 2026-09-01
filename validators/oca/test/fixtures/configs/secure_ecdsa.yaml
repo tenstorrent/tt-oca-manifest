@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # ECDSA P-256 signed manifest.
 manifest_format: oca-classic
 manifest_identifier: "ECCFIX"

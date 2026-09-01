@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+<!-- SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc. -->
 # OCA Validator (C library + host CLI)
 
 A small, freestanding C library that parses an OCA boot manifest and decides

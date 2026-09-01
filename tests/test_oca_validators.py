@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Deferred-feature and shape-error rejection for OCA-classic configs.
 
 Every OCA capability that the packer does not yet implement MUST be rejected

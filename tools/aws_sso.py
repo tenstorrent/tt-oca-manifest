@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # AWS Single Sign On (SSO) Credential Update
 # Allows a user to setup/renew AWS user credentials
 

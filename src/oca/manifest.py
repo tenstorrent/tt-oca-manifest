@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """OCA manifest body builder (Classic and PQC variants).
 
 This module turns a normalized config dict (output of

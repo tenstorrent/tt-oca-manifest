@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # OCA bundle with an encrypted payload (AES-128-CBC) — secure boot.
 #
 # The whole payload (TOC + images) is encrypted with AES-128-CBC. The cipher key

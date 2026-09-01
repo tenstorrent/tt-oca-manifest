@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # RSA-3072 signed manifest with a PKCS#1 DER public key at the modern F4
 # exponent (398 bytes). Pairs with secure_rsa_e3_der to cover both DER key
 # lengths through the C validator.

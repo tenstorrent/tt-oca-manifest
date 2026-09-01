@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Unit coverage for `check_object_equivalence.py`.
 
 That script is the gate that proves a comment-only change altered no object

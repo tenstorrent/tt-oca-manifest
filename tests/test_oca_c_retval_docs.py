@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Drift gate: documented result codes match what the functions actually return.
 
 `check_retval_docs.py` is the only check in this project that asks whether a

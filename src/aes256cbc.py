@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """AES-256-CBC encrypt/decrypt with PKCS#7 padding.
 
 Mirrors :mod:`aes128cbc` for the 32-byte-key cipher. The underlying

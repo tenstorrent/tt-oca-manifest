@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Byte offsets, sizes, enums, and magic values for the OCA-classic manifest format.
 
 Source of truth: `boot-manifest.adoc` (the OCA AsciiDoc spec). Field offsets and

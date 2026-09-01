@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # OCA Post-Quantum (PQC) manifest example — non-secure-boot, single payload image.
 # See README.md ("OCA manifest variants") for the full guide.
 #

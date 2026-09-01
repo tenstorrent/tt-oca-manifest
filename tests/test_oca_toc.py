@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Bundle multiple images via the OCA payload TOC.
 
 Tests the multi-image payload pipeline: PTOC header, 276-byte TOC entries,

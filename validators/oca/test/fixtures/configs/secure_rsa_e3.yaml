@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # RSA-3072 signed manifest using the LEGACY public exponent 3 (raw key
 # encoding). The raw form is 388 bytes for any exponent -- big-endian modulus
 # followed by a 4-byte big-endian exponent -- so this pins that the C backend

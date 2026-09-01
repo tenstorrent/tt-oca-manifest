@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Prove a change to the OCA validator library touched only comments.
 
     python3 validators/oca/lib/scripts/check_object_equivalence.py \
