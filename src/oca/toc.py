@@ -144,6 +144,12 @@ def build_toc_entry(image_meta: Dict[str, Any], image_bytes: bytes) -> bytes:
     length = int(image_meta["length"])
     if length != len(image_bytes):
         raise ValueError(f"image.length {length} does not match image bytes {len(image_bytes)}")
+    if length == 0:
+        raise OcaConfigError(
+            f"image.type {image_type!r} has length 0; an entry with no content "
+            f"authenticates nothing and can never be launched",
+            field_name="payload_images",
+        )
 
     version = image_meta.get("version") or {}
     major = int(version.get("major", 0))

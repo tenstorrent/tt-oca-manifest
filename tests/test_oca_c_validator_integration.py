@@ -592,7 +592,7 @@ def test_cli_cleartext_tampered_toc_region_fails_on_payload_hash(tmp_path):
 
 @pytest.mark.parametrize(
     "violation",
-    ["misaligned_offset", "out_of_bounds_length", "overlapping_entries"],
+    ["misaligned_offset", "out_of_bounds_length", "overlapping_entries", "zero_length"],
 )
 def test_cli_cleartext_toc_structural_violations_rejected(tmp_path, violation):
     """TOC structural validation now runs on cleartext payloads too, and reports
@@ -608,6 +608,11 @@ def test_cli_cleartext_toc_structural_violations_rejected(tmp_path, violation):
             _set_entry_u64(data, 0, oca_consts.OFF_TOC_ENTRY_OFFSET, entry0_off + 1)
         elif violation == "out_of_bounds_length":
             _set_entry_u64(data, 0, oca_consts.OFF_TOC_ENTRY_LENGTH, len(payload))
+        elif violation == "zero_length":
+            # Re-sealing gives the empty image a correct hash and a consistent
+            # hash chain, so nothing but the structural rule can reject it --
+            # which is the point: a zero-length entry is otherwise well-formed.
+            _set_entry_u64(data, 0, oca_consts.OFF_TOC_ENTRY_LENGTH, 0)
         else:
             # Point entry 1 at entry 0's offset so their ranges coincide.
             _set_entry_u64(data, 1, oca_consts.OFF_TOC_ENTRY_OFFSET, entry0_off)
