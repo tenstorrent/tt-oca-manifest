@@ -1414,7 +1414,13 @@ static void build_plaintext_toc(void)
 {
     memset(g_fx.plaintext_toc, 0, sizeof g_fx.plaintext_toc);
     memcpy(g_fx.plaintext_toc, "PTOC", 4);
-    g_fx.plaintext_toc[OCA_TOC_OFF_IMAGE_COUNT] = 1u;  /* one image, offset/length 0 */
+    g_fx.plaintext_toc[OCA_TOC_OFF_IMAGE_COUNT] = 1u;
+    /* One image at [0, 8): an entry's length may not be zero. The range lands on
+     * the TOC's own bytes, which the structural rules bound and de-overlap but
+     * do not reserve, so the buffer stays a bare TOC. The stub sha256 digests
+     * every input to all-zero, so the entry's zeroed hash field still matches. */
+    toc_put_u64(g_fx.plaintext_toc + OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_OFF_LENGTH,
+                8u);
 }
 
 static oca_result_t decrypt_ok(const oca_decrypt_input_t *in,
@@ -1862,7 +1868,19 @@ TEST(test_payload_toc_entry_offset_misaligned)
     uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE];
     memset(pt, 0, sizeof pt);
     toc_set_header(pt, 1u);
-    toc_set_entry(pt, 0u, 4u, 0u);                /* offset 4 not a multiple of 8 */
+    toc_set_entry(pt, 0u, 4u, 8u);                /* offset 4 not a multiple of 8 */
+    ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_FAIL_PAYLOAD_TOC);
+}
+
+/* A zero-length entry passes every other structural rule -- it is in bounds and
+ * overlaps nothing -- so this is the only check standing between a Consumer and
+ * an entry that describes no image at all. */
+TEST(test_payload_toc_entry_zero_length)
+{
+    uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE];
+    memset(pt, 0, sizeof pt);
+    toc_set_header(pt, 1u);
+    toc_set_entry(pt, 0u, 0u, 0u);                /* aligned and in bounds, but empty */
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_FAIL_PAYLOAD_TOC);
 }
 
@@ -1902,8 +1920,8 @@ TEST(test_payload_toc_multi_entry_disjoint_passes)
     uint8_t pt[OCA_TOC_HEADER_SIZE + 2u * OCA_TOC_ENTRY_SIZE];
     memset(pt, 0, sizeof pt);
     toc_set_header(pt, 2u);
-    toc_set_entry(pt, 0u, 0u, 0u);                /* empty, 8-byte aligned */
-    toc_set_entry(pt, 1u, 8u, 0u);                /* empty, aligned, disjoint */
+    toc_set_entry(pt, 0u, 0u, 8u);                /* [0, 8), 8-byte aligned */
+    toc_set_entry(pt, 1u, 8u, 8u);                /* [8, 16), aligned, disjoint */
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_OK);
 }
 
@@ -1917,7 +1935,7 @@ TEST(test_payload_toc_entry_hash_mismatch)
     uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE];
     memset(pt, 0, sizeof pt);
     toc_set_header(pt, 1u);
-    toc_set_entry(pt, 0u, 0u, 0u);
+    toc_set_entry(pt, 0u, 0u, 8u);
     pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_OFF_HASH] = 0xFFu;  /* wrong digest */
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_FAIL_PAYLOAD_ENTRY_HASH);
 }
@@ -1928,8 +1946,8 @@ TEST(test_payload_toc_entry_hash_mismatch_second_entry)
     uint8_t pt[OCA_TOC_HEADER_SIZE + 2u * OCA_TOC_ENTRY_SIZE];
     memset(pt, 0, sizeof pt);
     toc_set_header(pt, 2u);
-    toc_set_entry(pt, 0u, 0u, 0u);
-    toc_set_entry(pt, 1u, 8u, 0u);
+    toc_set_entry(pt, 0u, 0u, 8u);
+    toc_set_entry(pt, 1u, 8u, 8u);
     uint8_t *second = pt + OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE;
     second[OCA_TOC_ENTRY_OFF_HASH] = 0x01u;
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_FAIL_PAYLOAD_ENTRY_HASH);
@@ -1942,7 +1960,7 @@ TEST(test_payload_toc_entry_hash_padding_ignored)
     uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE];
     memset(pt, 0, sizeof pt);
     toc_set_header(pt, 1u);
-    toc_set_entry(pt, 0u, 0u, 0u);
+    toc_set_entry(pt, 0u, 0u, 8u);
     uint8_t *entry = pt + OCA_TOC_HEADER_SIZE;
     memset(entry + OCA_TOC_ENTRY_OFF_HASH + OCA_MANIFEST_HASH_DIGEST_SIZE, 0xA5u,
            OCA_LEN_MANIFEST_HASH - OCA_MANIFEST_HASH_DIGEST_SIZE);
@@ -2584,6 +2602,16 @@ TEST(test_toc_image_at_rejects_structurally_invalid_entry)
     ASSERT_EQ_INT(oca_toc_image_at(pt, sizeof pt, 0u, &img),
                   OCA_FAIL_PAYLOAD_TOC);
 
+    /* This accessor is the one a Consumer reaches for to pick an image out of a
+     * payload it has not run oca_check_payload over, so it owes the zero-length
+     * rule directly: returning bytes/length for an empty entry is what leaves a
+     * caller loading nothing and launching whatever preceded it. */
+    memset(pt, 0, sizeof pt);
+    toc_set_header(pt, 1u);
+    toc_set_entry(pt, 0u, good_off, 0u);                /* zero length */
+    ASSERT_EQ_INT(oca_toc_image_at(pt, sizeof pt, 0u, &img),
+                  OCA_FAIL_PAYLOAD_TOC);
+
     memset(pt, 0, sizeof pt);
     toc_set_header(pt, 1u);
     toc_set_entry(pt, 0u, good_off, sizeof pt);         /* length out of bounds */
@@ -2780,8 +2808,12 @@ static void cap_toc_init(uint64_t image_count)
     memset(g_fx.cap_toc, 0, sizeof g_fx.cap_toc);
     toc_set_header(g_fx.cap_toc, image_count);
     toc_put_u64(g_fx.cap_toc + OCA_TOC_OFF_PAYLOAD_LENGTH, sizeof g_fx.cap_toc);
-    /* Entries stay all-zero: offset 0, length 0 is structurally legal and never
-     * overlaps, so nothing else can be the reason for a rejection. */
+    /* Every entry gets a distinct 8-byte range: non-zero length, 8-byte aligned
+     * offset, in bounds, and disjoint from every other entry, so nothing but the
+     * cap can be the reason for a rejection. */
+    for (uint64_t i = 0u; i < image_count; ++i) {
+        toc_set_entry(g_fx.cap_toc, i, i * 8u, 8u);
+    }
 }
 
 TEST(test_toc_rejects_image_count_above_the_cap)
@@ -6003,6 +6035,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_payload_toc_zero_image_count);
     RUN_TEST(test_payload_toc_length_exceeds_payload);
     RUN_TEST(test_payload_toc_entry_offset_misaligned);
+    RUN_TEST(test_payload_toc_entry_zero_length);
     RUN_TEST(test_payload_toc_entry_out_of_bounds);
     RUN_TEST(test_payload_toc_entries_overlap);
     RUN_TEST(test_payload_toc_entries_overlap_unsorted);

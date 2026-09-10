@@ -1024,10 +1024,17 @@ oca_result_t oca_toc_image_at(const uint8_t *payload, size_t payload_length,
     uint64_t len = oca_le_u64(entry + OCA_TOC_ENTRY_OFF_LENGTH);
 
     /* Same per-entry rules as validate_toc_structure: 8-byte aligned offset,
-     * and [off, off+len) inside the payload without overflowing. Re-checked
-     * here so this function is safe on any buffer, not only one that already
-     * went through oca_check_payload. */
+     * non-zero length, and [off, off+len) inside the payload without
+     * overflowing. Re-checked here so this function is safe on any buffer, not
+     * only one that already went through oca_check_payload -- which is exactly
+     * the caller the zero-length rule exists for: this function hands back
+     * `bytes` and `length` for a Consumer to load and launch, so a zero-length
+     * entry that reached it would copy nothing and leave load_addr holding
+     * whatever was there before. */
     if ((off % 8u) != 0u) {
+        return OCA_FAIL_PAYLOAD_TOC;
+    }
+    if (len == 0u) {
         return OCA_FAIL_PAYLOAD_TOC;
     }
     if (off > payload_length || len > payload_length - off) {
