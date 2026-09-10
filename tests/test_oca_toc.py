@@ -396,6 +396,20 @@ def test_image_count_zero_rejected(tmp_path):
     assert exc.value.field_name == "payload_images"
 
 
+def test_zero_length_image_rejected(tmp_path):
+    """An empty image file is refused rather than packed into an empty entry.
+
+    The Consumer rejects a zero _length_ outright, so emitting one would produce
+    a bundle no validator accepts. It is also the entry that authenticates
+    nothing: its hash would be the digest of the empty string.
+    """
+    cfg = _multi_image_config(tmp_path, [("empty", b"")])
+    with pytest.raises(OcaConfigError) as exc:
+        pack_oca_bundle(cfg)
+    assert exc.value.field_name == "payload_images"
+    assert "length 0" in str(exc.value)
+
+
 # Single-image case still works through the multi-image pipeline — a
 # regression guard against breaking the single-image-baseline path.
 def test_single_image_still_works_via_multi_pipeline(tmp_path):

@@ -592,7 +592,7 @@ def test_cli_cleartext_tampered_toc_region_fails_on_payload_hash(tmp_path):
 
 @pytest.mark.parametrize(
     "violation",
-    ["misaligned_offset", "out_of_bounds_length", "overlapping_entries"],
+    ["misaligned_offset", "out_of_bounds_length", "overlapping_entries", "zero_length"],
 )
 def test_cli_cleartext_toc_structural_violations_rejected(tmp_path, violation):
     """TOC structural validation now runs on cleartext payloads too, and reports
@@ -608,6 +608,11 @@ def test_cli_cleartext_toc_structural_violations_rejected(tmp_path, violation):
             _set_entry_u64(data, 0, oca_consts.OFF_TOC_ENTRY_OFFSET, entry0_off + 1)
         elif violation == "out_of_bounds_length":
             _set_entry_u64(data, 0, oca_consts.OFF_TOC_ENTRY_LENGTH, len(payload))
+        elif violation == "zero_length":
+            # Re-sealing gives the empty image a correct hash and a consistent
+            # hash chain, so nothing but the structural rule can reject it --
+            # which is the point: a zero-length entry is otherwise well-formed.
+            _set_entry_u64(data, 0, oca_consts.OFF_TOC_ENTRY_LENGTH, 0)
         else:
             # Point entry 1 at entry 0's offset so their ranges coincide.
             _set_entry_u64(data, 1, oca_consts.OFF_TOC_ENTRY_OFFSET, entry0_off)
@@ -1143,8 +1148,10 @@ def _craft_oversized_toc_bundle(template_path: str, image_count: int, out_path):
 
     Every check ahead of the overlap scan is made to pass -- manifest_hash,
     payload_hash, payload_hashed_length, and the TOC's own payload_length -- so a
-    validator without a cap runs the full O(n^2) scan. Entries are zero-length at
-    offset 0: structurally legal, and no pair overlaps.
+    validator without a cap runs the full O(n^2) scan. Each entry describes a
+    distinct 8-byte image, packed end to end in the region after the TOC: 8-byte
+    aligned offset, non-zero length, in bounds, and disjoint from every other
+    entry, so no per-entry rule rejects the bundle before the scan is reached.
     """
     import hashlib
     import struct
@@ -1156,15 +1163,31 @@ def _craft_oversized_toc_bundle(template_path: str, image_count: int, out_path):
     body = bytearray(open(template_path, "rb").read()[:body_size])
     toc_bytes = _TOC_HEADER_SIZE + image_count * _TOC_ENTRY_SIZE
 
-    payload = bytearray(toc_bytes)
+    # An 8-byte image keeps every offset in the run 8-byte aligned. TOC_ENTRY_SIZE
+    # is not a multiple of 8, though, so the TOC itself only ends on the boundary
+    # for an even image_count -- pad up to it before the first image.
+    image_len = 8
+    images_off = (toc_bytes + 7) & ~7
+    payload_len = images_off + image_count * image_len
+
+    payload = bytearray(payload_len)
     payload[0:4] = oca_constants.PTOC_MAGIC
     struct.pack_into("<H", payload, oca_constants.OFF_TOC_VERSION_MAJOR, 1)
-    struct.pack_into("<Q", payload, oca_constants.OFF_TOC_PAYLOAD_LENGTH, toc_bytes)
+    struct.pack_into("<Q", payload, oca_constants.OFF_TOC_PAYLOAD_LENGTH, payload_len)
     struct.pack_into("<Q", payload, oca_constants.OFF_TOC_IMAGE_COUNT, image_count)
+    for index in range(image_count):
+        entry = _TOC_HEADER_SIZE + index * _TOC_ENTRY_SIZE
+        struct.pack_into("<Q", payload, entry + oca_constants.OFF_TOC_ENTRY_OFFSET,
+                         images_off + index * image_len)
+        struct.pack_into("<Q", payload, entry + oca_constants.OFF_TOC_ENTRY_LENGTH,
+                         image_len)
 
-    struct.pack_into("<Q", body, _OFF_PAYLOAD_LENGTH, toc_bytes)
+    struct.pack_into("<Q", body, _OFF_PAYLOAD_LENGTH, payload_len)
+    # payload_hash covers the TOC region alone, which is exactly what
+    # payload_hashed_length has to record; the image bytes after it are outside
+    # that digest.
     struct.pack_into("<Q", body, _OFF_PAYLOAD_HASHED_LENGTH, toc_bytes)
-    digest = hashlib.sha256(bytes(payload)).digest()
+    digest = hashlib.sha256(bytes(payload[:toc_bytes])).digest()
     body[_OFF_PAYLOAD_HASH:_OFF_PAYLOAD_HASH + 64] = digest + b"\x00" * 32
     manifest_hash = hashlib.sha256(bytes(body[:signed_end])).digest()
     body[manifest_hash_off:manifest_hash_off + 64] = manifest_hash + b"\x00" * 32

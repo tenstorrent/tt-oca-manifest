@@ -1243,6 +1243,7 @@ The OCA boot manifest extends integrity and trust checks from the core manifest 
 ** for composite CBC-HMAC _encryption_type_ modes, the HMAC over the ciphertext verifies under K_mac
 * plaintext TOC structural validation:
 ** _image_count_ > 0 and `TOC_Header_Size + (_image_count_ * TOC_Entry_Size) ≤ payload_length`
+** each TOC entry's _length_ is non-zero
 ** each TOC entry's `_offset_ + _length_ ≤ payload_length` with no overflow
 ** no two TOC entries have overlapping `[_offset_, _offset_ + _length_)` intervals
 ** manifest _payload_length_ matches TOC _payload_length_ per the encryption-overhead rule
@@ -2644,7 +2645,17 @@ A violation of either check shall cause the *Consumer* to reject the manifest.
 *******************************************************
 
 *******************************************************
-[*REQ-BTMANFST-{counter:REQ_BTMANFST_IDX}*] For each TOC entry the *Consumer* shall validate that _offset_ + _length_ is less than or equal to the payload's _payload_length_ and does not overflow the *Consumer*'s native integer width. The *Consumer* shall additionally verify that no two TOC entries describe overlapping byte ranges in the payload (i.e. the intervals `[_offset_, _offset_ + _length_)` for any two entries are disjoint). The *Consumer* shall additionally verify that each TOC entry's _offset_ is a multiple of 8. Any overlap, out-of-bounds extent, or misaligned _offset_ shall cause the *Consumer* to reject the manifest.
+[*REQ-BTMANFST-{counter:REQ_BTMANFST_IDX}*] For each TOC entry the *Consumer* shall validate that _offset_ + _length_ is less than or equal to the payload's _payload_length_ and does not overflow the *Consumer*'s native integer width. The *Consumer* shall additionally verify that no two TOC entries describe overlapping byte ranges in the payload (i.e. the intervals `[_offset_, _offset_ + _length_)` for any two entries are disjoint). The *Consumer* shall additionally verify that each TOC entry's _offset_ is a multiple of 8. The *Consumer* shall additionally verify that each TOC entry's _length_ is non-zero, and the *Producer* shall not emit an entry whose _length_ is zero. Any overlap, out-of-bounds extent, misaligned _offset_, or zero _length_ shall cause the *Consumer* to reject the manifest.
+
+[NOTE]
+====
+A zero-_length_ entry declares an image with no content. Its _hash_ is the digest of the empty
+string, so it authenticates nothing; `_entry_point_ < _length_` can never hold, so the entry can
+never be legally launched; and it satisfies both the extent bound and the overlap test trivially,
+so no other structural rule rejects it. A *Consumer* that selects an image by _type_ and then
+loads _length_ bytes would copy nothing and hand control to whatever already occupied
+_load_addr_. The rule is stated here so that no *Consumer* has to carry that guard itself.
+====
 *******************************************************
 
 *******************************************************
