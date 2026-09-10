@@ -124,6 +124,8 @@ tt-oca-manifest/
 │       └── ...                   #   manifest/payload/encryption/usage-constraints builders
 ├── validators/
 │   └── oca/                      # Consumer: freestanding C validator library + host CLI (oca-validate)
+│       ├── lib/                  #   The library itself — vendor THIS into a target firmware project
+│       └── test/                 #   Host harness (oca-validate CLI, C unit tests, fixtures) — never shipped to silicon
 ├── specifications/
 │   ├── theme.yml                 # Asciidoctor PDF theme used by `make spec-pdf`
 │   └── oca/                      # The OCA boot manifest format specification (AsciiDoc + figures)
