@@ -43,9 +43,8 @@ def _base_config(tmp_path):
 
 
 def test_oca_pqc_format_accepted(tmp_path):
-    # The PQC manifest variant is now supported; the format selector is accepted
-    # and produces an OCAP, 36864-byte body. (PQC-native crypto remains deferred;
-    # that rejection is covered in tests/test_oca_pqc.py.)
+    # The selector produces an OCAP, 36864-byte body. PQC-native crypto stays
+    # deferred; that rejection is covered in tests/test_oca_pqc.py.
     cfg = _base_config(tmp_path)
     cfg["manifest_format"] = "oca-pqc"
     bundle = oca_entry.pack_oca_bundle(cfg)

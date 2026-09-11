@@ -448,10 +448,9 @@ def test_cli_encrypted_tampered_ciphertext_fails_before_decrypt(tmp_path):
 # ---------------------------------------------------------------------------
 # Cleartext payload validation
 #
-# The validator used to return OK immediately for any non-encrypted payload, so
-# a cleartext bundle got no payload_hash, no payload_hash_chain, no TOC
-# structural validation, and no per-entry hash check at all. These tests drive
-# each of those against real packer output and real SHA-256.
+# A cleartext payload earns the same scrutiny as an encrypted one: payload_hash,
+# payload_hash_chain, TOC structural validation, and the per-entry hash check.
+# These tests drive each of those against real packer output and real SHA-256.
 #
 # The helpers below re-seal a tampered bundle: after mutating the payload they
 # recompute payload_hash, payload_hash_chain, and manifest_hash so that every
@@ -532,17 +531,61 @@ def _tampered_bundle(tmp_path, fixture: str, name: str, mutate, reseal: bool = T
     return str(out)
 
 
+# Mutators for _tampered_bundle. Each takes the buffer it edits, so a case that
+# needs a parameter binds it with functools.partial rather than closing over it.
+
+
+def _flip_image_byte(data):
+    payload = bytes(data[oca_constants.OCA_CLASSIC_BODY_SIZE:])
+    off = _entry_u64(payload, 0, oca_constants.OFF_TOC_ENTRY_OFFSET)
+    data[oca_constants.OCA_CLASSIC_BODY_SIZE + off] ^= 0xFF
+
+
+def _corrupt_entry_hash(data, index):
+    pos = (oca_constants.OCA_CLASSIC_BODY_SIZE + _entry_base(index)
+           + oca_constants.OFF_TOC_ENTRY_HASH)
+    data[pos] ^= 0xFF
+
+
+def _flip_entry_description(data):
+    """The description sits inside the TOC region payload_hash covers."""
+    pos = (oca_constants.OCA_CLASSIC_BODY_SIZE + _entry_base(0)
+           + oca_constants.OFF_TOC_ENTRY_DESCRIPTION)
+    data[pos] ^= 0xFF
+
+
+def _apply_toc_violation(data, violation):
+    payload = bytes(data[oca_constants.OCA_CLASSIC_BODY_SIZE:])
+    entry0_off = _entry_u64(payload, 0, oca_constants.OFF_TOC_ENTRY_OFFSET)
+    if violation == "misaligned_offset":
+        _set_entry_u64(data, 0, oca_constants.OFF_TOC_ENTRY_OFFSET, entry0_off + 1)
+    elif violation == "out_of_bounds_length":
+        _set_entry_u64(data, 0, oca_constants.OFF_TOC_ENTRY_LENGTH, len(payload))
+    elif violation == "zero_length":
+        # Re-sealing gives the empty image a correct hash and chain, so
+        # nothing but the structural rule can reject it.
+        _set_entry_u64(data, 0, oca_constants.OFF_TOC_ENTRY_LENGTH, 0)
+    else:
+        # Point entry 1 at entry 0's offset so their ranges coincide.
+        _set_entry_u64(data, 1, oca_constants.OFF_TOC_ENTRY_OFFSET, entry0_off)
+
+
+def _inflate_hashed_length(data):
+    pos = oca_constants.OFF_PAYLOAD_HASHED_LENGTH
+    current = int.from_bytes(data[pos:pos + 8], "little")
+    data[pos:pos + 8] = (current + 8).to_bytes(8, "little")
+
+
+def _shrink_toc_payload_length(data):
+    pos = oca_constants.OCA_CLASSIC_BODY_SIZE + oca_constants.OFF_TOC_PAYLOAD_LENGTH
+    current = int.from_bytes(data[pos:pos + 8], "little")
+    data[pos:pos + 8] = (current - 8).to_bytes(8, "little")
+
+
 def test_cli_cleartext_payload_is_actually_checked(tmp_path):
     """Flipping a byte inside an image — with no re-seal — must fail. Proves the
     cleartext payload is validated at all, rather than skipped."""
-    from tt_boot_manifest.oca import constants as oca_consts
-
-    def flip_image_byte(data):
-        payload = bytes(data[oca_consts.OCA_CLASSIC_BODY_SIZE:])
-        off = _entry_u64(payload, 0, oca_consts.OFF_TOC_ENTRY_OFFSET)
-        data[oca_consts.OCA_CLASSIC_BODY_SIZE + off] ^= 0xFF
-
-    path = _tampered_bundle(tmp_path, "basic", "image_flip", flip_image_byte,
+    path = _tampered_bundle(tmp_path, "basic", "image_flip", _flip_image_byte,
                             reseal=False)
     result = _run_cli(["--manifest", path])
     assert result.returncode == 1
@@ -557,15 +600,8 @@ def test_cli_cleartext_wrong_entry_hash_rejected(tmp_path, index):
     be rejected. The chain hashes the stored `hash` field as ordinary TOC data,
     so it cannot catch this; only the per-entry check can. Parametrized over
     every entry so the check covers the whole loop, not just the first entry."""
-    from tt_boot_manifest.oca import constants as oca_consts
-
-    def corrupt_entry_hash(data):
-        pos = (oca_consts.OCA_CLASSIC_BODY_SIZE + _entry_base(index)
-               + oca_consts.OFF_TOC_ENTRY_HASH)
-        data[pos] ^= 0xFF
-
     path = _tampered_bundle(tmp_path, "multi_image", f"bad_entry_hash_{index}",
-                            corrupt_entry_hash)
+                            functools.partial(_corrupt_entry_hash, index=index))
     result = _run_cli(["--manifest", path])
     assert result.returncode == 1, (
         f"entry {index} with a wrong hash must be rejected; "
@@ -576,15 +612,8 @@ def test_cli_cleartext_wrong_entry_hash_rejected(tmp_path, index):
 def test_cli_cleartext_tampered_toc_region_fails_on_payload_hash(tmp_path):
     """payload_hash covers the TOC region, and is checked before anything else
     that reads the TOC — so mutating an entry's description trips it first."""
-    from tt_boot_manifest.oca import constants as oca_consts
-
-    def flip_description(data):
-        pos = (oca_consts.OCA_CLASSIC_BODY_SIZE + _entry_base(0)
-               + oca_consts.OFF_TOC_ENTRY_DESCRIPTION)
-        data[pos] ^= 0xFF
-
-    path = _tampered_bundle(tmp_path, "multi_image", "toc_flip", flip_description,
-                            reseal=False)
+    path = _tampered_bundle(tmp_path, "multi_image", "toc_flip",
+                            _flip_entry_description, reseal=False)
     result = _run_cli(["--manifest", path])
     assert result.returncode == 1
     assert re.match(rb"^FAIL: PAYLOAD_HASH: ", result.stderr), result.stderr
@@ -599,25 +628,9 @@ def test_cli_cleartext_toc_structural_violations_rejected(tmp_path, violation):
     the dedicated PAYLOAD_TOC code rather than a hash mismatch. Each mutation is
     derived from the fixture's own entry offsets, so it stays a violation of the
     intended rule even if the fixture's images change size."""
-    from tt_boot_manifest.oca import constants as oca_consts
-
-    def apply(data):
-        payload = bytes(data[oca_consts.OCA_CLASSIC_BODY_SIZE:])
-        entry0_off = _entry_u64(payload, 0, oca_consts.OFF_TOC_ENTRY_OFFSET)
-        if violation == "misaligned_offset":
-            _set_entry_u64(data, 0, oca_consts.OFF_TOC_ENTRY_OFFSET, entry0_off + 1)
-        elif violation == "out_of_bounds_length":
-            _set_entry_u64(data, 0, oca_consts.OFF_TOC_ENTRY_LENGTH, len(payload))
-        elif violation == "zero_length":
-            # Re-sealing gives the empty image a correct hash and a consistent
-            # hash chain, so nothing but the structural rule can reject it --
-            # which is the point: a zero-length entry is otherwise well-formed.
-            _set_entry_u64(data, 0, oca_consts.OFF_TOC_ENTRY_LENGTH, 0)
-        else:
-            # Point entry 1 at entry 0's offset so their ranges coincide.
-            _set_entry_u64(data, 1, oca_consts.OFF_TOC_ENTRY_OFFSET, entry0_off)
-
-    path = _tampered_bundle(tmp_path, "multi_image", violation, apply)
+    path = _tampered_bundle(
+        tmp_path, "multi_image", violation,
+        functools.partial(_apply_toc_violation, violation=violation))
     result = _run_cli(["--manifest", path])
     assert result.returncode == 1
     assert re.match(rb"^FAIL: PAYLOAD_TOC: ", result.stderr), result.stderr
@@ -627,14 +640,8 @@ def test_cli_cleartext_hashed_length_must_equal_toc_span(tmp_path):
     """payload_hashed_length must be exactly the TOC span for a cleartext
     payload; re-sealing makes payload_hash agree with the inflated value, so only
     the span check can reject it."""
-    from tt_boot_manifest.oca import constants as oca_consts
-
-    def inflate(data):
-        pos = oca_consts.OFF_PAYLOAD_HASHED_LENGTH
-        current = int.from_bytes(data[pos:pos + 8], "little")
-        data[pos:pos + 8] = (current + 8).to_bytes(8, "little")
-
-    path = _tampered_bundle(tmp_path, "multi_image", "hashed_len", inflate)
+    path = _tampered_bundle(tmp_path, "multi_image", "hashed_len",
+                            _inflate_hashed_length)
     result = _run_cli(["--manifest", path])
     assert result.returncode == 1
     assert re.match(rb"^FAIL: PAYLOAD_TOC: ", result.stderr), result.stderr
@@ -643,14 +650,8 @@ def test_cli_cleartext_hashed_length_must_equal_toc_span(tmp_path):
 def test_cli_cleartext_toc_payload_length_must_match_manifest(tmp_path):
     """The TOC's own payload_length and the manifest's must agree for a
     cleartext payload."""
-    from tt_boot_manifest.oca import constants as oca_consts
-
-    def shrink_toc_length(data):
-        pos = oca_consts.OCA_CLASSIC_BODY_SIZE + oca_consts.OFF_TOC_PAYLOAD_LENGTH
-        current = int.from_bytes(data[pos:pos + 8], "little")
-        data[pos:pos + 8] = (current - 8).to_bytes(8, "little")
-
-    path = _tampered_bundle(tmp_path, "multi_image", "toc_len", shrink_toc_length)
+    path = _tampered_bundle(tmp_path, "multi_image", "toc_len",
+                            _shrink_toc_payload_length)
     result = _run_cli(["--manifest", path])
     assert result.returncode == 1
     assert re.match(rb"^FAIL: PAYLOAD_TOC: ", result.stderr), result.stderr
@@ -1149,9 +1150,8 @@ def _craft_oversized_toc_bundle(template_path: str, image_count: int, out_path):
     Every check ahead of the overlap scan is made to pass -- manifest_hash,
     payload_hash, payload_hashed_length, and the TOC's own payload_length -- so a
     validator without a cap runs the full O(n^2) scan. Each entry describes a
-    distinct 8-byte image, packed end to end in the region after the TOC: 8-byte
-    aligned offset, non-zero length, in bounds, and disjoint from every other
-    entry, so no per-entry rule rejects the bundle before the scan is reached.
+    distinct 8-byte image packed end to end after the TOC, so no per-entry rule
+    rejects the bundle before the scan is reached.
     """
     import hashlib
     import struct
@@ -1263,16 +1263,16 @@ def test_real_multi_image_fixture_is_unaffected_by_the_cap():
 # ---------------------------------------------------------------------------
 # Resolving payload_offset in storage
 #
-# The library used to locate the payload as `body + body_size`, ignoring the
-# manifest's payload_offset entirely. That is wrong for any bundle whose payload
-# is not immediately after the manifest -- which oca-combined produces routinely
-# -- and it is an unimplemented spec `shall` (boot-manifest_v3 REQ: resolve
-# payload_offset and validate the range against the trusted boot region).
+# The payload is located through the manifest's payload_offset, not at
+# `body + body_size`. Any bundle whose payload does not immediately follow the
+# manifest -- which oca-combined produces routinely -- is readable only that way,
+# and the spec requires resolving payload_offset and validating the range against
+# the trusted boot region.
 #
 # `--manifest-addr` puts the CLI into storage-image mode: authenticate the
 # manifest, resolve payload_offset against the permitted region, copy the payload
-# from there, verify it. These tests exercise that flow against bundles the old
-# assumption could not read.
+# from there, verify it. These tests exercise that flow against bundles a
+# contiguous assumption cannot read.
 # ---------------------------------------------------------------------------
 
 _COMBINED_BANK_CONFIG = "validators/oca/test/fixtures/configs/basic.yaml"
@@ -1317,10 +1317,10 @@ def test_gapped_bank_fails_contiguous_mode_and_passes_storage_mode(tmp_path):
     image = _pack_combined(tmp_path, "gapped", "0x0", "0x8000")
     assert _read_payload_offset(image, 0) == 0x8000
 
-    # Contiguous mode now refuses rather than guessing: it reads payload_offset,
-    # sees it disagrees with body_size, and says so. Before this change it hashed
-    # whatever followed the body and reported PAYLOAD_HASH -- indistinguishable
-    # from tampering, which is what made this class of bug expensive to diagnose.
+    # Contiguous mode refuses rather than guessing: it reads payload_offset, sees
+    # it disagrees with body_size, and says so. Hashing whatever followed the body
+    # instead would report PAYLOAD_HASH -- indistinguishable from tampering, and
+    # expensive to diagnose.
     contiguous = _run_cli(["--manifest", str(image)])
     assert contiguous.returncode == 1
     assert re.match(rb"^FAIL: PAYLOAD_LOCATION: ", contiguous.stderr), contiguous.stderr

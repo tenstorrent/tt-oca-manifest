@@ -421,12 +421,12 @@ oca_result_t oca_validate(const uint8_t *body,
      * elsewhere runs oca_validate_manifest(), then oca_locate_payload(), then
      * oca_check_payload_at().
      *
-     * The context is now OPTIONAL rather than private. A whole-bundle consumer
-     * needs no seam between the two VALIDATION stages, which is why it used to be
-     * owned here — but oca_commit_security_state() is a third step, after both,
-     * and it needs the determination this validation made. Supplying a context is
-     * how a caller that intends to commit gets one without a second, separately
-     * timed determination; passing NULL keeps the original behaviour exactly.
+     * The context is OPTIONAL. A whole-bundle consumer needs no seam between
+     * the two VALIDATION stages and can pass NULL, leaving this function to own
+     * the determination. oca_commit_security_state() is a third step, after
+     * both, and needs the determination this validation made: supplying a
+     * context is how a caller that intends to commit gets one without a second,
+     * separately timed determination.
      *
      * This is still not where a plaintext report belongs: out_plaintext stays a
      * separate out-parameter because a field on the context would be filled and

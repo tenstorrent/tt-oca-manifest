@@ -9,6 +9,8 @@ programmatic surface (generate_images) and the CLI surface (pack_images).
 
 from __future__ import annotations
 
+import functools
+
 import pytest
 
 from tt_boot_manifest import pack_images
@@ -19,6 +21,15 @@ from tt_boot_manifest.oca import entry as oca_entry
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
+
+
+def _record_call(captured, config, output_path=None, verbose=False):
+    """Stand-in for a packer entry point. Returns a sentinel where the real one
+    returns bundle bytes and may write to disk."""
+    captured["config"] = config
+    captured["output_path"] = output_path
+    captured["verbose"] = verbose
+    return b"\x00"
 
 
 def _oca_minimal_config():
@@ -88,15 +99,8 @@ def test_oca_bundle_formats_dispatch_to_oca_entry(monkeypatch, fmt):
     cfg["manifest_format"] = fmt
     captured = {}
 
-    def fake_entry(config, output_path=None, verbose=False):
-        captured["config"] = config
-        captured["output_path"] = output_path
-        captured["verbose"] = verbose
-        # Mimic a successful run by returning a sentinel; the real entry
-        # returns bundle bytes / writes to disk.
-        return b"\x00"
-
-    monkeypatch.setattr(oca_entry, "pack_oca_bundle", fake_entry)
+    monkeypatch.setattr(oca_entry, "pack_oca_bundle",
+                        functools.partial(_record_call, captured))
 
     pack_images.generate_images(cfg)
 
@@ -112,11 +116,8 @@ def test_oca_combined_dispatches_to_combined(monkeypatch):
     cfg["manifest_format"] = "oca-combined"
     captured = {}
 
-    def fake_combined(config, output_path=None, verbose=False):
-        captured["config"] = config
-        return b"\x00"
-
-    monkeypatch.setattr(oca_combined, "pack_combined_image", fake_combined)
+    monkeypatch.setattr(oca_combined, "pack_combined_image",
+                        functools.partial(_record_call, captured))
 
     pack_images.generate_images(cfg)
 

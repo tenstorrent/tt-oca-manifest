@@ -399,9 +399,8 @@ def test_image_count_zero_rejected(tmp_path):
 def test_zero_length_image_rejected(tmp_path):
     """An empty image file is refused rather than packed into an empty entry.
 
-    The Consumer rejects a zero _length_ outright, so emitting one would produce
-    a bundle no validator accepts. It is also the entry that authenticates
-    nothing: its hash would be the digest of the empty string.
+    The Consumer rejects a zero _length_, so emitting one would produce a bundle
+    no validator accepts.
     """
     cfg = _multi_image_config(tmp_path, [("empty", b"")])
     with pytest.raises(OcaConfigError) as exc:

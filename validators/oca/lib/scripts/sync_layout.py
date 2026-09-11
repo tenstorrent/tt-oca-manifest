@@ -210,15 +210,15 @@ def parse_c_header(path: Path) -> dict[str, int]:
 def load_python_constants() -> dict[str, int]:
     """Import the packer's constants module and return its symbol table."""
     try:
-        from tt_boot_manifest.oca import constants as C  # noqa: WPS433
+        from tt_boot_manifest.oca import constants as oca_consts  # noqa: WPS433
     except ImportError as exc:  # pragma: no cover - environment issue
         print(f"sync_layout: cannot import tt_boot_manifest.oca.constants: {exc}",
               file=sys.stderr)
         print("Hint: install the project with `pip install -e .` first.",
               file=sys.stderr)
         raise SystemExit(2)
-    return {name: int(getattr(C, name)) for _, (name, _) in MAPPING.items()
-            if hasattr(C, name)}
+    return {name: int(getattr(oca_consts, name)) for _, (name, _) in MAPPING.items()
+            if hasattr(oca_consts, name)}
 
 
 def find_unmapped_python_constants() -> list[str]:
@@ -226,14 +226,14 @@ def find_unmapped_python_constants() -> list[str]:
     C side should know about but doesn't (no entry in MAPPING and not on
     the not-required allowlist). Empty list = completeness OK."""
     try:
-        from tt_boot_manifest.oca import constants as C  # noqa: WPS433
+        from tt_boot_manifest.oca import constants as oca_consts  # noqa: WPS433
     except ImportError:
         return []  # the drift check will catch the import failure
 
     mapped_py_names = {py_name for _, (py_name, _) in MAPPING.items()}
 
     unmapped: list[str] = []
-    for name in dir(C):
+    for name in dir(oca_consts):
         if not (name.startswith("OFF_") or name.startswith("LEN_")):
             continue
         if name in mapped_py_names:
@@ -243,7 +243,7 @@ def find_unmapped_python_constants() -> list[str]:
         if any(name.startswith(p) for p in NOT_REQUIRED_PREFIXES):
             continue
         # constants module also stores derived collections; only flag ints
-        value = getattr(C, name, None)
+        value = getattr(oca_consts, name, None)
         if not isinstance(value, int):
             continue
         unmapped.append(name)

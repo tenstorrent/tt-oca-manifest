@@ -38,9 +38,8 @@ from .validators import OcaLayoutError
 # ---------------------------------------------------------------------------
 # Layout guards
 #
-# These replace the bare `assert`s this module used to carry. `python -O`
-# strips asserts, which would leave the byte-layout of a *signed* manifest
-# unchecked at exactly the moment it matters. See OcaLayoutError.
+# `python -O` strips `assert`, which would leave the byte layout of a *signed*
+# manifest unchecked at exactly the moment it matters. See OcaLayoutError.
 # ---------------------------------------------------------------------------
 
 
