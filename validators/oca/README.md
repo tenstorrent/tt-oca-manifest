@@ -120,7 +120,7 @@ Expected `make check` output (tail) — every unit test + every fixture
 round-trip passes:
 
 ```
-127/127 passed
+245/245 passed
 PASS: all_constraints
 PASS: basic
 PASS: control_plane
@@ -131,7 +131,10 @@ PASS: pqc_basic
 PASS: pqc_secure_rsa
 PASS: secure_ecdsa
 PASS: secure_rsa
-10/10 passed
+PASS: secure_rsa_der
+PASS: secure_rsa_e3
+PASS: secure_rsa_e3_der
+13/13 passed
 check: complete
 ```
 
