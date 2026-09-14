@@ -27,9 +27,9 @@ from __future__ import annotations
 from collections import namedtuple
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa, utils as _ec_utils
+from cryptography.hazmat.primitives.asymmetric import ec, rsa, utils as ec_utils
 
-from .. import manifest_signing as _ms
+from .. import manifest_signing
 from ..pack_images_constants import ManifestSignatureType
 from . import constants as oca_consts
 from .validators import OcaConfigError
@@ -89,7 +89,7 @@ def build_signing_key(config: dict):
         "manifest_identifier": _NON_BL1_MANIFEST_IDENTIFIER,
     }
     try:
-        return _ms.prepare_signing_key(adapter, secure_boot=1)
+        return manifest_signing.prepare_signing_key(adapter, secure_boot=1)
     except FileNotFoundError as e:
         raise OcaConfigError(
             f"signing_key_file not found: {e}",
@@ -317,7 +317,7 @@ def _signature_raw(signing_key, der_or_rsa_bytes: bytes) -> bytes:
             )
         return der_or_rsa_bytes
     if isinstance(pk, ec.EllipticCurvePublicKey):
-        r, s = _ec_utils.decode_dss_signature(der_or_rsa_bytes)
+        r, s = ec_utils.decode_dss_signature(der_or_rsa_bytes)
         return (r.to_bytes(_EC_P256_COORD_BYTES, "big")
                 + s.to_bytes(_EC_P256_COORD_BYTES, "big"))
     raise OcaConfigError(

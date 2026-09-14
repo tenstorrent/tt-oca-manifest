@@ -13,10 +13,27 @@ from .utils import int_to_bytes_be, check
 
 logger = logging.getLogger(__name__)
 
-class SigningError(Exception): ...
+class SigningError(Exception):
+    """A signing or verification operation failed."""
 
 class SigningKey(ABC):
+    """One signing authority, built from a manifest config.
+
+    Holds the key and signature parameters the manifest declares, and the
+    signature bytes in the fixed-width form the manifest carries. Subclasses
+    supply sign_data() and verify_signature() for local keys, AWS KMS, or an HSM.
+    """
+
     def __init__(self, manifest, secure_boot):
+        """Read the signing parameters out of `manifest`.
+
+        With secure boot off the key is forced to NO_SIGNATURE, so a
+        non-secure bundle can never carry signature bytes. With secure boot on
+        and an unsupported signature type, `check()` raises — unless checks are
+        globally disabled, in which case it returns True and the key degrades to
+        an unsigned one, which is how deliberately malformed test bundles are
+        built.
+        """
         self.name = manifest['signing_key_name']
         self.signature_type = manifest['signature_type']
         self.signing_authority = manifest['signing_authority']
@@ -27,7 +44,7 @@ class SigningKey(ABC):
         self.signature = None
         self.signature_bytes = b''
         self.signature_verified = False
-        self.hash_func = hashes.SHA256  # as of right now all signatures use SHA-256 as the digest function
+        self.hash_func = hashes.SHA256  # every supported signature type digests with SHA-256
         self.min_pub_key_size = 0
         self.min_signature_size = 0
         self.secure_boot = secure_boot
@@ -47,6 +64,8 @@ class SigningKey(ABC):
             self.no_signature = True
 
     def validate_signature_size(self):
+        """Raise unless the signature fits the manifest's fixed signature field
+        and is at least the size the configured algorithm produces."""
         # the signature bytes to be written into a manifest can never be larger than the designated size of the signature manifest field
         max_sz = SIGNATURE_FIELD_SIZE
         if len(self.signature_bytes) > max_sz or len(self.signature_bytes) < self.min_signature_size:
@@ -54,12 +73,20 @@ class SigningKey(ABC):
                             Max size for type {self.signature_type} is {max_sz}, min size is {self.min_signature_size}.")
 
     def validate_public_key_size(self):
+        """Raise unless the public key fits the manifest's fixed key field and is
+        at least the size the configured algorithm requires."""
         max_sz = PUBLIC_KEY_FIELD_SIZE
         if len(self.public_key_bytes) > max_sz or len(self.public_key_bytes) < self.min_pub_key_size:
             raise ValueError(f"Invalid public key length: {len(self.public_key_bytes)}. \
                             Max size for type {self.signature_type} is {max_sz}, min size is {self.min_pub_key_size}.")
 
     def generate_verified_signature(self, data) -> bytes:
+        """Sign `data`, then verify the result before returning it.
+
+        A signature that will not verify against its own public key is a
+        SigningError here rather than a manifest the boot ROM rejects in the
+        field. Returns empty bytes for a key configured not to sign.
+        """
         # For test cases where secure boot is enabled but signature verification is disable; use this path
         if self.no_signature:
             self.signature_bytes = b''
@@ -74,21 +101,23 @@ class SigningKey(ABC):
             raise SigningError(f'failed to generate signature for data using {self.name} private key via {self.signing_authority}: {e}')
 
     def digest_message(self, data):
+        """Hash `data` and cache it, for authorities that sign a digest rather
+        than the message itself."""
         hasher = hashes.Hash(self.hash_func())
         hasher.update(data)
         self.signature_digest = hasher.finalize()
 
     def add_signature(self, signature_value):
+        """Record a raw signature and re-encode it the way the manifest carries
+        it: RSA zero-padded to the field width, ECDSA decoded from DER to a
+        fixed-width r || s."""
         self.signature = signature_value
         if self.signature_type == ManifestSignatureType.RSA_3072.value:
             # Pad out the provided signature value to the maximum size of 384 bytes for insertion into manifests)
             self.signature_bytes = self.signature.rjust(SIGNATURE_FIELD_SIZE, b'\x00')
         elif self.signature_type == ManifestSignatureType.ECC_P_256.value:
-            # ECDSA Signatures are returned in DER-encoded format specified in RFC 3279
-            # The signature needs to be decoded into r/s values it can be padded for in
-            # Decode the DER-encoded signature to obtain r and s values
+            # Manifests carry r||s fixed-width; the library returns RFC 3279 DER.
             r, s = utils.decode_dss_signature(self.signature)
-            # Convert r and s to bytes and concatenate them
             r_bytes = r.to_bytes(EC_256_KEY_SZ_BYTES, byteorder='big')
             s_bytes = s.to_bytes(EC_256_KEY_SZ_BYTES, byteorder='big')
             self.signature_bytes = r_bytes + s_bytes
@@ -128,14 +157,19 @@ class SigningKey(ABC):
 ################ Non-secure boot empty key object #####################
 #######################################################################
 class NoSigningKey(SigningKey):
+    """The authority used when secure boot is off: signs nothing, and reports
+    verification as passed so the unsigned path runs to completion."""
+
     def __init__(self, manifest, secure_boot):
         super().__init__(manifest, secure_boot)
 
     def sign_data(self, data: bytes):
+        """Return an empty signature."""
         logger.debug(f'passing through signing method and returning empty signature')
         return bytearray()
 
     def verify_signature(self, data: bytes):
+        """Report success without checking anything."""
         logger.debug(f'passing through verification method and signature check was successful')
         self.signature_verified = True
         return self.signature_verified
@@ -145,17 +179,25 @@ class NoSigningKey(SigningKey):
 ################ Local Key File Management and Signing ################
 #######################################################################
 class LocalKey(SigningKey):
+    """Signing backed by a PEM private key file on the build host.
+
+    A development affordance: the key is readable by every process on the host
+    and by whatever the build system logs, so production manifests are expected
+    to sign through `aws` or `hsm`.
+    """
+
     def __init__(self, manifest, secure_boot):
+        """Load the PEM key named by `signing_key_file` and derive the manifest's
+        public-key bytes, rejecting a key that does not match the configured
+        signature type."""
         super().__init__(manifest, secure_boot)
 
         if self.signature_type == ManifestSignatureType.NO_SIGNATURE.value:
             return
 
-        # Local private key loading
         with open(os.path.expandvars(manifest['signing_key_file']), "rb") as key_file:
             self.private_key = serialization.load_pem_private_key(key_file.read(), password=None)
 
-        # Populate the cryptography compatible PublicKey object and the manifest friendly byes representation
         self.public_key = self.private_key.public_key()
         if self.signature_type == ManifestSignatureType.RSA_3072.value:
             check_rsa_private_key(self.private_key)
@@ -166,11 +208,10 @@ class LocalKey(SigningKey):
 
 
     def sign_data(self, data):
-        """Generate signature for appropriate """
+        """Sign `data` with the loaded private key using the configured primitive."""
         logger.debug(f'sig generation for data len {len(data)} with key {self.name}')
         if self.signature_type == ManifestSignatureType.ECC_P_256.value and\
             isinstance(self.private_key, ec.EllipticCurvePrivateKey):
-            # ECDSA signature
             ecdsa_signature = self.private_key.sign(
                 data,
                 ec.ECDSA(self.hash_func(), deterministic_signing=True)
@@ -180,14 +221,11 @@ class LocalKey(SigningKey):
 
         if self.signature_type == ManifestSignatureType.RSA_3072.value and\
                 isinstance(self.private_key, rsa.RSAPrivateKey):
-            # RSA signature
             signature_result = self.private_key.sign(
                 data,
                 padding.PKCS1v15(),
                 self.hash_func()
             )
-            # Ensure the signature is the same size as the RSA modulus (in bytes)
-            # use rjust to pad with zeroes if necessary since the signature is big-endian
             self.add_signature(signature_result)
             return self.signature_bytes
 
@@ -197,7 +235,7 @@ class LocalKey(SigningKey):
         raise ValueError(f"Unsupported signature type {self.signature_type} private key {self.private_key.__class__}")
 
     def verify_signature(self, data):
-        """signature check against  for appropriate signing primitive"""
+        """Verify the stored signature against `data` with the matching public key."""
         logger.debug(f'sig verification for data len {len(data)} with key {self.name}')
         if self.signature_type == ManifestSignatureType.ECC_P_256.value and\
             isinstance(self.public_key, ec.EllipticCurvePublicKey):
@@ -253,6 +291,12 @@ def aws_credentials_verify():
 
 
 class AWSKey(SigningKey):
+    """Signing delegated to AWS KMS: the private key never reaches this host.
+
+    Only the public key is fetched; signing and verification are KMS calls over
+    the message digest. Requires the `aws` extra and valid credentials.
+    """
+
     def __init__(self, manifest, secure_boot):
         '''Init function for AWS KMS signing key key object'''
         super().__init__(manifest, secure_boot)
@@ -261,13 +305,12 @@ class AWSKey(SigningKey):
         except ImportError:
             raise SigningError("boto3 is required for AWS KMS signing. Install it with: pip install tt-oca-manifest[aws]")
 
-        # Before we attempt to load any key material, check the available AWS credentials are valid
-        # Make sure to run `eval $(python3 aws_sso_emulation_secure.py)` to setup your AWS credentials
-        # on this host if you are working with this code manually
+        # Credentials are checked before any key material is read, so an expired
+        # session fails here rather than inside a signing call. Refresh with the
+        # `aws-sso` console script.
         client = boto3.client('kms')
         aws_credentials_verify()
 
-        # Read the public key
         try:
             response = client.get_public_key(
                 KeyId=self.keyID
@@ -275,7 +318,6 @@ class AWSKey(SigningKey):
         except Exception as e:
             raise SigningError(f'unable to read public key for {self.name}({self.keyID}) - check credentials or key permission: {e}')
 
-        # Create a working public key object from the public response
         self.public_key = serialization.load_der_public_key(response['PublicKey'], backend=default_backend)
         if self.signature_type == ManifestSignatureType.RSA_3072.value:
             check_rsa_public_key(self.public_key)
@@ -320,20 +362,14 @@ class AWSKey(SigningKey):
 
         logger.debug(f'AWS KMS sig generation for data len {len(data)} with key {self.name}')
         if self.signature_digest == b'':
-            # if no digest of the message has already been generated, calculate it now
             self.digest_message(data)
         logger.debug(f'digest of message to be signed: {self.signature_digest}')
 
-        # Make AWS KMS signing request
         client = boto3.client('kms')
         response = client.sign(
-            # The asymmetric KMS key to be used to generate the digital signature. This example uses an alias of the KMS key.
             KeyId=self.keyID,
-            # Message to be signed. Use Base-64 for the CLI.
             Message=self.signature_digest,
-            # Indicates whether the message is RAW or a DIGEST.
             MessageType='DIGEST',
-            # The requested signing algorithm. This must be an algorithm that the KMS key supports.
             SigningAlgorithm=self.signing_algorithm,
         )
         logger.debug(f'signing request for key {response["KeyId"]} returned {response["ResponseMetadata"]}')
@@ -347,6 +383,7 @@ class AWSKey(SigningKey):
 
 
     def verify_signature(self, data):
+        """Ask KMS to verify the stored signature over the cached digest."""
         if self.signature_digest == b'':
             # if no digest of the message has already been generated, calculate it now
             self.digest_message(data)
@@ -358,7 +395,6 @@ class AWSKey(SigningKey):
         except ImportError:
             raise SigningError("boto3 is required for AWS KMS signing. Install it with: pip install tt-oca-manifest[aws]")
 
-        # Make AWS KMS signature verification request
         client = boto3.client('kms')
         response = client.verify(
             KeyId=self.keyID,
@@ -379,43 +415,41 @@ class AWSKey(SigningKey):
 ################## Internal HSM Management and Signing ################
 #######################################################################
 class HSMKey(SigningKey):
+    """Reserved slot for HSM-backed signing. Every operation refuses: a partial
+    implementation must not ship."""
+
     def __init__(self, manifest, secure_boot):
         super().__init__(manifest, secure_boot)
 
     def sign_data(self, data):
+        """Always raises: HSM signing is not implemented."""
         raise SigningError("HSM Signing Not Yet Supported")
 
     def verify_signature(self, data):
+        """Always raises: HSM verification is not implemented."""
         raise SigningError("HSM Signing Not Yet Supported")
 
 
 
 def prepare_signing_key(manifest: dict, secure_boot: int) -> SigningKey:
-    """
-    This is our factory function for building the correct signing key object based on the
-    signing authority specified in the manifest YAML. The signing authority is were
+    """Build the signing key named by the manifest's `signing_authority`.
+
+    Returns a NoSigningKey when secure boot is off. Otherwise rejects a
+    signature type this packer does not support, and refuses anything but
+    RSA-3072 for a 'TBL1' manifest, before constructing the authority's key.
     """
 
-    # If secure boot is not used, return an empty key object
     if secure_boot != 1:
         return NoSigningKey(manifest, secure_boot)
 
-    #### Secure boot is enabled - select the appropriate signing key oracle ####
-    # We use a dictionary to map the input strings to the class constructors.
-    # Note that we are storing the classes themselves, not instances of them.
     key_authority_mapping = {
         "local": LocalKey,
         "aws": AWSKey,
         "hsm": HSMKey,
     }
 
-    ####################
-    # Check for restrictions on signing configuration
-    # before assembling the key object
-    ####################
     sig_type = manifest['signature_type']
     manifest_identifier = manifest['manifest_identifier']
-    # Check for valid signature types
     check(sig_type in [ManifestSignatureType.ECC_P_256.value, ManifestSignatureType.RSA_3072.value],
         f'invalid signature type {sig_type} for secure boot being enabled')
     # BL0 only support RSA signatures for secure boot authentication
@@ -424,39 +458,39 @@ def prepare_signing_key(manifest: dict, secure_boot: int) -> SigningKey:
         check(sig_type == ManifestSignatureType.RSA_3072.value,
             f'BL1 manifest signing is only allowed to use RSA-3072 signatures - signature type requested: {sig_type}')
 
-    # Look up the class in our mapping. The .get() method is used to
-    # safely retrieve the value, returning None if the key doesn't exist.
     signing_authority = manifest["signing_authority"]
     signing_class = key_authority_mapping.get(signing_authority)
 
-    # If a class was found in our mapping, instantiate it and return it.
     if signing_class:
-        # The () calls the constructor (e.g., SubclassX())
         return signing_class(manifest, secure_boot)
     else:
-        # If the key was not found, raise a ValueError exception.
         raise ValueError(f"Unknown object type: '{signing_authority}'. Valid types are 'local', 'aws', 'hsm'.")
 
 
 def check_rsa_private_key(key, expected_size=RSA_3072_KEY_SZ_BITS):
+    """Raise unless `key` is an RSA private key of `expected_size` bits."""
     check(isinstance(key, rsa.RSAPrivateKey), f"Key {key} is not an RSA private key")
     check(key.key_size == expected_size, f"RSA key size {key.key_size} is not {expected_size} bits")
 
 def check_ec_private_key(key, expected_curve=ec.SECP256R1):
+    """Raise unless `key` is an EC private key on `expected_curve`."""
     check(isinstance(key, ec.EllipticCurvePrivateKey), f"Key {key.__class__} is not an EC private key")
     check(isinstance(key.curve, expected_curve), f"EC key {key.curve} is not using the {expected_curve.name}")
 
 def check_rsa_public_key(key, expected_size=RSA_3072_KEY_SZ_BITS):
+    """Raise unless `key` is an RSA public key of `expected_size` bits."""
     check(isinstance(key, rsa.RSAPublicKey), f"Key {key} is not an RSA public key")
     check(key.key_size == expected_size, f"RSA key size {key.key_size} is not {expected_size} bits")
 
 def check_ec_public_key(key, expected_curve=ec.SECP256R1):
+    """Raise unless `key` is an EC public key on `expected_curve`."""
     check(isinstance(key, ec.EllipticCurvePublicKey), f"Key {key.__class__} is not an EC public key")
     check(isinstance(key.curve, expected_curve), f"EC key {key.curve} is not using the {expected_curve.name}")
 
 def get_ec_public_key_bytes(ec_private_key):
+    """Return the manifest encoding of an EC public key: X || Y, each big-endian
+    and padded to the curve's field width."""
     check_ec_private_key(ec_private_key)
-    # Extract the X and Y coordinates of the ECDSA public key
     ec_public_key = ec_private_key.public_key()
     ec_x = ec_public_key.public_numbers().x
     ec_y = ec_public_key.public_numbers().y
@@ -468,8 +502,9 @@ def get_ec_public_key_bytes(ec_private_key):
     return ec_x_bytes + ec_y_bytes
 
 def get_rsa_public_key_bytes(rsa_private_key):
+    """Return the manifest encoding of an RSA public key: the modulus,
+    big-endian and padded to the key width."""
     check_rsa_private_key(rsa_private_key)
-    # Extract the modulus of the RSA public key
     rsa_public_key = rsa_private_key.public_key()
     rsa_modulus = rsa_public_key.public_numbers().n
     rsa_modulus_bytes = int_to_bytes_be(rsa_modulus, RSA_3072_KEY_SZ_BYTES)

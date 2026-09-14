@@ -35,8 +35,8 @@ from cryptography.hazmat.primitives import hashes, hmac
 from . import constants as oca_consts
 from .constants import OcaEncryptionType
 from .validators import OcaConfigError, OcaLayoutError
-from .. import aes128cbc as _aes128
-from .. import aes256cbc as _aes256
+from .. import aes128cbc
+from .. import aes256cbc
 
 
 # ---------------------------------------------------------------------------
@@ -139,14 +139,14 @@ def derive_payload_key(secret: bytes, kdf_input: bytes, encryption_type: int) ->
 
 def _aes_cbc_encrypt(key: bytes, iv: bytes, plaintext: bytes) -> bytes:
     if len(key) == oca_consts.KDF_BLOCK_HEADER_SIZE:  # 32 -> AES-256
-        return _aes256.aes256cbc_encrypt(key, iv, plaintext)
-    return _aes128.aes128cbc_encrypt(key, iv, plaintext)
+        return aes256cbc.aes256cbc_encrypt(key, iv, plaintext)
+    return aes128cbc.aes128cbc_encrypt(key, iv, plaintext)
 
 
 def _aes_cbc_decrypt(key: bytes, iv: bytes, ciphertext: bytes) -> bytes:
     if len(key) == oca_consts.KDF_BLOCK_HEADER_SIZE:  # 32 -> AES-256
-        return _aes256.aes256cbc_decrypt(key, iv, ciphertext)
-    return _aes128.aes128cbc_decrypt(key, iv, ciphertext)
+        return aes256cbc.aes256cbc_decrypt(key, iv, ciphertext)
+    return aes128cbc.aes128cbc_decrypt(key, iv, ciphertext)
 
 
 def encrypt_payload(plaintext: bytes, secret: bytes, kdf_input: bytes, iv: bytes,

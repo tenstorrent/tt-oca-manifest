@@ -347,14 +347,14 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
     # dedicated decoder module. The decoder produces every key the manifest
     # builder reads (identity bytes, lifecycle states, version-range bytes,
     # demotion_control, selector_bits) from either ergonomic or raw inputs.
-    from . import usage_constraints as _uc
-    out.update(_uc.decode(config.get("usage_constraints") or {}, secure_boot=sb))
+    from . import usage_constraints
+    out.update(usage_constraints.decode(config.get("usage_constraints") or {}, secure_boot=sb))
 
     # timestamp — explicit int from config, or current wall-clock seconds.
     ts = config.get("timestamp")
     if ts is None:
-        import time as _time
-        ts = int(_time.time())
+        import time
+        ts = int(time.time())
     else:
         ts = int(ts)
     out["timestamp"] = ts

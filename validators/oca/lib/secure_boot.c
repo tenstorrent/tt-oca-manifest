@@ -80,9 +80,9 @@ static oca_secure_bool_t secure_boot_decide(const uint8_t *body,
      *    turns verification off here; a corrupted, uninitialized, or
      *    `return 1;`-style answer lands on ENFORCED. That is the same fail-safe
      *    the `else` below applies to an absent reporter, extended to a reporter
-     *    that answered unintelligibly — the two cases deserve the same treatment
-     *    and used to get different ones, because in a `bool` every nonzero byte
-     *    was a confident "yes".
+     *    that answered unintelligibly — the two cases deserve the same
+     *    treatment, which a plain `bool` cannot give: there every nonzero byte
+     *    is a confident "yes".
      *
      *    This is the MIRROR of the normalization in
      *    oca_secure_boot_device_disabled(), and deliberately so: there an

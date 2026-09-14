@@ -153,13 +153,8 @@ static oca_result_t validate_toc_structure(
         if ((off_i % 8u) != 0u) {                       /* offset multiple of 8 */
             return OCA_FAIL_PAYLOAD_TOC;
         }
-        /* A zero-length entry describes no image. Its hash is the digest of the
-         * empty string, so it authenticates nothing; entry_point < length can
-         * never hold, so it can never be legally launched; and it satisfies the
-         * bound and the overlap scan trivially. A Consumer that selects an image
-         * by type and then loads `length` bytes would copy nothing and hand off
-         * to whatever already occupied load_addr. Rejected here so no Consumer
-         * has to carry that guard itself. */
+        /* Nothing else rejects an empty entry: it is in bounds and overlaps
+         * nothing, yet authenticates nothing and can never be launched. */
         if (len_i == 0u) {
             return OCA_FAIL_PAYLOAD_TOC;
         }
@@ -1026,11 +1021,7 @@ oca_result_t oca_toc_image_at(const uint8_t *payload, size_t payload_length,
     /* Same per-entry rules as validate_toc_structure: 8-byte aligned offset,
      * non-zero length, and [off, off+len) inside the payload without
      * overflowing. Re-checked here so this function is safe on any buffer, not
-     * only one that already went through oca_check_payload -- which is exactly
-     * the caller the zero-length rule exists for: this function hands back
-     * `bytes` and `length` for a Consumer to load and launch, so a zero-length
-     * entry that reached it would copy nothing and leave load_addr holding
-     * whatever was there before. */
+     * only one that already went through oca_check_payload. */
     if ((off % 8u) != 0u) {
         return OCA_FAIL_PAYLOAD_TOC;
     }

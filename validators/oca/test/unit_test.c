@@ -591,8 +591,8 @@ static oca_secure_bool_t sb_active_cb(void)   { return OCA_SECURE_TRUE; }
 /*                                                                    */
 /* The determination has three inputs plus a default, and seven distinct
  * combinations. */
-/* All seven are enumerated below: rows 1-5 must be unchanged from    */
-/* before this input existed, rows 6-7 are the new behaviour.         */
+/* All seven are enumerated below: rows 1-5 are decided without       */
+/* the device-disable input, rows 6-7 by it.                          */
 /*                                                                    */
 /* Counting reporters are used wherever the property is about WHICH   */
 /* input was consulted rather than what came back — a verdict alone   */
@@ -823,9 +823,8 @@ TEST(test_secure_boot_invariant_still_reads_the_raw_manifest_bit)
     ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_OK);
 }
 
-/* Composite callback table for full-pipeline tests. The per-callback forwarding
- * wrappers this used to need are gone: every stub reads the one fixture, so the
- * stubs themselves go straight into the table.
+/* Composite callback table for full-pipeline tests. Every stub reads the one
+ * fixture, so the stubs go straight into the table with no forwarding wrappers.
  *
  * Marks all three readbacks available, because this helper stands for a device
  * that answers. Values stay zero unless the case sets them, so "the hardware
@@ -1415,10 +1414,9 @@ static void build_plaintext_toc(void)
     memset(g_fx.plaintext_toc, 0, sizeof g_fx.plaintext_toc);
     memcpy(g_fx.plaintext_toc, "PTOC", 4);
     g_fx.plaintext_toc[OCA_TOC_OFF_IMAGE_COUNT] = 1u;
-    /* One image at [0, 8): an entry's length may not be zero. The range lands on
-     * the TOC's own bytes, which the structural rules bound and de-overlap but
-     * do not reserve, so the buffer stays a bare TOC. The stub sha256 digests
-     * every input to all-zero, so the entry's zeroed hash field still matches. */
+    /* Length may not be zero. The range lands on the TOC's own bytes, which the
+     * structural rules bound and de-overlap but do not reserve; the stub sha256
+     * digests everything to all-zero, so the zeroed hash field still matches. */
     toc_put_u64(g_fx.plaintext_toc + OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_OFF_LENGTH,
                 8u);
 }
@@ -1637,9 +1635,9 @@ TEST(test_payload_decrypt_failure)
 /* Everything the callback reads arrives in one read-only descriptor.  */
 /* The two fields worth testing specifically are the cipher identity  */
 /* and the provisioned-secret selector: both are manifest fields the  */
-/* validator already holds, and neither used to be passed, so a       */
-/* callback could not select a cipher or find its key without being   */
-/* handed state from somewhere else.                                  */
+/* validator already holds, and passing them is what lets a callback  */
+/* select a cipher and find its key without being handed state from   */
+/* somewhere else.                                                    */
 /* ------------------------------------------------------------------ */
 
 /* What the descriptor carried, captured for the assertions below. */
@@ -1872,9 +1870,8 @@ TEST(test_payload_toc_entry_offset_misaligned)
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_FAIL_PAYLOAD_TOC);
 }
 
-/* A zero-length entry passes every other structural rule -- it is in bounds and
- * overlaps nothing -- so this is the only check standing between a Consumer and
- * an entry that describes no image at all. */
+/* An empty entry is in bounds and overlaps nothing, so this rule is the only
+ * one that rejects it. */
 TEST(test_payload_toc_entry_zero_length)
 {
     uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE];
@@ -1970,12 +1967,12 @@ TEST(test_payload_toc_entry_hash_padding_ignored)
 /* ------------------------------------------------------------------ */
 /* Cleartext payload stage                                            */
 /*                                                                    */
-/* A non-encrypted payload used to skip validation entirely. These     */
-/* tests exercise it in place: payload_hash over the TOC region, the   */
-/* payload_hashed_length / payload_length agreement rules, structural  */
-/* validation, the chain, and the per-entry hashes. The stub sha256    */
-/* digests everything to all-zero, so a zero-filled manifest hash      */
-/* field matches and each test isolates one rule.                     */
+/* A non-encrypted payload is validated in place: payload_hash over   */
+/* the TOC region, the payload_hashed_length / payload_length         */
+/* agreement rules, structural validation, the chain, and the         */
+/* per-entry hashes. The stub sha256 digests everything to all-zero,  */
+/* so a zero-filled manifest hash field matches and each test         */
+/* isolates one rule.                                                 */
 /* ------------------------------------------------------------------ */
 
 #define CLEAR_TOC_BYTES  (OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE)   /* 308 */
@@ -2019,11 +2016,10 @@ TEST(test_cleartext_payload_happy_path)
 /* The validated-plaintext report                                     */
 /*                                                                    */
 /* The validator holds the plaintext location while it checks the     */
-/* payload and used to drop it on return, which left the decryption   */
-/* callback as the only place a Consumer could capture it. It reports */
-/* the location instead — but only once every plaintext check has     */
-/* passed, so a caller can never act on bytes the validator had not   */
-/* finished verifying.                                                */
+/* payload and reports it on return, so a Consumer need not capture   */
+/* it from inside the decryption callback. The report lands only once */
+/* every plaintext check has passed, so a caller can never act on     */
+/* bytes the validator had not finished verifying.                    */
 /* ------------------------------------------------------------------ */
 
 TEST(test_encrypted_plaintext_reported_after_success)
@@ -2374,10 +2370,10 @@ TEST(test_check_payload_rejects_short_buffer_without_reading_past_it)
 {
     /* oca_check_payload is part of the composable API and takes a length, so it
      * may be called on its own — without oca_validate() having bounded the
-     * buffer first. It used to read payload_encryption_control (offset 200) and
-     * payload_length (offset 2933) BEFORE checking the length, so a short buffer
-     * read out of bounds. Sweep sizes across those offsets: every one short of a
-     * full body must return TRUNCATED, never OCA_OK. */
+     * buffer first. It reads payload_encryption_control (offset 200) and
+     * payload_length (offset 2933), so the length check has to come first or a
+     * short buffer reads out of bounds. Sweep sizes across those offsets: every
+     * one short of a full body must return TRUNCATED, never OCA_OK. */
     static const size_t short_lengths[] = {
         4u, 8u, 64u, 199u, 200u, 201u, 512u, 2932u, 2933u, 2940u,
         OCA_CLASSIC_BODY_SIZE - 1u,
@@ -2602,10 +2598,8 @@ TEST(test_toc_image_at_rejects_structurally_invalid_entry)
     ASSERT_EQ_INT(oca_toc_image_at(pt, sizeof pt, 0u, &img),
                   OCA_FAIL_PAYLOAD_TOC);
 
-    /* This accessor is the one a Consumer reaches for to pick an image out of a
-     * payload it has not run oca_check_payload over, so it owes the zero-length
-     * rule directly: returning bytes/length for an empty entry is what leaves a
-     * caller loading nothing and launching whatever preceded it. */
+    /* This accessor hands bytes/length to a Consumer that has not run
+     * oca_check_payload, so it owes the rule directly. */
     memset(pt, 0, sizeof pt);
     toc_set_header(pt, 1u);
     toc_set_entry(pt, 0u, good_off, 0u);                /* zero length */
@@ -2756,7 +2750,7 @@ TEST(test_decrypt_in_place_leaves_manifest_body_untouched)
 TEST(test_toc_accessors_work_on_in_place_plaintext)
 {
     /* The whole boot-ROM flow on one buffer: validate, then read the TOC out of
-     * the region the ciphertext used to occupy. */
+     * the buffer the ciphertext was decrypted into. */
     uint8_t buf[OCA_CLASSIC_BODY_SIZE + INPLACE_CT_LEN];
     uint8_t ph[32]; memset(ph, 0x5A, 32);
     build_inplace_bundle(buf, ph);
@@ -2808,9 +2802,8 @@ static void cap_toc_init(uint64_t image_count)
     memset(g_fx.cap_toc, 0, sizeof g_fx.cap_toc);
     toc_set_header(g_fx.cap_toc, image_count);
     toc_put_u64(g_fx.cap_toc + OCA_TOC_OFF_PAYLOAD_LENGTH, sizeof g_fx.cap_toc);
-    /* Every entry gets a distinct 8-byte range: non-zero length, 8-byte aligned
-     * offset, in bounds, and disjoint from every other entry, so nothing but the
-     * cap can be the reason for a rejection. */
+    /* Distinct 8-byte ranges: non-zero, aligned, in bounds and disjoint, so
+     * nothing but the cap can be the reason for a rejection. */
     for (uint64_t i = 0u; i < image_count; ++i) {
         toc_set_entry(g_fx.cap_toc, i, i * 8u, 8u);
     }
@@ -3196,8 +3189,8 @@ TEST(test_locate_payload_rejects_payload_before_manifest_that_overruns_it)
 TEST(test_locate_payload_rejects_collision_with_appended_entries)
 {
     /* With a verifier key entry appended, the manifest's footprint grows by
-     * 2048 B — and a payload that used to clear the body no longer does. This
-     * is the bound that keeps working when the entries land. */
+     * 2048 B, so a payload that clears the bare body no longer clears the
+     * manifest. This is the bound that keeps working when the entries land. */
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     oca_storage_bounds_t bounds;
     int64_t addr = 0; size_t span = 0u;
@@ -4188,8 +4181,7 @@ TEST(test_authorization_is_a_noop_when_secure_boot_is_off)
  * manifest carrying both a rollback violation and an invalid signature reports
  * the rollback, and the verifier is never reached.
  *
- * This inverts the order the library previously composed, and the inversion IS
- * the assertion — move oca_check_security_version() back after
+ * The ordering IS the assertion — move oca_check_security_version() after
  * oca_check_signature() and this fails. The callback count is what makes the
  * ordering observable at all: a result code alone cannot distinguish "rejected
  * before verifying" from "rejected after paying for a verification". */
