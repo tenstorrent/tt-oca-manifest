@@ -15,15 +15,21 @@ specification, the Python producer tooling, and the C consumer/validation librar
   renders it to PDF (see [Building the specification PDF](#building-the-specification-pdf)).
 - **Producer** — a Python package (`tt_boot_manifest`) that constructs, signs, and
   optionally encrypts OCA boot manifest bundles from YAML configuration files.
-- **Consumer** — a freestanding C validator library plus host CLI under
+- **Consumer** — a freestanding C parser and validator library plus host CLI under
   [validators/oca/](validators/oca/) that reads bundles back the same way the silicon's
   on-chip parser will.
 
-An OCA manifest is a fixed-layout body followed by a `PTOC`-prefixed payload
-table-of-contents, with two on-disk variants: `oca-classic` (magic `OCAC`) and
-`oca-pqc` (magic `OCAP`). The format provides robust anti-rollback and security
-controls, layout for co-signer and assigned-key (verifier-key) entries, and a
-managed path for the post-quantum transition.
+An OCA manifest is a fixed-sized format comprised of metadata describing
+security configuration, usage constraints and payload information. The manifest is
+followed by a `PTOC`-prefixed payload table-of-contents, with two on-disk variants: 
+
+- `oca-classic` (magic `OCAC`)
+- `oca-pqc` (magic `OCAP`)
+
+The combination of the manifest plus associated payload images is referred to a "bundle".
+The manifest format provides robust anti-rollback and security controls, layout for 
+co-signer and assigned-key (verifier-key) entries, and a managed path for the post-quantum 
+cryptography transition.
 
 Key features:
 - **Manifest-based packaging**: YAML config files define the bundle; `manifest_format` picks the variant
@@ -53,7 +59,7 @@ validator integration tests, which skip without it):
 - **OpenSSL 3** development headers, discovered via **pkg-config**
   (macOS: `brew install openssl@3`; Debian/Ubuntu: `apt install libssl-dev pkg-config`)
 - **doxygen**, for the documentation gate test, which skips without it. Any
-  current release works **except 1.9.8** — the version Ubuntu's apt currently
+  current release works **except 1.9.8** — the version Ubuntu 24.04 LTS currently
   packages — which falsely reports documented functions as undocumented
   ([doxygen/doxygen#11147](https://github.com/doxygen/doxygen/issues/11147),
   fixed in 1.13.0). The test detects that defect and skips with an
@@ -391,22 +397,44 @@ backward compatibility. See
 for full recipes and the combined example at
 [configs/oca_classic_control_plane_example.yaml](configs/oca_classic_control_plane_example.yaml).
 
-### Consumer-side validator (C library + host CLI)
+### Consumer-side library (C parser / validator, plus host CLI)
 
-The Python packer produces manifests; the C validator under
-[`validators/oca/`](validators/oca/) reads them back the same
-way the silicon's on-chip parser will. A single freestanding library plus
-a host CLI (`oca-validate`) that wires OpenSSL 3 in for cryptography and
-takes hardware-identity values via command-line flags. Beyond the PASS/FAIL
-verdict, the library exposes the payload table-of-contents through
-`oca_payload_region()` / `oca_toc_info()` / `oca_toc_image_at()`, so a consumer
-gets each image's `load_addr`, `entry_point`, type, and version for staging and
-execution (`oca-validate --list-images` prints them). One library and one
-binary handle every variant — the manifest magic selects Classic or PQC at
-runtime; integrators never pick a variant when calling the library. `make -C
-validators/oca check` packs the canonical fixtures via the packer
-and round-trips each through the C validator — drift between producer
-and consumer fails CI loudly via the layout-sync gate documented in
+The Python packer produces bundles; the C library under
+[`validators/oca/`](validators/oca/) serves as a consumer reference design that
+reads a manifest before confirming and authenticating it. It is a full manifest 
+parser as much as it is validator. A boot ROM that identifies a manifest, locates 
+its payload, selects  an image by type and stages it to `load_addr` is a first-class 
+use of this library,  not a side effect of asking for a PASS/FAIL verdict. 
+Tenstorrent's OCAH SEP boot ROM is one such consumer.
+
+The parsing surface stands on its own:
+
+- `oca_peek_manifest()` identifies the variant and reports how many bytes the
+  body occupies, from a 20-byte head and without cryptography. Because it
+  authenticates nothing, it is the one operation safe to run directly against a
+  flash window an attacker can still reach — which is what lets a staged consumer
+  know how much to copy inward before it can trust anything.
+- `oca_payload_region()` / `oca_toc_info()` / `oca_toc_image_at()` decode the
+  payload table-of-contents, giving each image's `load_addr`, `entry_point`, type
+  and version for staging and execution. They re-derive the TOC bounds, so a
+  malformed or hostile TOC cannot yield an out-of-range pointer or length
+  (`oca-validate --list-images` prints exactly what they read).
+
+The `oca_check_*` functions are individually callable too, so a consumer composes
+the policy it needs instead of taking the whole pipeline — but decoding structure
+is not a trust statement: the accessors are bounds-safe and verify nothing,
+integrity comes from the payload check (`oca_check_payload()` /
+`oca_check_payload_at()`), and authenticity from the signature.
+[`validators/oca/INTEGRATION.md`](validators/oca/INTEGRATION.md) is the authority
+on the staged boot flow and on which guarantee each step actually buys.
+
+The library itself is freestanding; the host CLI (`oca-validate`) wires OpenSSL 3
+in for cryptography and takes hardware-identity values via command-line flags. One
+library and one binary handle every variant: the manifest magic selects Classic
+or PQC at runtime and integrators never pick a variant when calling the library.
+`make -C validators/oca check` packs the canonical fixtures via the packer and
+round-trips each through the C validator — drift between producer and consumer
+fails CI loudly via the layout-sync gate documented in
 [`validators/oca/README.md`](validators/oca/README.md).
 
 A consumer that must **never** accept a given variant (for example a pre-PQC
@@ -416,6 +444,26 @@ with Classic excluded (`both`, the default, accepts every variant); an
 excluded variant is then reported as an unsupported-variant failure rather
 than validated. This is the only build-time variant choice — there is no
 per-variant source fork.
+
+#### Hardening, and where it stops
+
+The library is built to run in production alongside a fuller software stack, and
+it hardens the decisions that gate the boot flow. Every byte-buffer comparison
+runs in fixed time, so neither completion time nor a power/EM trace reveals how
+many bytes matched. The two-valued states that unlock a check are carried in
+`oca_secure_bool_t`, whose true and false are bitwise complements, so no
+small-multiplicity bit fault turns one into the other and a zeroed or
+uninitialized word is neither — it resolves to false. An unintelligible answer
+from a callback lands on the enforcing path rather than the permissive one. C
+makes no timing guarantees, so this is best-effort construction rather than proof.
+
+**That hardening stops at the library's boundary.** Hardware-specific
+cryptography and identity capability reach the library through callbacks, so 
+those guarantees hold only as far as what an adopter supplies. Callbacks should 
+use hardware-backed or otherwise hardened primitives, and should themselves resist
+tampering and side-channel introspection: an early-exit digest comparison, or a
+fuse read that can be glitched, gives away on one side of the call exactly what
+the library is preserving on the other.
 
 ## Combined deployable images
 
