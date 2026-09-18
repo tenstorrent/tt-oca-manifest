@@ -20,7 +20,7 @@ def _key_path(rel: str) -> str:
     return os.path.join(_PROJECT_ROOT, rel)
 
 
-RSA_3072_KEY_PATH = _key_path("tests/signing_keys/rsa_private_key.dev0.pem")
+RSA_3072_KEY_PATH = _key_path("tests/signing_keys/rsa_private_key.f4.pem")
 ECC_P256_KEY_PATH = _key_path("tests/signing_keys/ec_private_key.pem")
 
 # A second RSA-3072 key differing only in its public exponent: 3 rather than the

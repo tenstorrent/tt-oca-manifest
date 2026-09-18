@@ -21,7 +21,7 @@ This script is intended to make production signing with a test key a build failu
 
 The check is on the *key material* — SHA-256 over the public key's
 SubjectPublicKeyInfo DER — not on `signing_key_file`. Fingerprinting the key
-rather than the path means copying `rsa_private_key.dev0.pem` to
+rather than the path means copying `rsa_private_key.f4.pem` to
 `~/keys/production_key.pem` does not launder it, which is the mistake most
 likely to happen by accident.
 
@@ -58,7 +58,7 @@ COMMITTED_TEST_KEY_FINGERPRINTS = {
     "be6d01b596cf6be468cc5143e1e95e01dbfa944e7072552966223319a0d776c3":
         "tests/signing_keys/ec_private_key.pem",
     "d8ffccad54e348416be4c81d338c618afa74cf0ac0d177cae9d5c62ca6974e9e":
-        "tests/signing_keys/rsa_private_key.dev0.pem",
+        "tests/signing_keys/rsa_private_key.f4.pem",
     "5bd317a0701fc47922f9d1647f4811feb5442b7e337389795607386866484844":
         "tests/signing_keys/rsa_private_key.e3.pem",
 }

@@ -10,7 +10,7 @@ Do not use any key in this directory for anything but running the tests.
 
 | File | Key | Used by |
 |---|---|---|
-| `rsa_private_key.dev0.pem` | RSA-3072, e=65537 | the default signing path in most producer tests |
+| `rsa_private_key.f4.pem` | RSA-3072, e=F4 (65537) | the default signing path in most producer tests |
 | `rsa_private_key.e3.pem` | RSA-3072, e=3 | coverage of the small-public-exponent path |
 | `ec_private_key.pem` | ECDSA P-256 | coverage of the ECC signing path |
 

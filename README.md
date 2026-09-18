@@ -596,6 +596,17 @@ expected to sign through `aws` (KMS) or `hsm`, where the private key never leave
 boundary. Treat `local` as a development affordance, and reach for it in a production
 context only with your security engineering team's explicit sign-off.
 
+The two RSA keys differ only in public exponent, and their filenames record exactly
+that: `rsa_private_key.f4.pem` uses F4 (65537) and `rsa_private_key.e3.pem` uses 3.
+The e=3 key exists because OCA stores the public exponent explicitly, so a non-F4
+exponent is representable and its DER encoding is a different length — see
+[tests/oca_fixtures/__init__.py](tests/oca_fixtures/__init__.py).
+
+These names describe key material and nothing else, deliberately. A name suggesting a
+slot, index, or deployment role would imply this repository assigns one to a key, and
+it does not: which slot a key occupies and what it is trusted for are properties of
+your program's signing authority and your target's ROM/OTP, not of a file in here.
+
 ## Building the Specification PDF
 
 The specification is written in AsciiDoc. The top-level `Makefile` renders it to

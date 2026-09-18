@@ -124,12 +124,12 @@ def test_signing_with_committed_key_is_refused(tmp_path, monkeypatch):
     """With no opt-in, a committed development key cannot sign a manifest."""
     monkeypatch.delenv(ALLOW_ENV_VAR, raising=False)
     cfg = _secure_config(tmp_path, os.path.join(
-        PROJECT_ROOT, KEY_DIR, "rsa_private_key.dev0.pem"))
+        PROJECT_ROOT, KEY_DIR, "rsa_private_key.f4.pem"))
 
     with pytest.raises(KeyHygieneError) as excinfo:
         pack_oca_bundle(cfg)
     # The message has to name the file, or the user cannot act on it.
-    assert "rsa_private_key.dev0.pem" in str(excinfo.value)
+    assert "rsa_private_key.f4.pem" in str(excinfo.value)
     assert ALLOW_CONFIG_FIELD in str(excinfo.value)
 
 
@@ -142,12 +142,12 @@ def test_guard_fires_on_a_renamed_copy(tmp_path, monkeypatch):
     monkeypatch.delenv(ALLOW_ENV_VAR, raising=False)
     disguised = tmp_path / "production_key.pem"
     shutil.copyfile(
-        os.path.join(PROJECT_ROOT, KEY_DIR, "rsa_private_key.dev0.pem"), disguised)
+        os.path.join(PROJECT_ROOT, KEY_DIR, "rsa_private_key.f4.pem"), disguised)
 
     with pytest.raises(KeyHygieneError) as excinfo:
         pack_oca_bundle(_secure_config(tmp_path, disguised))
     # It still reports the repository path, not the disguised one.
-    assert "rsa_private_key.dev0.pem" in str(excinfo.value)
+    assert "rsa_private_key.f4.pem" in str(excinfo.value)
 
 
 def test_every_committed_key_is_refused(tmp_path, monkeypatch):
@@ -169,7 +169,7 @@ def test_config_field_permits_committed_key(tmp_path, monkeypatch):
     """`allow_test_signing_key: true` is the supported opt-in for a config."""
     monkeypatch.delenv(ALLOW_ENV_VAR, raising=False)
     cfg = _secure_config(tmp_path, os.path.join(
-        PROJECT_ROOT, KEY_DIR, "rsa_private_key.dev0.pem"))
+        PROJECT_ROOT, KEY_DIR, "rsa_private_key.f4.pem"))
     cfg[ALLOW_CONFIG_FIELD] = True
 
     assert pack_oca_bundle(cfg), "declared development build should still pack"
@@ -179,7 +179,7 @@ def test_env_var_permits_committed_key(tmp_path, monkeypatch):
     """The harness override works without touching the config."""
     monkeypatch.setenv(ALLOW_ENV_VAR, "1")
     cfg = _secure_config(tmp_path, os.path.join(
-        PROJECT_ROOT, KEY_DIR, "rsa_private_key.dev0.pem"))
+        PROJECT_ROOT, KEY_DIR, "rsa_private_key.f4.pem"))
 
     assert pack_oca_bundle(cfg), "env-var opt-in should still pack"
 

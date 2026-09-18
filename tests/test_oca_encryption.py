@@ -25,7 +25,7 @@ from tt_boot_manifest.oca.entry import pack_oca_bundle
 from tt_boot_manifest.oca.validators import OcaConfigError
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RSA_KEY = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.dev0.pem")
+RSA_KEY = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.f4.pem")
 
 _SECRET_HEX = "00" * 32
 _IV_HEX = "10" * 16
