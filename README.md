@@ -138,8 +138,9 @@ tt-oca-manifest/
 ├── tools/
 │   └── aws_sso.py                # AWS SSO credential refresh (the `aws-sso` console script)
 ├── tests/                        # Test suite (pytest) — producer, signing, and C-validator integration
-│   ├── signing_keys/             # Test signing keys (development only)
+│   ├── signing_keys/             # Development test signing keys only — never production
 │   ├── test_manifest_signing.py  # Signing and verification tests
+│   ├── test_key_hygiene.py       # The committed-development-key guard
 │   ├── test_oca_*.py             # Producer, signing, encryption, PQC, combined, validator tests
 │   └── conftest.py               # Pytest configuration
 ├── configs/                      # Example YAML configs (oca_*.yaml)
@@ -321,7 +322,7 @@ future pass and rejected today rather than shipping a partial implementation.
 Under secure boot, the manifest carries device-state controls that a consumer
 enforces at boot and folds into its own write-once state (fuses/OTP) after a
 successful, authenticated verification. See
-[configs/oca_secure_boot_production_example.yaml](configs/oca_secure_boot_production_example.yaml)
+[configs/oca_secure_boot_device_state_example.yaml](configs/oca_secure_boot_device_state_example.yaml)
 for a full worked example.
 
 ```yaml
@@ -546,7 +547,16 @@ References:
 - [OCA Manifest Generation](#oca-manifest-generation) above, and the runnable examples
   [configs/oca_classic_example.yaml](configs/oca_classic_example.yaml),
   [configs/oca_encrypted_example.yaml](configs/oca_encrypted_example.yaml), and
-  [configs/oca_secure_boot_production_example.yaml](configs/oca_secure_boot_production_example.yaml).
+  [configs/oca_secure_boot_device_state_example.yaml](configs/oca_secure_boot_device_state_example.yaml).
+  To start a real build, copy
+  [configs/oca_production_template.yaml](configs/oca_production_template.yaml) instead —
+  the examples above are signed with development keys and will not serve as a
+  production starting point.
+- `allow_test_signing_key: true` declares a build deliberately signed with one of the
+  development keys committed to this repository. The packer **refuses to sign** with
+  those keys unless it is set, so a real build cannot pick one up by accident, and the
+  check is on the key material rather than the path. See
+  [src/key_hygiene.py](src/key_hygiene.py).
 - The byte-level field reference is the specification:
   [specifications/oca/boot-manifest.adoc](specifications/oca/boot-manifest.adoc).
 
@@ -571,6 +581,20 @@ No release keys, key digests, or pre-signed manifests are stored in this reposit
 obtain them from the signing authority for your program. The keys under
 [tests/signing_keys/](tests/signing_keys/) are **development test keys only** and must
 never be used for a production build.
+
+This is enforced, not just documented: the packer refuses to sign a manifest with any
+key committed to this repository unless the config declares `allow_test_signing_key:
+true`. The check fingerprints the key material rather than `signing_key_file`, so
+copying a test key to another path and renaming it does not get around it. To start a
+real build, copy [configs/oca_production_template.yaml](configs/oca_production_template.yaml),
+which carries placeholder paths and no such declaration.
+
+Note the scope of that check. It protects the `local` signing path from one specific
+mistake — picking up repository key material — but signing a production manifest from a
+local PEM file is poor practice whichever key is in the file. Production builds are
+expected to sign through `aws` (KMS) or `hsm`, where the private key never leaves its
+boundary. Treat `local` as a development affordance, and reach for it in a production
+context only with your security engineering team's explicit sign-off.
 
 ## Building the Specification PDF
 

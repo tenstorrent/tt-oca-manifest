@@ -36,7 +36,7 @@ CLASSIC_EXAMPLES = [
     "configs/oca_classic_example.yaml",
     "configs/oca_classic_control_plane_example.yaml",
     "configs/oca_encrypted_example.yaml",
-    "configs/oca_secure_boot_production_example.yaml",
+    "configs/oca_secure_boot_device_state_example.yaml",
 ]
 
 
@@ -109,10 +109,10 @@ def test_pqc_example_builds_structurally(tmp_path):
         == oca_consts.OCA_PQC_BODY_SIZE, "manifest_length field"
 
 
-def test_secure_boot_production_example_device_state_fields(tmp_path):
-    """The production secure-boot example carries the device-state field values
+def test_secure_boot_device_state_example_fields(tmp_path):
+    """The device-state secure-boot example carries the device-state field values
     it documents, and does not revoke the ROOT key it selects."""
-    body = _pack("configs/oca_secure_boot_production_example.yaml",
+    body = _pack("configs/oca_secure_boot_device_state_example.yaml",
                  tmp_path)[: oca_consts.OCA_CLASSIC_BODY_SIZE]
 
     assert struct.unpack_from(

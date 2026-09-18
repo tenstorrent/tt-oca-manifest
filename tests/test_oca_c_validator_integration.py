@@ -282,8 +282,8 @@ def _pack_config(cfg_rel: str, out_name: str) -> str:
     return out_path
 
 
-def test_secure_boot_production_example_builds_and_validates():
-    """The shipped production secure-boot example config packs with its
+def test_secure_boot_device_state_example_builds_and_validates():
+    """The shipped device-state secure-boot example config packs with its
     device-state fields set, and validates clean end-to-end through the C
     validator: the RSA signature verifies, the selected ROOT key (slot 0) is not
     in the revoke set (slots 1,2), and the security version is a bit-superset of
@@ -291,8 +291,8 @@ def test_secure_boot_production_example_builds_and_validates():
     from tt_boot_manifest.oca import constants as oca_consts
 
     bin_path = _pack_config(
-        "configs/oca_secure_boot_production_example.yaml",
-        "secure_boot_production_example",
+        "configs/oca_secure_boot_device_state_example.yaml",
+        "secure_boot_device_state_example",
     )
     with open(bin_path, "rb") as f:
         body = f.read()

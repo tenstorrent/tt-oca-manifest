@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
-# OCA-classic production secure-boot example — ROOT-key selection & revocation,
+# OCA-classic secure-boot device-state example — ROOT-key selection & revocation,
 # anti-rollback security version, and the device-state update controls.
 #
 # Build from the repository root:
 #   python -m tt_boot_manifest.pack_images \
-#       --config configs/oca_secure_boot_production_example.yaml \
+#       --config configs/oca_secure_boot_device_state_example.yaml \
 #       --out out/oca_secure_boot_demo.bin -v
+#
+# This is a DEMONSTRATION of the device-state fields, signed with a development
+# key committed to this repository so it builds from a clean checkout. It is not
+# a starting point for a real build — copy configs/oca_production_template.yaml
+# for that.
 #
 # The fields below only take effect when secure boot is enabled. A consumer that
 # enforces secure boot reads them at boot to decide whether the signing key is
@@ -14,13 +19,14 @@
 # (anti-rollback), and whether to advance its own stored security state.
 
 manifest_format: oca-classic
-manifest_identifier: "PRODSB1"
-description: "OCA-classic production secure-boot example"
+manifest_identifier: "DEVSTAT1"
+description: "OCA-classic secure-boot device-state example"
 
 secure_boot: 1
 signature_type: 0x01                     # RSA-3072 PKCS#1 v1.5 / SHA-256
 signing_authority: local
 signing_key_file: "tests/signing_keys/rsa_private_key.dev0.pem"
+allow_test_signing_key: true   # committed development key — never for a real build
 
 # --- ROOT public-key selection & revocation ---
 # public_key_select_classic and public_key_classic_revoke are 128-bit bitmaps.
@@ -101,5 +107,5 @@ manifest_content_version:
   patch: 0
 
 payload_images:
-  - type: "PRODSB1XBLSTAGE1"
+  - type: "DEVSTATXBLSTAGE1"
     path: "tests/oca_fixtures/dummy_image.bin"

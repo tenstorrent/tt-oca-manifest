@@ -23,6 +23,7 @@ secure_boot: 1
 signature_type: 0x01                     # RSA-3072 PKCS#1 v1.5 / SHA-256
 signing_authority: local
 signing_key_file: "tests/signing_keys/rsa_private_key.dev0.pem"
+allow_test_signing_key: true   # committed development key — never for a real build
 public_key_select_classic: 0x01
 
 # --- Payload encryption ---

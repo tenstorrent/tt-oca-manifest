@@ -1,0 +1,123 @@
+# OCA-classic production template — copy this file to start a real build.
+#
+# Unlike the examples in this directory, this template does NOT build from a
+# clean checkout, and that is deliberate: every value it needs from you is a
+# placeholder that will fail loudly rather than quietly producing a manifest
+# signed with repository key material.
+#
+# Replace, in order:
+#   1. signing_key_id    — the KMS key this program signs with.
+#   2. manifest_identifier / description / payload_images
+#   3. the device-state fields below, which are program decisions, not defaults.
+#
+# There is no `allow_test_signing_key` line here and there must never be one.
+# That field declares a build signed with a development key committed to this
+# repository. The packer refuses such a build unless the field is present — see
+# src/key_hygiene.py.
+#
+# Build from the repository root:
+#   python -m tt_boot_manifest.pack_images \
+#       --config <your-config>.yaml --out out/<your-manifest>.bin -v
+
+manifest_format: oca-classic
+manifest_identifier: "CHANGEME"
+description: "REPLACE: what this manifest ships"
+
+secure_boot: 1
+signature_type: 0x01                     # RSA-3072 PKCS#1 v1.5 / SHA-256
+
+# --- Signing ---
+# A production manifest is expected to be signed through a managed key store, so
+# this template defaults to `aws`. KMS (and an HSM) sign without ever handing out
+# the private key, and record who invoked each signing operation.
+signing_authority: aws
+signing_key_id: "arn:aws:kms:<region>:<account>:key/<key-id>"
+#
+# `local` reads a private key from a PEM file on the build host. That key is then
+# exposed to every process on the machine, to backups, and to anything the build
+# system logs — which is why it is a development affordance, not a production one.
+# If a program genuinely requires local signing, get that decision reviewed by your
+# security engineering team first, then swap the two lines above for:
+#
+#   signing_authority: local
+#   signing_key_file: "/path/to/your/signing_key.pem"
+#
+# Standing up a signing system at all — key custody, rotation, who is permitted to
+# invoke a sign — is a design exercise to run with that team, not a config choice.
+
+# --- ROOT public-key selection & revocation ---
+# public_key_select_classic and public_key_classic_revoke are 128-bit bitmaps.
+# Keys are organized in 7 groups of 16 (bits 0..111); the top 16 bits (127:112)
+# are reserved. A set bit selects, or revokes, the key in that slot.
+#
+# Select the slot holding the key this manifest is signed with. The bit-to-key
+# mapping is fixed in mask ROM / OTP on your target and is NOT defined by this
+# repository — get it from your program's signing authority.
+public_key_select_classic: 0x01
+
+# Revoke keys that must never again verify a manifest. On a successful,
+# authenticated boot the consumer folds these into its own stored (write-once)
+# revocation state, so they stay revoked on every later boot. This is
+# irreversible. Do NOT revoke the slot selected above: a consumer refuses to use
+# a revoked key and would reject this manifest.
+public_key_classic_revoke: 0x00
+
+# --- Anti-rollback security version ---
+# A 128-bit field of independent, vendor-defined security-posture flags — NOT a
+# linear counter. Set one bit per resolved vulnerability or hardened state. A
+# consumer rejects the manifest unless its flags are a bit-superset of the value
+# already recorded on the device, so a manifest missing a flag the device has is
+# refused as a rollback. On a successful boot the consumer OR-s these flags into
+# the device value (bits only ever turn on).
+manifest_security_version: 0x00
+
+# --- Device-state update controls ---
+# Six update-disable bits [5:0]. Production manifests leave this 0x00 so the
+# device's revocation, security-version, and signature-posture state advance
+# automatically on each successful boot. Development / bring-up manifests set
+# 0x3F to suppress those one-time fuse writes while iterating on a device.
+#   bit0 - suppress the manifest-security-version update
+#   bit1 - suppress the ROOT-key-revocation update
+#   bit2 - suppress the verifier-security-version update
+#   bit3 - suppress the verifier-key-revocation update
+#   bit4 - suppress the signature-cohort-enforcement update
+#   bit5 - suppress the signature-class-revocation update
+manifest_security_control: 0x00
+
+# --- Signature posture registers ---
+# Both are device control registers OR'd into vendor storage (typically OTP)
+# after a fully verified boot. Neither takes any part in verifying the manifest
+# that carries them — they govern how signatures are treated on SUBSEQUENT
+# boots. Because the updates accumulate by OR, restrictions only ever tighten.
+
+# signature_cohort_enforce assigns a 4-bit nibble to each signed entity:
+#   b[3:0]  ROOT key      b[7:4]  verifier key      b[11:8]..b[39:36] co-signers 1..8
+# Within a nibble, bit0 requires a classical signature and bit1 a post-quantum
+# one; bits [3:2] are reserved. 0x01 demands a classical ROOT signature, which
+# is what this manifest carries.
+signature_cohort_enforce: 0x01
+
+# signature_class_revoke disables algorithm classes permanently.
+#   b[7:0]   classical per-class bits   b[15:8]  classical GROUP CODE
+#   b[31:24] PQC per-class bits         b[39:32] PQC GROUP CODE
+# A group code is a single constant, not a bitmask: 0xCA disables every classical
+# algorithm, 0xAC every PQC one. Each group byte must be exactly 0x00 or exactly
+# its constant — a fragment is rejected.
+#
+# WARNING: setting BOTH group codes while secure boot is enforced leaves the
+# device permanently unable to verify any manifest. Make the surviving cohort
+# mandatory via signature_cohort_enforce before revoking the group it replaces.
+signature_class_revoke: 0x00
+
+# Omit `timestamp` to stamp the build time. Pin it only when you need the output
+# to be byte-reproducible across runs.
+# timestamp: 1764633600
+
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+
+payload_images:
+  - type: "CHANGEMXBLSTAGE1"
+    path: "/path/to/your/payload.bin"
