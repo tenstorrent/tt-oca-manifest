@@ -1,9 +1,6 @@
 This Creative Commons Attribution 4.0 International license applies to the
-documentation and image assets of this repository, specifically:
+documentation of this repository, specifically:
 
-  - specifications/          the OCA boot manifest format specification
-                             (boot-manifest.adoc) and all diagrams under
-                             specifications/oca/images/
   - *.md                     all Markdown documentation, including README.md,
                              CONTRIBUTING.md, and the documents under
                              validators/oca/ and examples/

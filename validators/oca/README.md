@@ -184,10 +184,12 @@ The Makefile also auto-discovers a venv at `<repo>/.venv` or
 
 ## Supported algorithm portfolio
 
-The boot-manifest spec asks every consumer implementor to document the
-"security portfolio" — the algorithms and manifest capabilities it supports.
-This library accepts the following and rejects everything else it is asked to
-act upon on the current boot path.
+The
+[OCA boot manifest specification](https://www.openchipletatlas.org/specifications/oca/latest)
+asks every consumer implementor to document the "security portfolio" — the
+algorithms and manifest capabilities it supports. This library accepts the
+following and rejects everything else it is asked to act upon on the current
+boot path.
 
 | Manifest field | Supported value(s) | Notes |
 |----------------|--------------------|-------|

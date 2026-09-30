@@ -7,12 +7,13 @@
 
 ## Overview
 
-This repository is the home of the **OCA (Open Chiplet Atlas) boot manifest**: the format
-specification, the Python producer tooling, and the C consumer/validation library.
+This repository is the home of the **OCA (Open Chiplet Atlas) boot manifest** tooling: the
+Python producer and the C consumer/validation library.
 
-- **Specification** — the authoritative AsciiDoc format spec lives at
-  [specifications/oca/boot-manifest.adoc](specifications/oca/boot-manifest.adoc); `make spec-pdf`
-  renders it to PDF (see [Building the specification PDF](#building-the-specification-pdf)).
+- **Specification** — the format itself is specified by the Open Chiplet Atlas project and
+  published at
+  [openchipletatlas.org/specifications/oca/latest](https://www.openchipletatlas.org/specifications/oca/latest).
+  It is the authority this repository implements; it is not maintained here.
 - **Producer** — a Python package (`tt_boot_manifest`) that constructs, signs, and
   optionally encrypts OCA boot manifest bundles from YAML configuration files.
 - **Consumer** — a freestanding C parser and validator library plus host CLI under
@@ -64,13 +65,6 @@ validator integration tests, which skip without it):
   ([doxygen/doxygen#11147](https://github.com/doxygen/doxygen/issues/11147),
   fixed in 1.13.0). The test detects that defect and skips with an
   explanation; CI pins 1.18.0.
-
-And, for rendering the specification to PDF:
-
-- **asciidoctor-pdf** — `gem install asciidoctor-pdf` (macOS:
-  `brew install asciidoctor && gem install asciidoctor-pdf`; Debian/Ubuntu:
-  `apt install ruby-asciidoctor-pdf`). Nothing else in the repository needs it,
-  and no test depends on it.
 
 ## Installation
 
@@ -132,9 +126,6 @@ tt-oca-manifest/
 │   └── oca/                      # Consumer: freestanding C validator library + host CLI (oca-validate)
 │       ├── lib/                  #   The library itself — vendor THIS into a target firmware project
 │       └── test/                 #   Host harness (oca-validate CLI, C unit tests, fixtures) — never shipped to silicon
-├── specifications/
-│   ├── theme.yml                 # Asciidoctor PDF theme used by `make spec-pdf`
-│   └── oca/                      # The OCA boot manifest format specification (AsciiDoc + figures)
 ├── tools/
 │   └── aws_sso.py                # AWS SSO credential refresh (the `aws-sso` console script)
 ├── tests/                        # Test suite (pytest) — producer, signing, and C-validator integration
@@ -145,7 +136,6 @@ tt-oca-manifest/
 │   └── conftest.py               # Pytest configuration
 ├── configs/                      # Example YAML configs (oca_*.yaml)
 ├── examples/                     # Usage examples
-├── Makefile                      # Renders the specification to build/oca-boot-manifest.pdf
 └── pyproject.toml                # Package metadata and dependencies
 ```
 
@@ -557,8 +547,8 @@ References:
   those keys unless it is set, so a real build cannot pick one up by accident, and the
   check is on the key material rather than the path. See
   [src/key_hygiene.py](src/key_hygiene.py).
-- The byte-level field reference is the specification:
-  [specifications/oca/boot-manifest.adoc](specifications/oca/boot-manifest.adoc).
+- The byte-level field reference is the OCA boot manifest specification, published at
+  [openchipletatlas.org/specifications/oca/latest](https://www.openchipletatlas.org/specifications/oca/latest).
 
 ## Using the Lower-Level API
 
@@ -606,53 +596,6 @@ These names describe key material and nothing else, deliberately. A name suggest
 slot, index, or deployment role would imply this repository assigns one to a key, and
 it does not: which slot a key occupies and what it is trusted for are properties of
 your program's signing authority and your target's ROM/OTP, not of a file in here.
-
-## Building the Specification PDF
-
-The specification is written in AsciiDoc. The top-level `Makefile` renders it to
-PDF with **asciidoctor-pdf**, which must be on `PATH` — see
-[Prerequisites](#prerequisites). Nothing else in the repository requires it, so a
-clone without it is fully usable for everything except this target.
-
-```bash
-make spec-pdf   # or just `make` — it is the default target
-                # -> build/oca-boot-manifest.pdf
-
-make clean      # remove build/
-make help       # list targets and variables
-```
-
-The output lands in `build/` (already git-ignored). The tool, output directory,
-and flags are overridable without editing the Makefile:
-
-```bash
-make spec-pdf ASCIIDOCTOR_PDF=/path/to/asciidoctor-pdf
-make spec-pdf BUILD_DIR=/tmp/spec-out
-```
-
-Page setup comes from [specifications/theme.yml](specifications/theme.yml), which
-mirrors the theme used by the OCA harness documentation build so the spec PDF
-matches the consumer-side documentation set. It extends the stock asciidoctor-pdf
-theme and vendors no fonts, so the gem is the only dependency.
-
-CI builds the PDF on every push and pull request (the `Specification PDF` job in
-[.github/workflows/ci.yml](.github/workflows/ci.yml)), asserts that the rendered
-document is complete, and uploads it as a build artifact — so a specification
-change can be reviewed as a PDF straight from the pull request.
-
-Two things to know before changing the flags:
-
-- The specification source is written to be **included** in the larger OCA system
-  architecture specification: its headings start at level 3 and it carries no
-  document title. The build promotes headings by two levels (`-d book
-  -a leveloffset=-2`) so the standalone PDF gets a title page and a contents page
-  instead of an untitled pile of nested sections.
-- asciidoctor-pdf cannot split a table cell across a page boundary — a cell taller
-  than one page is **truncated**, dropping specification text, and the tool still
-  exits 0. The build passes `--failure-level=ERROR` to turn that into a build
-  failure, and the theme's type sizes keep the largest field Description cells
-  (`manifest_security_control` is the worst) on a single page. If a future edit
-  outgrows that, the build fails instead of publishing a hole.
 
 ## Testing
 
@@ -753,7 +696,7 @@ This repository carries two licenses.
 | File | Applies to |
 |---|---|
 | [LICENSE](LICENSE) | Overall license for this project, except where specified. Apache License 2.0. |
-| [LICENSE-DOCS](LICENSE-DOCS) | License for all documentation and images only. Creative Commons Attribution 4.0 International (CC-BY-4.0), covering `specifications/` — the format specification and its diagrams — and the repository's Markdown files. |
+| [LICENSE-DOCS](LICENSE-DOCS) | License for documentation only. Creative Commons Attribution 4.0 International (CC-BY-4.0), covering the repository's Markdown files. |
 
 Every file carries an SPDX header naming which of the two applies to it.
 

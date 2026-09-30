@@ -11,7 +11,7 @@
  * live in oca_layout.h.
  *
  * Mirrors the PQC variant constants in `src/oca/constants.py` (verified against
- * `boot-manifest.adoc`).
+ * the OCA boot manifest specification).
  */
 
 #ifndef OCA_LAYOUT_PQC_H

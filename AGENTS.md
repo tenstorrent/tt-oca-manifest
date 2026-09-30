@@ -39,7 +39,7 @@ them for keywords — a partial read costs far more time than a full one.
 | `README.md` | The manifest variants, installation, packing, YAML config field reference, signing authorities, secure boot, test organization |
 | `validators/oca/README.md` | Validator layout, build targets, compile-time gates, the producer/consumer lock-step gates and what to do when you add a field |
 | `validators/oca/INTEGRATION.md` | Building a consumer on the library: vendoring, the callback table, entry points, the staged boot flow, reaching the plaintext payload, walking the TOC, secure-boot device state |
-| `specifications/oca/boot-manifest.adoc` | The OCA manifest format specification itself — the authority the producer and validator both implement |
+| [OCA boot manifest specification](https://www.openchipletatlas.org/specifications/oca/latest) | The format specification itself — the authority the producer and validator both implement. Owned and published by the Open Chiplet Atlas project, not maintained in this repository |
 | `validators/oca/lib/oca_validator.h` | The sole public C header; the API contract and every result code |
 | `src/oca/constants.py` | OCA offsets, lengths and enums — the **source of truth** the C layout headers mirror |
 | `configs/*.yaml` | Worked configs, one per feature area: classic, PQC, encrypted, secure-boot production, control-plane, and combined |
@@ -87,7 +87,6 @@ future variants slot in under `lib/` without a build-system fork.
 | `tests/signing_keys/` | Development test keys **only**. Never production |
 | `tools/` | `aws_sso.py`, the `aws-sso` console script |
 | `configs/` | Example YAML configs, one per feature area |
-| `specifications/oca/` | The OCA boot manifest specification and its diagrams |
 | `out/` | Default output directory for packed bundles; git-ignored |
 
 ## Environment Setup
@@ -335,9 +334,9 @@ and documentation invariant in this repo is enforced by a test for exactly this 
 ### Shipped-artifact hygiene
 
 Distributed artifacts — `src/`, `tools/`, `validators/`, `tests/`, `examples/`, `configs/`,
-and all consumer-facing documentation including every `README.md`, this file, and the `*.adoc`
-specifications — must be free of internal development-process vocabulary and must not
-reference internal planning directories. Consumers receive the package without them, so such a
+and all consumer-facing documentation including every `README.md` and this file — must be
+free of internal development-process vocabulary and must not reference internal planning
+directories. Consumers receive the package without them, so such a
 reference is a dangling pointer to a document they will never see and leaks a vocabulary that
 is meaningless to an integrator.
 
@@ -528,7 +527,7 @@ code no longer has. Name what exists.
 ## Commits and pull requests
 
 Follow the existing history: a title-case imperative summary, optionally prefixed with a
-bracketed area tag when the change is confined to one — `[validator]`, `[CI]`, `[Spec]`. This
+bracketed area tag when the change is confined to one — `[validator]`, `[CI]`. This
 is not Conventional Commits: no `feat`, `fix`, `chore`, or `feat(scope):`.
 
 ```

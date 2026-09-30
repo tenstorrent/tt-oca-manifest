@@ -35,6 +35,11 @@ first so the design can be discussed before you invest in an implementation. The
 manifest format is a published specification that silicon is written against, so
 layout changes carry consequences well beyond this repository.
 
+The specification itself is owned by the Open Chiplet Atlas project and published
+at <https://www.openchipletatlas.org/specifications/oca/latest>; it is not
+maintained here. A change to the format goes to that project first, and this
+repository follows it.
+
 ## Development setup
 
 The prerequisites are listed in the [README](README.md#prerequisites): Python
@@ -52,8 +57,8 @@ collection fails without it.
 
 ## Checks your change must pass
 
-Run both suites locally before opening a PR. CI runs the same ones, plus a
-specification render, across Python 3.9 and 3.12 and against both GCC and Clang.
+Run both suites locally before opening a PR. CI runs the same ones across Python
+3.9 and 3.12 and against both GCC and Clang.
 
 ```bash
 python -m pytest -m "not aws"     # producer + consumer test suites
@@ -80,16 +85,13 @@ These tests **skip** rather than fail when `make`, `pkg-config`, or `doxygen` is
 missing, so a green local run with an incomplete toolchain is not proof. CI
 installs all of them and asserts they are present, so the gates always run there.
 
-If you change the format specification, `make spec-pdf` must still render it —
-CI builds the PDF and asserts the document is complete.
-
 ## Coding standards
 
 - **SPDX headers are required on every new file.** Use
   `SPDX-License-Identifier: Apache-2.0` and
   `SPDX-FileCopyrightText: <year> Tenstorrent USA, Inc.` for code, and
-  `SPDX-License-Identifier: CC-BY-4.0` for documentation and images under
-  `specifications/`. Match the two-line style of the surrounding files.
+  `SPDX-License-Identifier: CC-BY-4.0` for documentation and images. Match the
+  two-line style of the surrounding files.
 - **C code** targets C99 and is compiled freestanding to prove it ports to a
   boot ROM. Do not introduce libc dependencies into `validators/oca/lib/`.
 - **Python code** supports 3.9 as its floor. Do not use syntax or standard
@@ -101,8 +103,8 @@ CI builds the PDF and asserts the document is complete.
 
 Write a short imperative subject line describing the change. Where the change is
 scoped to one area, the existing history uses a bracketed prefix, for example
-`[Spec] Add CI build of spec to PDF`. Explain *why* in the body when the reason
-is not obvious from the diff.
+`[validator] Secure Boot Handling Logic Improvements`. Explain *why* in the body
+when the reason is not obvious from the diff.
 
 ## License
 
