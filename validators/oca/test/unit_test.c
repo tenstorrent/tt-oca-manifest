@@ -1385,7 +1385,7 @@ TEST(test_validate_happy_path_full_pipeline)
 /* ------------------------------------------------------------------ */
 
 /* Synthetic ciphertext length. Must satisfy the encrypted-payload geometry the
- * format requires: at least one TOC header plus one entry (308 bytes), and a
+ * format requires: at least one TOC header plus one entry (312 bytes), and a
  * whole number of AES blocks. 320 is the smallest value meeting both, and is
  * what the packer emits for a single-image encrypted bundle. */
 #define ENC_CT_LEN 320u
@@ -1975,8 +1975,8 @@ TEST(test_payload_toc_entry_hash_padding_ignored)
 /* isolates one rule.                                                 */
 /* ------------------------------------------------------------------ */
 
-#define CLEAR_TOC_BYTES  (OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE)   /* 308 */
-#define CLEAR_IMG_OFF    312u   /* next 8-byte boundary after the TOC */
+#define CLEAR_TOC_BYTES  (OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE)   /* 312 */
+#define CLEAR_IMG_OFF    312u   /* first 8-byte boundary at or after the TOC end */
 #define CLEAR_IMG_LEN      8u
 #define CLEAR_PAYLOAD_LEN (CLEAR_IMG_OFF + CLEAR_IMG_LEN)             /* 320 */
 
@@ -2516,6 +2516,61 @@ TEST(test_toc_image_at_decodes_every_entry_field)
     ASSERT_EQ_INT(img.version_patch, 314);
     ASSERT_EQ_INT(strcmp(img.type, "SEPBL1"), 0);   /* space padding trimmed */
     ASSERT_TRUE(img.bytes[0] == 0x77u);
+}
+
+/* Builds a one-entry TOC from the spec's "Payload TOC entry" table using literal
+ * byte offsets instead of the OCA_TOC_* macros, so a drift in oca_layout.h fails
+ * here rather than being mirrored into the fixture. Both reserved regions
+ * (20..24, 272..280) are filled with 0xFF: a Consumer ignores them, and no
+ * neighbouring field may read into them. */
+TEST(test_toc_image_at_decodes_spec_literal_layout)
+{
+    uint8_t pt[32u + 280u + 8u];                  /* header + one entry + image */
+    memset(pt, 0, sizeof pt);
+    memcpy(pt, "PTOC", 4u);
+    pt[4] = 1u;                                   /* toc_version_major */
+    toc_put_u64(pt + 8u, sizeof pt);              /* payload_length */
+    toc_put_u64(pt + 16u, 1u);                    /* image_count */
+
+    uint8_t *e = pt + 32u;
+    memcpy(e + 0u, "LITERALXBLSTAGE1", 16u);      /* type */
+    e[16] = 0x04u; e[17] = 0x03u; e[18] = 0x02u; e[19] = 0x01u;   /* group */
+    memset(e + 20u, 0xFFu, 4u);                   /* reserved */
+    toc_put_u64(e + 24u, 312u);                   /* offset */
+    toc_put_u64(e + 32u, 8u);                     /* length */
+    toc_put_u64(e + 40u, ((uint64_t)1u << 48) | ((uint64_t)2u << 24) | 3u);
+    toc_put_u64(e + 48u, 0x11u);                  /* security_version */
+    toc_put_u64(e + 56u, 0x2222u);                /* load_addr */
+    toc_put_u64(e + 64u, 0x3333u);                /* entry_point */
+    toc_put_u64(e + 72u, 0x4444u);                /* target_chiplet_id */
+    e[80] = 0xABu;                                /* hash */
+    memcpy(e + 144u, "literal", 8u);              /* description */
+    memset(e + 272u, 0xFFu, 8u);                  /* reserved */
+    memset(pt + 312u, 0x5Au, 8u);                 /* image bytes */
+
+    ASSERT_EQ_INT(OCA_TOC_ENTRY_SIZE, 280);
+
+    oca_image_info_t img;
+    memset(&img, 0, sizeof img);
+    if (oca_toc_image_at(pt, sizeof pt, 0u, &img) != OCA_OK) {
+        ASSERT_TRUE(!"oca_toc_image_at should have succeeded");
+        return;
+    }
+    ASSERT_EQ_INT(strcmp(img.type, "LITERALXBLSTAGE1"), 0);
+    ASSERT_EQ_INT(img.group, 0x01020304);
+    ASSERT_EQ_INT(img.offset, 312);
+    ASSERT_EQ_INT(img.length, 8);
+    ASSERT_EQ_INT(img.version_major, 1);
+    ASSERT_EQ_INT(img.version_minor, 2);
+    ASSERT_EQ_INT(img.version_patch, 3);
+    ASSERT_EQ_INT(img.security_version, 0x11);
+    ASSERT_EQ_INT(img.load_addr, 0x2222);
+    ASSERT_EQ_INT(img.entry_point, 0x3333);
+    ASSERT_EQ_INT(img.target_chiplet_id, 0x4444);
+    ASSERT_TRUE(img.hash == e + 80u);
+    ASSERT_TRUE(img.description == e + 144u);
+    ASSERT_TRUE(img.bytes == pt + 312u);
+    ASSERT_TRUE(img.bytes[0] == 0x5Au);
 }
 
 TEST(test_toc_image_at_hash_and_description_point_into_buffer)
@@ -6066,6 +6121,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_toc_info_rejects_bad_ptoc_magic);
     RUN_TEST(test_toc_info_rejects_bad_span);
     RUN_TEST(test_toc_image_at_decodes_every_entry_field);
+    RUN_TEST(test_toc_image_at_decodes_spec_literal_layout);
     RUN_TEST(test_toc_image_at_hash_and_description_point_into_buffer);
     RUN_TEST(test_toc_image_at_indexes_in_stored_order_not_offset_order);
     RUN_TEST(test_toc_image_at_rejects_index_beyond_count);

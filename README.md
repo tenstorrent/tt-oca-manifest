@@ -203,7 +203,7 @@ worked example, including independent verification of the output.
 ## OCA Manifest Generation
 
 Every OCA manifest is a fixed-layout body followed by a `PTOC`-prefixed payload
-TOC (276-byte entries), signed through the `local` / `aws` signing authorities.
+TOC (280-byte entries), signed through the `local` / `aws` signing authorities.
 
 ### OCA manifest variants
 
@@ -235,7 +235,7 @@ for a runnable non-secure PQC example.
 | Hash algorithm | SHA-256 (`0x01`) | All others (`manifest_hash_type` / `payload_hash_type` ≠ `0x01`) |
 | Signing authority | `local`, `aws` | `hsm` |
 | Payload encryption | AES-256-CBC (`0x02`, the default) and AES-128-CBC (`0x01`), key derived from a pre-shared secret via SP 800-108r1 CTR-HMAC-SHA-256 over the 192-byte input block (`local` authority) | KEM-wrapped keys, any other cipher or KDF identifier, `aws` / `hsm` encryption authority |
-| Multi-image payload | Yes (`PTOC` TOC of 276-byte entries; images 8-byte aligned) | — |
+| Multi-image payload | Yes (`PTOC` TOC of 280-byte entries; images 8-byte aligned) | — |
 | ROOT-key revocation & anti-rollback | Classic `public_key_classic_revoke`, `manifest_security_version` (128 posture flags), and `manifest_security_control` update controls — the validator enforces revoke-before-key-use, bit-superset anti-rollback, and a post-verify device-state commit | PQC ROOT-key revocation (lands with PQC signature verification) |
 | Signature posture registers | `signature_cohort_enforce` and `signature_class_revoke` — validated (including the `0xCA` / `0xAC` group-code interlock) and folded into device state by the post-verify commit | Consulting the accumulated state at boot to reject a revoked algorithm class or an unmet cohort — needs multi-cohort signature support |
 | Public key / signature encodings | Raw bytes (`0x02`, the default) for every algorithm; ASN.1 DER (`0x01`) for RSA public keys (PKCS#1 `RSAPublicKey`) and ECDSA signatures. Each value is bounded by its `*_size_classic` field | Vendor-defined encodings (`0x03`) |

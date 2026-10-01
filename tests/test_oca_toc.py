@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Bundle multiple images via the OCA payload TOC.
 
-Tests the multi-image payload pipeline: PTOC header, 276-byte TOC entries,
+Tests the multi-image payload pipeline: PTOC header, 280-byte TOC entries,
 ascending-offset ordering, no overlap, 8-byte alignment, per-entry image
 hashes, payload_hash over the TOC region, and the iterative
 payload_hash_chain construction.
@@ -77,17 +77,17 @@ def _toc_entries(payload, image_count):
 _SPEC_ENTRY_LAYOUT = {
     "type": (0, 16),
     "group": (16, 4),
-    "offset": (20, 8),
-    "length": (28, 8),
-    "version": (36, 8),
-    "security_version": (44, 8),
-    "load_addr": (52, 8),
-    "entry_point": (60, 8),
-    "target_chiplet_id": (68, 8),
-    "reserved_1": (76, 4),
+    "reserved_1": (20, 4),
+    "offset": (24, 8),
+    "length": (32, 8),
+    "version": (40, 8),
+    "security_version": (48, 8),
+    "load_addr": (56, 8),
+    "entry_point": (64, 8),
+    "target_chiplet_id": (72, 8),
     "hash": (80, 64),
     "description": (144, 128),
-    "reserved_2": (272, 4),
+    "reserved_2": (272, 8),
 }
 
 _SPEC_U64_FIELDS = ("offset", "length", "version", "security_version",
@@ -131,7 +131,7 @@ def test_image_count_matches_config_four_images(tmp_path):
     manifest, payload = _split_bundle(bundle)
     image_count = struct.unpack_from("<Q", payload, 16)[0]
     assert image_count == 4
-    # Sanity: header is 32 bytes, then 4 × 276-byte entries follow.
+    # Sanity: header is 32 bytes, then 4 × 280-byte entries follow.
     assert len(payload) >= oca_consts.TOC_HEADER_SIZE + 4 * oca_consts.TOC_ENTRY_SIZE
 
 
@@ -200,7 +200,7 @@ def test_per_entry_hash_matches_image_bytes(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_entry_layout_covers_exactly_276_bytes():
+def test_entry_layout_covers_exactly_280_bytes():
     """The spec layout this suite asserts against is contiguous, gap-free, and
     exactly one TOC entry long — so 'every field is at its offset' also means
     'every byte of the entry is accounted for'."""
@@ -209,7 +209,18 @@ def test_entry_layout_covers_exactly_276_bytes():
     for off, size in spans:
         assert off == cursor, f"gap or overlap in the spec layout at offset {off}"
         cursor = off + size
-    assert cursor == oca_consts.TOC_ENTRY_SIZE == 276
+    assert cursor == oca_consts.TOC_ENTRY_SIZE == 280
+
+
+def test_entry_u64_fields_and_entry_stride_are_8_byte_aligned():
+    """The spec requires 8-byte alignment: every 64-bit entry field sits on an
+    8-byte boundary within the entry, and the entry size keeps entry n aligned
+    for every n."""
+    assert oca_consts.TOC_HEADER_SIZE % 8 == 0
+    assert oca_consts.TOC_ENTRY_SIZE % 8 == 0
+    for name in _SPEC_U64_FIELDS:
+        off, _ = _SPEC_ENTRY_LAYOUT[name]
+        assert off % 8 == 0, f"{name} at entry offset {off} is not 8-byte aligned"
 
 
 def test_hash_field_at_spec_offset_80(tmp_path):
@@ -240,19 +251,22 @@ def test_unset_optional_fields_are_zero(tmp_path):
     assert f["entry_point"] == 0
     assert f["target_chiplet_id"] == 0
     assert f["description"] == b"\x00" * 128
-    # Bytes 44..80 are the four u64 fields, all zero here.
-    assert entry[44:76] == b"\x00" * 32
+    # Bytes 48..80 are the four u64 fields, all zero here.
+    assert entry[48:80] == b"\x00" * 32
 
 
 def test_entry_reserved_regions_are_zero(tmp_path):
     """The spec requires the Producer to zero every reserved byte in every TOC
-    entry (76..80 and 272..276)."""
+    entry (20..24 and 272..280)."""
     cfg = _multi_image_config(tmp_path, [("a", b"R" * 16), ("b", b"S" * 32)],
-                              extra={"load_addr": 0xDEADBEEF, "description": "res"})
+                              extra={"group": 0xFFFF_FFFF, "load_addr": 0xDEADBEEF,
+                                     "target_chiplet_id": (1 << 64) - 1,
+                                     "description": "x" * 127})
     _, payload = _split_bundle(pack_oca_bundle(cfg))
     for _, entry in _toc_entries(payload, 2):
+        assert _entry_fields(entry)["group"] == 0xFFFF_FFFF
         assert _entry_raw(entry, "reserved_1") == b"\x00" * 4
-        assert _entry_raw(entry, "reserved_2") == b"\x00" * 4
+        assert _entry_raw(entry, "reserved_2") == b"\x00" * 8
 
 
 def test_optional_fields_round_trip_at_spec_offsets(tmp_path):

@@ -48,7 +48,7 @@ OCA_CLASSIC_BODY_SIZE = 4096        # exact total body length
 OCA_CLASSIC_SIGNED_REGION_END = 3172   # bytes [0, 3172) are covered by manifest_hash / signature_classic
 
 TOC_HEADER_SIZE = 32                # PTOC header
-TOC_ENTRY_SIZE = 276                # one TOC entry
+TOC_ENTRY_SIZE = 280                # one TOC entry; a multiple of 8
 
 # Payload TOC byte layout — "Payload TOC" / "Payload TOC entry" tables in the
 # OCA spec. Both the packer (src/oca/toc.py) and the C validator
@@ -63,17 +63,17 @@ OFF_TOC_IMAGE_COUNT = 16            # u64 LE
 
 OFF_TOC_ENTRY_TYPE = 0              # 16 ASCII bytes
 OFF_TOC_ENTRY_GROUP = 16            # u32 LE
-OFF_TOC_ENTRY_OFFSET = 20           # u64 LE
-OFF_TOC_ENTRY_LENGTH = 28           # u64 LE
-OFF_TOC_ENTRY_VERSION = 36          # u64 LE, packed major/minor/patch
-OFF_TOC_ENTRY_SECURITY_VERSION = 44  # u64 LE
-OFF_TOC_ENTRY_LOAD_ADDR = 52        # u64 LE
-OFF_TOC_ENTRY_ENTRY_POINT = 60      # u64 LE
-OFF_TOC_ENTRY_TARGET_CHIPLET_ID = 68  # u64 LE
-# 76..80 reserved
+# 20..24 reserved; keeps every u64 field below 8-byte aligned
+OFF_TOC_ENTRY_OFFSET = 24           # u64 LE
+OFF_TOC_ENTRY_LENGTH = 32           # u64 LE
+OFF_TOC_ENTRY_VERSION = 40          # u64 LE, packed major/minor/patch
+OFF_TOC_ENTRY_SECURITY_VERSION = 48  # u64 LE
+OFF_TOC_ENTRY_LOAD_ADDR = 56        # u64 LE
+OFF_TOC_ENTRY_ENTRY_POINT = 64      # u64 LE
+OFF_TOC_ENTRY_TARGET_CHIPLET_ID = 72  # u64 LE
 OFF_TOC_ENTRY_HASH = 80             # 64-byte field; digest at offset 0, rest 0x00
 OFF_TOC_ENTRY_DESCRIPTION = 144     # 128 bytes, NUL-terminated ASCII
-# 272..276 reserved
+# 272..280 reserved; slack for minor-version extension of the entry
 
 LEN_TOC_ENTRY_TYPE = 16
 LEN_TOC_ENTRY_DESCRIPTION = 128

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
-"""OCA payload TOC header (32 bytes) and TOC entry (276 bytes) builders.
+"""OCA payload TOC header (32 bytes) and TOC entry (280 bytes) builders.
 
 Source-of-truth byte layouts: contracts/oca-payload-toc.md, which mirrors the
 "Payload TOC" / "Payload TOC entry" tables in the OCA spec. Every field is
@@ -107,7 +107,7 @@ def _description_field(image_meta: Dict[str, Any]) -> bytes:
 
 
 def build_toc_entry(image_meta: Dict[str, Any], image_bytes: bytes) -> bytes:
-    """Build a 276-byte TOC entry for one image.
+    """Build a 280-byte TOC entry for one image.
 
     image_meta:
         type              : ≤16-char ASCII string (right-padded with space to 16 B)
@@ -122,7 +122,7 @@ def build_toc_entry(image_meta: Dict[str, Any], image_bytes: bytes) -> bytes:
         description       : ≤127-char ASCII string (default all-zero field)
 
     Bytes not covered by a field above are the entry's two reserved regions
-    (76..80 and 272..276), which the spec requires the Producer to zero.
+    (20..24 and 272..280), which the spec requires the Producer to zero.
     """
     image_type = image_meta.get("type", "_VENDOR1 BLSTAGE1")
     if not isinstance(image_type, str):
