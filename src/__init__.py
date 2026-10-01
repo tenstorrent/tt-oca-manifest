@@ -10,7 +10,7 @@ Note: Modules use absolute imports and are intended to be run as scripts.
 To use individual modules, import them by name after ensuring dependencies are available.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "pack_images",

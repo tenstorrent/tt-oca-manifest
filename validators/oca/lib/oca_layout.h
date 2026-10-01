@@ -235,7 +235,7 @@
 /* ------------------------------------------------------------------ */
 
 #define OCA_TOC_HEADER_SIZE                 32u
-#define OCA_TOC_ENTRY_SIZE                 276u
+#define OCA_TOC_ENTRY_SIZE                 280u
 
 /* Within the 32-byte PTOC header. */
 #define OCA_TOC_OFF_MAGIC                    0u  /* 4 bytes, "PTOC" */
@@ -244,17 +244,17 @@
 #define OCA_TOC_OFF_PAYLOAD_LENGTH           8u  /* u64 LE */
 #define OCA_TOC_OFF_IMAGE_COUNT             16u  /* u64 LE */
 
-/* Within one 276-byte TOC entry. */
+/* Within one 280-byte TOC entry. Bytes 20..24 and 272..280 are reserved. */
 #define OCA_TOC_ENTRY_OFF_TYPE               0u  /* 16 ASCII bytes */
 #define OCA_TOC_ENTRY_LEN_TYPE              16u
 #define OCA_TOC_ENTRY_OFF_GROUP             16u  /* u32 LE */
-#define OCA_TOC_ENTRY_OFF_OFFSET            20u  /* u64 LE */
-#define OCA_TOC_ENTRY_OFF_LENGTH            28u  /* u64 LE */
-#define OCA_TOC_ENTRY_OFF_VERSION           36u  /* u64 LE */
-#define OCA_TOC_ENTRY_OFF_SECURITY_VERSION  44u  /* u64 LE */
-#define OCA_TOC_ENTRY_OFF_LOAD_ADDR         52u  /* u64 LE */
-#define OCA_TOC_ENTRY_OFF_ENTRY_POINT       60u  /* u64 LE */
-#define OCA_TOC_ENTRY_OFF_TARGET_CHIPLET_ID 68u  /* u64 LE */
+#define OCA_TOC_ENTRY_OFF_OFFSET            24u  /* u64 LE */
+#define OCA_TOC_ENTRY_OFF_LENGTH            32u  /* u64 LE */
+#define OCA_TOC_ENTRY_OFF_VERSION           40u  /* u64 LE */
+#define OCA_TOC_ENTRY_OFF_SECURITY_VERSION  48u  /* u64 LE */
+#define OCA_TOC_ENTRY_OFF_LOAD_ADDR         56u  /* u64 LE */
+#define OCA_TOC_ENTRY_OFF_ENTRY_POINT       64u  /* u64 LE */
+#define OCA_TOC_ENTRY_OFF_TARGET_CHIPLET_ID 72u  /* u64 LE */
 #define OCA_TOC_ENTRY_OFF_HASH              80u  /* 64-byte field; digest at offset 0 */
 #define OCA_TOC_ENTRY_OFF_DESCRIPTION      144u  /* 128 bytes, NUL-terminated */
 #define OCA_TOC_ENTRY_LEN_DESCRIPTION      128u
@@ -291,6 +291,21 @@ _Static_assert(OCA_OFF_PUBLIC_KEY_SIZE + 2u == OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE
                "public_key_classic_revoke must follow public_key_size_classic");
 _Static_assert(OCA_OFF_MANIFEST_CONTENT_VERSION + 8u == OCA_OFF_MANIFEST_DESCRIPTION,
                "manifest_description must follow manifest_content_version");
+_Static_assert(OCA_TOC_ENTRY_OFF_OFFSET + 8u == OCA_TOC_ENTRY_OFF_LENGTH
+               && OCA_TOC_ENTRY_OFF_LENGTH + 8u == OCA_TOC_ENTRY_OFF_VERSION
+               && OCA_TOC_ENTRY_OFF_VERSION + 8u == OCA_TOC_ENTRY_OFF_SECURITY_VERSION
+               && OCA_TOC_ENTRY_OFF_SECURITY_VERSION + 8u == OCA_TOC_ENTRY_OFF_LOAD_ADDR
+               && OCA_TOC_ENTRY_OFF_LOAD_ADDR + 8u == OCA_TOC_ENTRY_OFF_ENTRY_POINT
+               && OCA_TOC_ENTRY_OFF_ENTRY_POINT + 8u == OCA_TOC_ENTRY_OFF_TARGET_CHIPLET_ID
+               && OCA_TOC_ENTRY_OFF_TARGET_CHIPLET_ID + 8u == OCA_TOC_ENTRY_OFF_HASH,
+               "TOC entry u64 fields must run back-to-back from offset to hash");
+_Static_assert(OCA_TOC_ENTRY_OFF_HASH + 64u == OCA_TOC_ENTRY_OFF_DESCRIPTION,
+               "TOC entry description must follow hash");
+/* The spec requires 8-byte alignment of every u64 entry field and of every
+ * entry start, which holds only while the entry size is a multiple of 8. */
+_Static_assert(OCA_TOC_ENTRY_OFF_OFFSET % 8u == 0u && OCA_TOC_HEADER_SIZE % 8u == 0u
+               && OCA_TOC_ENTRY_SIZE % 8u == 0u,
+               "TOC entries and their u64 fields must be 8-byte aligned");
 /* Both group-code bytes must land inside the field they index into. */
 _Static_assert(OCA_CLASS_REVOKE_OFF_PQC_GROUP_CODE < OCA_LEN_SIGNATURE_CLASS_REVOKE,
                "PQC group code byte must lie within signature_class_revoke");

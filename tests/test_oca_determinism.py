@@ -191,23 +191,14 @@ def test_legacy_oca_classic_example_byte_stable(config_relpath):
 
 # (manifest_identifier, payload type, expected length, expected sha256) per
 # variant, for a fixed canonical config (pinned timestamp + fixed payload).
-#
-# Last updated when the manifest layout caught up to the checked-in
-# specification. The classic body gained 27 bytes of fields absorbed from its
-# trailing alignment pad (manifest_security_control widened 1 -> 2, the
-# signature_cohort_enforce and signature_class_revoke registers were added, and
-# public_key_classic grew 526 -> 532 alongside the new signature_size_classic /
-# public_key_size_classic fields); PQC gained a further 4. Body sizes and bundle
-# lengths are unchanged — only field placement moved, plus the public-key and
-# signature encodings switched to the spec's big-endian raw forms.
 _GOLDEN = {
     "oca-classic": (
         "GOLDEN1", "GOLDEN1XBLSTAGE1", 4920,
-        "9fab8598d18449944b9941230897b5694938072ebc1d7c617c147b84ede138c6",
+        "efff71cd9118c9265abd59c637e98ac6211cd3bf56900c7890b90af0ddbed76b",
     ),
     "oca-pqc": (
         "GOLDENP", "GOLDENPXBLSTAGE1", 37688,
-        "d007dd422f97eed38b9ba9b0df747fed656e59adabcaa25a882cdf97643d2593",
+        "4da19c83d5edfa6d07e338e81c802f0e3729c4efbe0ed3833e2a63b10f31c474",
     ),
 }
 
@@ -271,6 +262,6 @@ def test_encrypted_bundle_golden_digest(tmp_path):
     bundle = pack_oca_bundle(cfg)
     assert len(bundle) == 4928
     actual_sha = hashlib.sha256(bundle).hexdigest()
-    assert actual_sha == "2b19ebf571fb956481d8d581d202cc747ae7a7da84a696dcf48d98848bf866c7", (
+    assert actual_sha == "21f67d4adbaf3b671bcfffc865891e2556fe41e397f7203f8ff23b72392e7879", (
         f"encrypted bundle drifted from the golden digest; got {actual_sha}"
     )
