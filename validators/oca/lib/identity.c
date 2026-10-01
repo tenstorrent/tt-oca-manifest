@@ -44,6 +44,18 @@ oca_result_t oca_identity_compare(const uint8_t *body,
                                   uint32_t       mask,
                                   const oca_callbacks_t *cb)
 {
+    const oca_result_t fail_code = map_kind_to_fail(kind);
+
+    /* Every unselected byte must hold MANIFEST_UNUSED_BYTE, also when no byte
+     * is selected; this reads only the manifest, so it needs no callback. */
+    uint8_t unused[OCA_LEN_IDENTITY];
+    for (unsigned i = 0u; i < OCA_LEN_IDENTITY; ++i) {
+        unused[i] = OCA_MANIFEST_UNUSED_BYTE;
+    }
+    if (oca_ct_diff_masked(body + field_offset, unused, OCA_LEN_IDENTITY, ~mask) != 0) {
+        return fail_code;
+    }
+
     if (mask == 0u) {
         return OCA_OK;
     }
@@ -61,7 +73,6 @@ oca_result_t oca_identity_compare(const uint8_t *body,
      * against values read out of hardware, so neither the number of matching
      * bytes nor which byte positions the selector enabled should be observable
      * in the timing. */
-    const oca_result_t fail_code = map_kind_to_fail(kind);
     if (oca_ct_diff_masked(body + field_offset, hw, OCA_LEN_IDENTITY, mask) != 0) {
         return fail_code;
     }

@@ -155,6 +155,14 @@ TEST(test_ct_any_overlap)
 /* Manifest-builder helpers                                           */
 /* ------------------------------------------------------------------ */
 
+/* A producer fills every unselected identity byte with MANIFEST_UNUSED_BYTE. */
+static void fill_unused_identity(uint8_t *buf)
+{
+    memset(buf + OCA_OFF_CHIPLET_ID, OCA_MANIFEST_UNUSED_BYTE, OCA_LEN_IDENTITY);
+    memset(buf + OCA_OFF_PACKAGE_ID, OCA_MANIFEST_UNUSED_BYTE, OCA_LEN_IDENTITY);
+    memset(buf + OCA_OFF_SYSTEM_ID,  OCA_MANIFEST_UNUSED_BYTE, OCA_LEN_IDENTITY);
+}
+
 static void build_minimal_manifest(uint8_t buf[OCA_CLASSIC_BODY_SIZE])
 {
     memset(buf, 0, OCA_CLASSIC_BODY_SIZE);
@@ -168,6 +176,7 @@ static void build_minimal_manifest(uint8_t buf[OCA_CLASSIC_BODY_SIZE])
         (uint8_t)(OCA_LIB_MANIFEST_MINOR & 0xFF);
     /* manifest_length = 4096 */
     buf[OCA_OFF_MANIFEST_LENGTH + 1] = 0x10;
+    fill_unused_identity(buf);
     /* payload_offset = body_size: what every producer writes for a contiguous
      * bundle, and what oca_check_payload requires before it will assume the
      * payload follows the body. Leaving it zero models no real manifest. */
@@ -1105,6 +1114,58 @@ TEST(test_identity_mismatch_fails)
     cb.get_identity_bytes = fixed_identity_cb;
     ASSERT_EQ_INT(oca_check_identity(buf, OCA_ID_CHIPLET, &cb),
                   OCA_FAIL_CHIPLET_ID);
+}
+
+/* A selected byte that matches the device does not excuse an unselected byte
+ * that is not MANIFEST_UNUSED_BYTE, even when the device holds that value. */
+TEST(test_identity_unselected_byte_rejected_with_selection)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(buf);
+    set_selector_bit(buf, 0);
+    buf[OCA_OFF_CHIPLET_ID + 0] = 0xDEu;
+    buf[OCA_OFF_CHIPLET_ID + 3] = 0x00u;
+    g_fx.identity_present = true;
+    g_fx.chiplet_id[0] = 0xDEu;
+    oca_callbacks_t cb;
+    memset(&cb, 0, sizeof(cb));
+    cb.get_identity_bytes = fixed_identity_cb;
+    ASSERT_EQ_INT(oca_check_identity(buf, OCA_ID_CHIPLET, &cb),
+                  OCA_FAIL_CHIPLET_ID);
+}
+
+/* With no selector bit set every byte is unselected, so all 32 must be
+ * MANIFEST_UNUSED_BYTE; no identity callback is needed to reject. */
+TEST(test_identity_unselected_byte_rejected_without_selection)
+{
+    static const struct {
+        oca_id_kind_t kind;
+        unsigned      offset;
+        oca_result_t  code;
+    } fields[] = {
+        { OCA_ID_CHIPLET, OCA_OFF_CHIPLET_ID, OCA_FAIL_CHIPLET_ID },
+        { OCA_ID_PACKAGE, OCA_OFF_PACKAGE_ID, OCA_FAIL_PACKAGE_ID },
+        { OCA_ID_SYSTEM,  OCA_OFF_SYSTEM_ID,  OCA_FAIL_SYSTEM_ID  },
+    };
+    static const unsigned positions[] = { 0u, 31u };
+    for (size_t f = 0u; f < sizeof fields / sizeof fields[0]; ++f) {
+        for (size_t p = 0u; p < sizeof positions / sizeof positions[0]; ++p) {
+            uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+            build_minimal_manifest(buf);
+            buf[fields[f].offset + positions[p]] = 0x5Au;
+            ASSERT_EQ_INT(oca_check_identity(buf, fields[f].kind, NULL),
+                          fields[f].code);
+        }
+    }
+}
+
+TEST(test_identity_all_unused_bytes_accepted)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(buf);
+    ASSERT_EQ_INT(oca_check_identity(buf, OCA_ID_CHIPLET, NULL), OCA_OK);
+    ASSERT_EQ_INT(oca_check_identity(buf, OCA_ID_PACKAGE, NULL), OCA_OK);
+    ASSERT_EQ_INT(oca_check_identity(buf, OCA_ID_SYSTEM,  NULL), OCA_OK);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3598,6 +3659,7 @@ static void build_minimal_pqc_manifest(uint8_t buf[OCA_PQC_BODY_SIZE])
         (uint8_t)(OCA_LIB_MANIFEST_MAJOR & 0xFF);
     buf[OCA_OFF_MANIFEST_VERSION_MINOR + 0] =
         (uint8_t)(OCA_LIB_MANIFEST_MINOR & 0xFF);
+    fill_unused_identity(buf);
     /* manifest_length = payload_offset = 36864 (0x9000) */
     buf[OCA_OFF_MANIFEST_LENGTH + 1] = 0x90;
     buf[OCA_PQC_OFF_PAYLOAD_OFFSET + 1] = 0x90;
@@ -5999,6 +6061,9 @@ int main(int argc, char **argv)
     /* Identity */
     RUN_TEST(test_identity_match_passes);
     RUN_TEST(test_identity_mismatch_fails);
+    RUN_TEST(test_identity_unselected_byte_rejected_with_selection);
+    RUN_TEST(test_identity_unselected_byte_rejected_without_selection);
+    RUN_TEST(test_identity_all_unused_bytes_accepted);
 
     /* Lifecycle */
     RUN_TEST(test_lifecycle_state_in_set_passes);
