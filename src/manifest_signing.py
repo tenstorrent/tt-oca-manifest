@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding, utils
 from cryptography.hazmat.backends import default_backend
 from .pack_images_constants import *
 from .utils import int_to_bytes_be, check
+from .key_hygiene import reject_committed_test_key
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,11 @@ class LocalKey(SigningKey):
             self.private_key = serialization.load_pem_private_key(key_file.read(), password=None)
 
         self.public_key = self.private_key.public_key()
+
+        # Local PEM signing is the only authority that can reach this repo's own
+        # development keys, so this is where they get caught.
+        reject_committed_test_key(self.public_key, manifest)
+
         if self.signature_type == ManifestSignatureType.RSA_3072.value:
             check_rsa_private_key(self.private_key)
             self.public_key_bytes = get_rsa_public_key_bytes(self.private_key)

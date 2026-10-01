@@ -75,7 +75,7 @@ To sign with a development RSA-3072 key:
    signing_authority: local
    signing_key_name: "test_dev_rom_key_0"
    signing_key_id: "1234567890"
-   signing_key_file: "$ROOT/tests/signing_keys/rsa_private_key.dev0.pem"
+   signing_key_file: "$ROOT/tests/signing_keys/rsa_private_key.f4.pem"
    public_key_select_classic: 0x01
    ```
 

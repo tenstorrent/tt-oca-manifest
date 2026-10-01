@@ -29,6 +29,7 @@ from collections import namedtuple
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa, utils as ec_utils
 
+from .. import key_hygiene
 from .. import manifest_signing
 from ..pack_images_constants import ManifestSignatureType
 from . import constants as oca_consts
@@ -87,6 +88,11 @@ def build_signing_key(config: dict):
         "signing_key_file": config.get("signing_key_file"),
         "signature_type": _OCA_TO_INTERNAL_SIG_TYPE[sig_type_oca],
         "manifest_identifier": _NON_BL1_MANIFEST_IDENTIFIER,
+        # The adapter has a fixed key set, so the test-key opt-in has to be
+        # forwarded explicitly or `LocalKey` would never see it and no OCA
+        # config could declare a development build.
+        key_hygiene.ALLOW_CONFIG_FIELD:
+            config.get(key_hygiene.ALLOW_CONFIG_FIELD, False),
     }
     try:
         return manifest_signing.prepare_signing_key(adapter, secure_boot=1)

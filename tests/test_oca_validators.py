@@ -116,7 +116,7 @@ def test_unsupported_signature_algorithm_rejected(tmp_path, sig_type):
     cfg["signing_authority"] = "local"
     cfg["signing_key_name"] = "test"
     cfg["signing_key_id"] = "x"
-    cfg["signing_key_file"] = "tests/signing_keys/rsa_private_key.dev0.pem"
+    cfg["signing_key_file"] = "tests/signing_keys/rsa_private_key.f4.pem"
     with pytest.raises(OcaConfigError) as exc:
         oca_entry.pack_oca_bundle(cfg)
     assert exc.value.deferred_feature == "Unsupported signature algorithm"
@@ -135,7 +135,7 @@ def test_supported_signature_types_not_rejected_by_deferred_check(tmp_path):
         cfg["signing_authority"] = "local"
         cfg["signing_key_name"] = "test"
         cfg["signing_key_id"] = "x"
-        cfg["signing_key_file"] = "tests/signing_keys/rsa_private_key.dev0.pem"
+        cfg["signing_key_file"] = "tests/signing_keys/rsa_private_key.f4.pem"
         try:
             oca_entry.pack_oca_bundle(cfg)
         except OcaConfigError as e:

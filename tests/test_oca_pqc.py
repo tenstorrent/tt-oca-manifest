@@ -34,7 +34,7 @@ OFF_PAYLOAD_OFFSET_PQC = 6479  # payload_offset field within the PQC unsigned ta
 OFF_SIGNATURE_PQC = 6495       # signature_pqc field within the PQC unsigned tail
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RSA_KEY_FILE = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.dev0.pem")
+RSA_KEY_FILE = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.f4.pem")
 _RSA_3072_SIG_BYTES = 384  # raw PKCS#1 v1.5 signature length; field is padded to 512
 
 
@@ -60,7 +60,7 @@ def _pqc_secure_rsa_config(tmp_path, ident="PQCSEC"):
         "signing_authority": "local",
         "signing_key_name": "test_dev_rom_key_0",
         "signing_key_id": "1234567890",
-        "signing_key_file": "tests/signing_keys/rsa_private_key.dev0.pem",
+        "signing_key_file": "tests/signing_keys/rsa_private_key.f4.pem",
         "public_key_select_classic": 0x01,
     })
     return cfg
