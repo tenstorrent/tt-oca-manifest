@@ -42,7 +42,7 @@ them for keywords — a partial read costs far more time than a full one.
 | [OCA boot manifest specification](https://www.openchipletatlas.org/specifications/oca/latest) | The format specification itself — the authority the producer and validator both implement. Owned and published by the Open Chiplet Atlas project, not maintained in this repository |
 | `validators/oca/lib/oca_validator.h` | The sole public C header; the API contract and every result code |
 | `src/oca/constants.py` | OCA offsets, lengths and enums — the **source of truth** the C layout headers mirror |
-| `configs/*.yaml` | Worked configs, one per feature area: classic, PQC, encrypted, secure-boot production, control-plane, and combined |
+| `configs/*.yaml` | Worked configs, one per feature area: classic, PQC, encrypted, secure-boot device state, control-plane, and combined — plus `oca_production_template.yaml`, the starting point for a real build, which deliberately does not build from a clean checkout |
 | `examples/oca_classic_basic/` | A runnable end-to-end example: config, image, pack and verify |
 | `.github/workflows/ci.yml` | The exact commands CI runs and, in unusually good comments, why each guard exists |
 
@@ -172,8 +172,16 @@ key in a PEM file is exposed to every process on the build host, to backups, and
 the build system logs. Treat `local` as a development affordance.
 
 The keys under `tests/signing_keys/` are committed development material and must never sign
-anything shipped. `configs/oca_secure_boot_production_example.yaml` is the starting point for
-a real secure-boot build.
+anything shipped. `configs/oca_production_template.yaml` is the starting point for a real
+secure-boot build.
+
+The packer enforces this. It refuses to sign with any committed key unless the config declares
+`allow_test_signing_key: true`, and it matches on the key material, not the path, so a renamed
+copy is still refused (`src/key_hygiene.py`). Every config or documentation snippet that signs
+with a development key needs that line, and the production template must never carry it.
+`tests/conftest.py` sets the equivalent environment override for the whole suite, so a test of
+the guard, or of a config or snippet a reader will run, must remove it first; otherwise the
+test passes for a reason the reader does not have.
 
 Key material, IVs, plaintext payloads of encrypted sections, and signature internals must
 never be written to logs at any verbosity level.
