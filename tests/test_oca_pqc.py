@@ -6,7 +6,7 @@ This pass produces the PQC manifest structure (OCAP magic, 36864-byte body, shar
 classic fields at their offsets, PQC-only regions present) on the non-secure path.
 PQC-native cryptography (ML-DSA / SLH-DSA / ML-KEM) is deferred and rejected fast.
 
-PQC layout anchors (verified against boot-manifest.adoc):
+PQC layout anchors (verified against the OCA boot manifest specification):
     classic_manifest_trailer slot @ 3168  -> 0x35 x4 in a PQC manifest
     pqc_manifest_trailer        @ 5899  -> 0x96 x4
     signed region ends          @ 5903

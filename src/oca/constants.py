@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Byte offsets, sizes, enums, and magic values for the OCA-classic manifest format.
 
-Source of truth: `boot-manifest.adoc` (the OCA AsciiDoc spec). Field offsets and
+Source of truth: the OCA boot manifest specification, published at
+https://www.openchipletatlas.org/specifications/oca/latest. Field offsets and
 sizes are defined there.
 
 This module is import-only; it contains no logic.
@@ -485,8 +486,8 @@ CLASSIC_VARIANT = OcaVariant(
     payload_offset_field=OFF_PAYLOAD_OFFSET,
 )
 
-# PQC variant (OCAP, 36864-byte body). Layout verified against
-# `boot-manifest.adoc`: the PQC-only signed block is inserted at the Classic
+# PQC variant (OCAP, 36864-byte body). Layout verified against the OCA boot
+# manifest specification: the PQC-only signed block is inserted at the Classic
 # manifest-trailer position, shifting the unsigned tail down by its size, and a
 # `signature_pqc` field is added to the tail. Per-field PQC offsets and the
 # C-side layout mirror are added with the validator's PQC support; this pass
