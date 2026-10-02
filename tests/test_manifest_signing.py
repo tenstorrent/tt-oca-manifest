@@ -9,7 +9,6 @@ import subprocess
 import sys
 import textwrap
 
-from botocore.exceptions import ClientError
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding
 
@@ -227,6 +226,7 @@ def test_aws_credential_probe():
 @pytest.mark.aws
 def test_aws_credentials_verify_invalid():
     # Mock invalid credentials scenario
+    from botocore.exceptions import ClientError
 
     with unittest.mock.patch('boto3.client') as mock_client:
         mock_sts = unittest.mock.Mock()

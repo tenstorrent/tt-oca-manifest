@@ -94,15 +94,16 @@ future variants slot in under `lib/` without a build-system fork.
 ### Python
 
 Python 3.9 or newer. Install the package **editable** into whichever Python environment you
-already use, with both extras:
+already use, with the `dev` extra:
 
 ```bash
-pip install -e '.[dev,aws]'
+pip install -e '.[dev]'        # '.[dev,aws]' to also run the AWS KMS tests
 ```
 
-The `aws` extra is required even when you never touch AWS: `tests/test_manifest_signing.py`
-imports botocore at module scope, so collection fails outright without it. `dev` alone cannot
-run the suite.
+`dev` alone runs the suite. The `aws` extra (boto3) is needed only by the AWS KMS tests, and a
+hook in `tests/conftest.py` skips them when it is absent. Keep boto3 and botocore imports out
+of test-module scope: a failed import there is a collection error that stops the whole suite,
+and `tests/test_optional_aws_dependency.py` fails if one appears.
 
 Tests import the *installed* package (`from tt_boot_manifest.oca import ...`), while sources
 inside `src/` use relative imports. An editable install keeps source edits live; a newly added
@@ -447,8 +448,9 @@ for t in both classic-only pqc-only; do make -C validators/oca "$t"; done
 
 AWS KMS tests are **deselected**, not skipped: they need live credentials, and `-m "not aws"`
 makes their absence an explicit exclusion rather than a handful of skips that read like a
-partial failure. Expect zero skips from a healthy run. Run them with `pytest -m aws` before
-any release that exercises KMS signing; refresh credentials with the `aws-sso` console script.
+partial failure. Expect zero skips from a healthy run. Run them with `pytest -m aws`, with the
+`aws` extra installed, before any release that exercises KMS signing; refresh credentials with
+the `aws-sso` console script.
 
 `pytest --cov=tt_boot_manifest --cov-report=html` produces a coverage report.
 
@@ -557,7 +559,7 @@ Keep pull requests focused; unrelated changes belong in separate ones. Branch na
 
 | Symptom | Cause |
 |---|---|
-| `pytest` collection fails on a botocore import | Installed with `[dev]` only. The `aws` extra is needed even to run `-m "not aws"` |
+| `pytest -m aws` skips every test | The `aws` extra is not installed, or the `AWS_KMS_TEST_*` key-id variables are unset. `-rs` prints which |
 | A green run with far fewer tests than expected | A missing toolchain turned gates into skips. Confirm `make`, `pkg-config` and a non-1.9.8 doxygen are present |
 | `make check` succeeds but validated nothing | A "nothing to build" path. Look for `skipping archive`, `skipping link`, `no fixtures yet`, and for two `N/N passed` summaries |
 | A gate change has no effect on the built binary | Objects were reused across an `EXTRA_CFLAGS` change. Check `build/lib/.cflags`, or clean |
