@@ -636,7 +636,7 @@ Tests are grouped by the side they exercise:
 
 **Python producer:**
 - **`tests/test_oca_*.py`** — manifest body / TOC, signing, encryption, PQC, combined, determinism, and format dispatch
-- **`tests/test_oca_example_configs.py`** — builds each `configs/oca_*.yaml` example and validates the manifest output in pure Python (framing, `manifest_hash` recompute, signature) — no C toolchain needed
+- **`tests/test_oca_example_configs.py`** — builds each `configs/oca_*.yaml` example and validates the manifest output in pure Python (framing, `manifest_hash` recompute, signature) — no C toolchain needed; also applies the `examples/oca_classic_basic` README's signed-bundle step as written and checks the result with that example's `verify.py`
 
 **C consumer/validator:**
 - **`tests/test_oca_c_validator_integration.py`** — packs fixtures and round-trips them through the compiled `oca-validate` CLI (skips if `make`/`pkg-config` are unavailable)
