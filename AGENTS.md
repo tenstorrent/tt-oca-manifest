@@ -42,7 +42,7 @@ them for keywords — a partial read costs far more time than a full one.
 | [OCA boot manifest specification](https://www.openchipletatlas.org/specifications/oca/latest) | The format specification itself — the authority the producer and validator both implement. Owned and published by the Open Chiplet Atlas project, not maintained in this repository |
 | `validators/oca/lib/oca_validator.h` | The sole public C header; the API contract and every result code |
 | `src/oca/constants.py` | OCA offsets, lengths and enums — the **source of truth** the C layout headers mirror |
-| `configs/*.yaml` | Worked configs, one per feature area: classic, PQC, encrypted, secure-boot production, control-plane, and combined |
+| `configs/*.yaml` | Worked configs, one per feature area: classic, PQC, encrypted, secure-boot device state, control-plane, and combined — plus `oca_production_template.yaml`, the starting point for a real build, which deliberately does not build from a clean checkout |
 | `examples/oca_classic_basic/` | A runnable end-to-end example: config, image, pack and verify |
 | `.github/workflows/ci.yml` | The exact commands CI runs and, in unusually good comments, why each guard exists |
 
@@ -94,15 +94,16 @@ future variants slot in under `lib/` without a build-system fork.
 ### Python
 
 Python 3.9 or newer. Install the package **editable** into whichever Python environment you
-already use, with both extras:
+already use, with the `dev` extra:
 
 ```bash
-pip install -e '.[dev,aws]'
+pip install -e '.[dev]'        # '.[dev,aws]' to also run the AWS KMS tests
 ```
 
-The `aws` extra is required even when you never touch AWS: `tests/test_manifest_signing.py`
-imports botocore at module scope, so collection fails outright without it. `dev` alone cannot
-run the suite.
+`dev` alone runs the suite. The `aws` extra (boto3) is needed only by the AWS KMS tests, and a
+hook in `tests/conftest.py` skips them when it is absent. Keep boto3 and botocore imports out
+of test-module scope: a failed import there is a collection error that stops the whole suite,
+and `tests/test_optional_aws_dependency.py` fails if one appears.
 
 Tests import the *installed* package (`from tt_boot_manifest.oca import ...`), while sources
 inside `src/` use relative imports. An editable install keeps source edits live; a newly added
@@ -172,8 +173,16 @@ key in a PEM file is exposed to every process on the build host, to backups, and
 the build system logs. Treat `local` as a development affordance.
 
 The keys under `tests/signing_keys/` are committed development material and must never sign
-anything shipped. `configs/oca_secure_boot_production_example.yaml` is the starting point for
-a real secure-boot build.
+anything shipped. `configs/oca_production_template.yaml` is the starting point for a real
+secure-boot build.
+
+The packer enforces this. It refuses to sign with any committed key unless the config declares
+`allow_test_signing_key: true`, and it matches on the key material, not the path, so a renamed
+copy is still refused (`src/key_hygiene.py`). Every config or documentation snippet that signs
+with a development key needs that line, and the production template must never carry it.
+`tests/conftest.py` sets the equivalent environment override for the whole suite, so a test of
+the guard, or of a config or snippet a reader will run, must remove it first; otherwise the
+test passes for a reason the reader does not have.
 
 Key material, IVs, plaintext payloads of encrypted sections, and signature internals must
 never be written to logs at any verbosity level.
@@ -439,8 +448,9 @@ for t in both classic-only pqc-only; do make -C validators/oca "$t"; done
 
 AWS KMS tests are **deselected**, not skipped: they need live credentials, and `-m "not aws"`
 makes their absence an explicit exclusion rather than a handful of skips that read like a
-partial failure. Expect zero skips from a healthy run. Run them with `pytest -m aws` before
-any release that exercises KMS signing; refresh credentials with the `aws-sso` console script.
+partial failure. Expect zero skips from a healthy run. Run them with `pytest -m aws`, with the
+`aws` extra installed, before any release that exercises KMS signing; refresh credentials with
+the `aws-sso` console script.
 
 `pytest --cov=tt_boot_manifest --cov-report=html` produces a coverage report.
 
@@ -549,7 +559,7 @@ Keep pull requests focused; unrelated changes belong in separate ones. Branch na
 
 | Symptom | Cause |
 |---|---|
-| `pytest` collection fails on a botocore import | Installed with `[dev]` only. The `aws` extra is needed even to run `-m "not aws"` |
+| `pytest -m aws` skips every test | The `aws` extra is not installed, or the `AWS_KMS_TEST_*` key-id variables are unset. `-rs` prints which |
 | A green run with far fewer tests than expected | A missing toolchain turned gates into skips. Confirm `make`, `pkg-config` and a non-1.9.8 doxygen are present |
 | `make check` succeeds but validated nothing | A "nothing to build" path. Look for `skipping archive`, `skipping link`, `no fixtures yet`, and for two `N/N passed` summaries |
 | A gate change has no effect on the built binary | Objects were reused across an `EXTRA_CFLAGS` change. Check `build/lib/.cflags`, or clean |

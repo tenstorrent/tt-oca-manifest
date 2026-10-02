@@ -67,7 +67,7 @@ OK: OCA magic, length, trailer, and manifest_hash all verified.
 
 To sign with a development RSA-3072 key:
 
-1. Add the following to `config.yaml`:
+1. Replace the `secure_boot: 0` line in `config.yaml` with:
 
    ```yaml
    secure_boot: 1
@@ -75,9 +75,17 @@ To sign with a development RSA-3072 key:
    signing_authority: local
    signing_key_name: "test_dev_rom_key_0"
    signing_key_id: "1234567890"
-   signing_key_file: "$ROOT/tests/signing_keys/rsa_private_key.f4.pem"
+   signing_key_file: "tests/signing_keys/rsa_private_key.f4.pem"
    public_key_select_classic: 0x01
+   allow_test_signing_key: true
    ```
+
+   `allow_test_signing_key: true` is required. The key is a development key
+   committed to this repository, and the packer refuses to sign with one unless
+   the config declares it, so a manifest signed with public key material cannot
+   be built by accident. A real build omits that line and signs with a key from
+   its signing authority; start one from
+   [configs/oca_production_template.yaml](../../configs/oca_production_template.yaml).
 
 2. Regenerate the bundle (same command).
 

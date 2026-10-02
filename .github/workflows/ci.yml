@@ -96,14 +96,14 @@ jobs:
                exit 1 ;;
           esac
 
-      # The `aws` extra is required even though the AWS tests are deselected
-      # below: tests/test_manifest_signing.py imports botocore at module scope,
-      # so collection fails outright without it. `dev` alone cannot run the
-      # suite.
+      # `dev` only, deliberately: the AWS tests are deselected below, so this
+      # installs what a contributor without the `aws` extra has, and a test
+      # module that imports boto3 or botocore at module scope fails collection
+      # here as well as in tests/test_optional_aws_dependency.py.
       - name: Install the package and test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e '.[dev,aws]'
+          python -m pip install -e '.[dev]'
 
       # Deselected rather than skipped: the AWS KMS tests need live credentials,
       # and `-m "not aws"` makes their absence an explicit exclusion instead of

@@ -14,21 +14,32 @@ Device-state policy checks (ROOT-key revocation, anti-rollback) depend on device
 state and are the C validator's job; here we assert the manifest *output* is
 well-formed, authentic, and carries the device-state field values the example
 config declares.
+
+The `examples/oca_classic_basic` walkthrough is covered too: its README's
+signed-bundle step is applied to its config as written and the result checked
+with the example's own `verify.py`.
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import struct
+import textwrap
 
 import pytest
+from cryptography.exceptions import InvalidSignature
 from oca_fixtures.manifest_reader import verify_classic_signature
+from tt_boot_manifest.key_hygiene import ALLOW_CONFIG_FIELD, ALLOW_ENV_VAR, KeyHygieneError
 from tt_boot_manifest.oca import constants as oca_consts
 from tt_boot_manifest.oca.entry import pack_oca_bundle
 from tt_boot_manifest.utils import load_config
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASIC_EXAMPLE_DIR = os.path.join(PROJECT_ROOT, "examples", "oca_classic_basic")
+SIGNED_STEP_HEADING = "## Switching to a signed bundle"
+UNSIGNED_LINE = "secure_boot: 0"
 
 # Classic examples validated end-to-end in-process (magic, framing, hash, and
 # signature when secure boot is enabled).
@@ -132,3 +143,91 @@ def test_secure_boot_device_state_example_fields(tmp_path):
     # The selected ROOT key must not be in the revoke set — the property the
     # validator enforces before using a key, checked here on the config output.
     assert select & revoke == 0
+
+
+# ---------------------------------------------------------------------------
+# examples/oca_classic_basic: the README's signed-bundle step
+#
+# conftest.py sets the development-key override and $ROOT for the whole
+# session. A reader following the README in a bare clone has neither, so both
+# are removed here; otherwise the step passes for a reason the reader lacks.
+# ---------------------------------------------------------------------------
+
+
+def _readme_signed_snippet():
+    """The YAML block the README's signed-bundle step substitutes into config.yaml."""
+    with open(os.path.join(BASIC_EXAMPLE_DIR, "README.md"), encoding="utf-8") as f:
+        readme = f.read()
+    assert SIGNED_STEP_HEADING in readme, f"README.md lost its {SIGNED_STEP_HEADING!r} section"
+    section = readme.split(SIGNED_STEP_HEADING, 1)[1]
+    assert "```yaml" in section, f"no YAML block under {SIGNED_STEP_HEADING!r}"
+    return textwrap.dedent(section.split("```yaml", 1)[1].split("```", 1)[0]).strip()
+
+
+def _apply_signed_step(snippet):
+    """config.yaml with its `secure_boot: 0` line replaced by `snippet`."""
+    with open(os.path.join(BASIC_EXAMPLE_DIR, "config.yaml"), encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    assert lines.count(UNSIGNED_LINE) == 1, \
+        f"config.yaml needs exactly one {UNSIGNED_LINE!r} line for the README step to replace"
+    at = lines.index(UNSIGNED_LINE)
+    lines[at:at + 1] = snippet.splitlines()
+    return "\n".join(lines) + "\n"
+
+
+def _pack_signed_step(tmp_path, monkeypatch, snippet):
+    """Pack config.yaml after the signed-bundle step, as a bare clone would."""
+    monkeypatch.delenv(ALLOW_ENV_VAR, raising=False)
+    monkeypatch.delenv("ROOT", raising=False)
+    monkeypatch.chdir(PROJECT_ROOT)
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(_apply_signed_step(snippet), encoding="utf-8")
+    cfg = load_config(str(cfg_path))
+    assert cfg is not None, "config.yaml does not parse after the README step"
+    return pack_oca_bundle(cfg)
+
+
+def _load_example_verifier():
+    """Import examples/oca_classic_basic/verify.py, which is not a package module."""
+    spec = importlib.util.spec_from_file_location(
+        "oca_classic_basic_verify", os.path.join(BASIC_EXAMPLE_DIR, "verify.py"))
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    return verifier
+
+
+def _example_signature_verifies(verifier, bundle):
+    """Whether the example's own verify_signature() accepts `bundle`."""
+    try:
+        verifier.verify_signature(bundle)
+    except InvalidSignature:
+        return False
+    return True
+
+
+def test_basic_example_signed_step_builds_and_verifies(tmp_path, monkeypatch):
+    """The README's signed-bundle step, applied as written, packs a bundle that
+    passes the example's verify.py, and a tampered copy fails it."""
+    bundle = _pack_signed_step(tmp_path, monkeypatch, _readme_signed_snippet())
+    verifier = _load_example_verifier()
+
+    verifier.verify_unsigned(bundle)
+    assert _example_signature_verifies(verifier, bundle)
+
+    tampered = bytearray(bundle)
+    tampered[oca_consts.OFF_MANIFEST_IDENTIFIER] ^= 0x01
+    assert not _example_signature_verifies(verifier, bytes(tampered))
+
+
+def test_basic_example_signed_step_needs_test_key_opt_in(tmp_path, monkeypatch):
+    """Without its `allow_test_signing_key` line the same step is refused.
+
+    This is the control for the test above: the guard is live under this setup,
+    so that test passes because the README declares the development key.
+    """
+    snippet = "\n".join(
+        line for line in _readme_signed_snippet().splitlines()
+        if not line.startswith(f"{ALLOW_CONFIG_FIELD}:"))
+
+    with pytest.raises(KeyHygieneError):
+        _pack_signed_step(tmp_path, monkeypatch, snippet)

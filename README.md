@@ -604,10 +604,10 @@ your program's signing authority and your target's ROM/OTP, not of a file in her
 The test suite validates packaging logic, signature generation, encryption, and manifest structure. Make sure you have installed the package with development dependencies first:
 
 ```bash
-# Install with test dependencies
-pip install -e ".[dev,aws]"
+# Install with test dependencies (add aws, as ".[dev,aws]", to run the AWS KMS tests)
+pip install -e ".[dev]"
 
-# Run all tests (AWS tests skip automatically without credentials)
+# Run all tests (AWS tests skip automatically without the aws extra or credentials)
 pytest -vvv
 
 # Run all tests excluding AWS tests explicitly
@@ -632,11 +632,12 @@ Tests are grouped by the side they exercise:
 
 **Shared infrastructure:**
 - **`tests/test_manifest_signing.py`** — signing-key handling + signature generation/verification
+- **`tests/test_optional_aws_dependency.py`** — the suite collects, and the AWS tests skip, with the `aws` extra not installed
 - **`tests/conftest.py`** — pytest configuration
 
 **Python producer:**
 - **`tests/test_oca_*.py`** — manifest body / TOC, signing, encryption, PQC, combined, determinism, and format dispatch
-- **`tests/test_oca_example_configs.py`** — builds each `configs/oca_*.yaml` example and validates the manifest output in pure Python (framing, `manifest_hash` recompute, signature) — no C toolchain needed
+- **`tests/test_oca_example_configs.py`** — builds each `configs/oca_*.yaml` example and validates the manifest output in pure Python (framing, `manifest_hash` recompute, signature) — no C toolchain needed; also applies the `examples/oca_classic_basic` README's signed-bundle step as written and checks the result with that example's `verify.py`
 
 **C consumer/validator:**
 - **`tests/test_oca_c_validator_integration.py`** — packs fixtures and round-trips them through the compiled `oca-validate` CLI (skips if `make`/`pkg-config` are unavailable)

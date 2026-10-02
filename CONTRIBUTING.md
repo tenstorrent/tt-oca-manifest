@@ -48,12 +48,11 @@ headers, and `pkg-config` to build and test the C validator. Install the package
 in editable mode with the test extras:
 
 ```bash
-pip install -e ".[dev,aws]"
+pip install -e ".[dev]"
 ```
 
-The `aws` extra is required even if you do not use AWS KMS signing, because
-`tests/test_manifest_signing.py` imports `botocore` at module scope and
-collection fails without it.
+Add the `aws` extra (`".[dev,aws]"`) only if you will run the AWS KMS tests.
+Without it they skip, and the rest of the suite runs normally.
 
 ## Checks your change must pass
 
