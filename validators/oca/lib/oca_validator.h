@@ -75,6 +75,13 @@ extern "C" {
  */
 #define OCA_LIB_MANIFEST_MINOR  0u
 
+/**
+ * @brief Payload TOC format major version the library was built against.
+ *
+ * A toc_version_major above this one is rejected; a larger minor is accepted.
+ */
+#define OCA_LIB_TOC_MAJOR       1u
+
 /* ------------------------------------------------------------------ */
 /* Consumer resource limits                                           */
 /* ------------------------------------------------------------------ */

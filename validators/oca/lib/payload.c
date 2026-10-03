@@ -109,6 +109,7 @@ static oca_result_t read_toc_span(const uint8_t *pt, size_t pt_len,
  * on the payload it holds:
  *   - image_count > 0, and TOC_Header_Size + image_count * TOC_Entry_Size
  *     neither overflows nor exceeds the plaintext payload length;
+ *   - toc_version_major is not above OCA_LIB_TOC_MAJOR;
  *   - every entry's offset is a multiple of 8;
  *   - every entry's length is non-zero;
  *   - every entry's [offset, offset+length) is in-bounds and does not overflow;
@@ -143,6 +144,9 @@ static oca_result_t validate_toc_structure(
     oca_result_t sr = read_toc_span(pt, pt_len, &image_count, &toc_bytes);
     if (sr != OCA_OK) {
         return sr;
+    }
+    if (oca_le_u16(pt + OCA_TOC_OFF_VERSION_MAJOR) > OCA_LIB_TOC_MAJOR) {
+        return OCA_FAIL_PAYLOAD_TOC;
     }
 
     for (uint64_t i = 0u; i < image_count; ++i) {

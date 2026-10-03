@@ -1983,6 +1983,32 @@ TEST(test_payload_toc_multi_entry_disjoint_passes)
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_OK);
 }
 
+/* One 8-byte image straight after a 1-entry TOC: structurally valid, so each
+ * test below changes exactly one field. */
+static void toc1_valid(uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u])
+{
+    memset(pt, 0, OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u);
+    toc_set_header(pt, 1u);
+    toc_set_entry(pt, 0u, OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE, 8u);
+}
+
+TEST(test_payload_toc_major_at_supported_passes)
+{
+    uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];
+    toc1_valid(pt);
+    toc_put_u16(pt + OCA_TOC_OFF_VERSION_MAJOR, OCA_LIB_TOC_MAJOR);
+    toc_put_u16(pt + OCA_TOC_OFF_VERSION_MINOR, 7u);   /* a newer minor is compatible */
+    ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_OK);
+}
+
+TEST(test_payload_toc_major_above_supported_rejected)
+{
+    uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];
+    toc1_valid(pt);
+    toc_put_u16(pt + OCA_TOC_OFF_VERSION_MAJOR, OCA_LIB_TOC_MAJOR + 1u);
+    ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_FAIL_PAYLOAD_TOC);
+}
+
 /* Per-entry image hash. The stub sha256 digests everything to all-zero, so a
  * zero-filled TOC is self-consistent and any non-zero byte in an entry's stored
  * `hash` field is a mismatch the per-entry check must catch. The chain check
@@ -6152,6 +6178,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_payload_toc_entries_overlap);
     RUN_TEST(test_payload_toc_entries_overlap_unsorted);
     RUN_TEST(test_payload_toc_multi_entry_disjoint_passes);
+    RUN_TEST(test_payload_toc_major_at_supported_passes);
+    RUN_TEST(test_payload_toc_major_above_supported_rejected);
 
     /* Per-entry image hash */
     RUN_TEST(test_payload_toc_entry_hash_mismatch);
