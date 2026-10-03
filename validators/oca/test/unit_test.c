@@ -455,9 +455,9 @@ typedef struct {
     /* Scratch payload buffers the stubs return. Cleared with everything else, so
      * a case that forgets to build one gets an empty TOC rather than whatever
      * the previous case left. */
-    uint8_t plaintext_toc[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE];
+    uint8_t plaintext_toc[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];
     uint8_t cap_toc[OCA_TOC_HEADER_SIZE
-                    + (OCA_TOC_MAX_IMAGES + 1u) * OCA_TOC_ENTRY_SIZE];
+                    + (OCA_TOC_MAX_IMAGES + 1u) * (OCA_TOC_ENTRY_SIZE + 8u)];
 } test_fixture_t;
 
 static test_fixture_t g_fx;
@@ -1475,9 +1475,10 @@ static void build_plaintext_toc(void)
     memset(g_fx.plaintext_toc, 0, sizeof g_fx.plaintext_toc);
     memcpy(g_fx.plaintext_toc, "PTOC", 4);
     g_fx.plaintext_toc[OCA_TOC_OFF_IMAGE_COUNT] = 1u;
-    /* Length may not be zero. The range lands on the TOC's own bytes, which the
-     * structural rules bound and de-overlap but do not reserve; the stub sha256
-     * digests everything to all-zero, so the zeroed hash field still matches. */
+    /* One 8-byte image straight after the TOC. The stub sha256 digests
+     * everything to all-zero, so the zeroed hash field still matches. */
+    toc_put_u64(g_fx.plaintext_toc + OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_OFF_OFFSET,
+                OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE);
     toc_put_u64(g_fx.plaintext_toc + OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_OFF_LENGTH,
                 8u);
 }
@@ -1973,13 +1974,15 @@ TEST(test_payload_toc_entries_overlap_unsorted)
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_FAIL_PAYLOAD_TOC);
 }
 
+#define TOC2_BYTES (OCA_TOC_HEADER_SIZE + 2u * OCA_TOC_ENTRY_SIZE)   /* 8-byte aligned */
+
 TEST(test_payload_toc_multi_entry_disjoint_passes)
 {
-    uint8_t pt[OCA_TOC_HEADER_SIZE + 2u * OCA_TOC_ENTRY_SIZE];
+    uint8_t pt[TOC2_BYTES + 16u];
     memset(pt, 0, sizeof pt);
     toc_set_header(pt, 2u);
-    toc_set_entry(pt, 0u, 0u, 8u);                /* [0, 8), 8-byte aligned */
-    toc_set_entry(pt, 1u, 8u, 8u);                /* [8, 16), aligned, disjoint */
+    toc_set_entry(pt, 0u, TOC2_BYTES, 8u);        /* first image after the TOC */
+    toc_set_entry(pt, 1u, TOC2_BYTES + 8u, 8u);   /* aligned, disjoint */
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_OK);
 }
 
@@ -2009,6 +2012,20 @@ TEST(test_payload_toc_major_above_supported_rejected)
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_FAIL_PAYLOAD_TOC);
 }
 
+/* An image may not start inside the TOC, even when it overlaps no other image. */
+TEST(test_payload_toc_entry_inside_toc_rejected)
+{
+    uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];
+    toc1_valid(pt);
+    ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_OK);
+
+    toc_set_entry(pt, 0u, OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE - 8u, 8u);
+    ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_FAIL_PAYLOAD_TOC);
+
+    oca_image_info_t img;
+    ASSERT_EQ_INT(oca_toc_image_at(pt, sizeof pt, 0u, &img), OCA_FAIL_PAYLOAD_TOC);
+}
+
 /* Per-entry image hash. The stub sha256 digests everything to all-zero, so a
  * zero-filled TOC is self-consistent and any non-zero byte in an entry's stored
  * `hash` field is a mismatch the per-entry check must catch. The chain check
@@ -2016,10 +2033,10 @@ TEST(test_payload_toc_major_above_supported_rejected)
  * field as ordinary TOC data and therefore cannot detect this. */
 TEST(test_payload_toc_entry_hash_mismatch)
 {
-    uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE];
+    uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];
     memset(pt, 0, sizeof pt);
     toc_set_header(pt, 1u);
-    toc_set_entry(pt, 0u, 0u, 8u);
+    toc_set_entry(pt, 0u, OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE, 8u);
     pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_OFF_HASH] = 0xFFu;  /* wrong digest */
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_FAIL_PAYLOAD_ENTRY_HASH);
 }
@@ -2027,11 +2044,11 @@ TEST(test_payload_toc_entry_hash_mismatch)
 /* The check covers every entry, not just the first. */
 TEST(test_payload_toc_entry_hash_mismatch_second_entry)
 {
-    uint8_t pt[OCA_TOC_HEADER_SIZE + 2u * OCA_TOC_ENTRY_SIZE];
+    uint8_t pt[TOC2_BYTES + 16u];
     memset(pt, 0, sizeof pt);
     toc_set_header(pt, 2u);
-    toc_set_entry(pt, 0u, 0u, 8u);
-    toc_set_entry(pt, 1u, 8u, 8u);
+    toc_set_entry(pt, 0u, TOC2_BYTES, 8u);
+    toc_set_entry(pt, 1u, TOC2_BYTES + 8u, 8u);
     uint8_t *second = pt + OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE;
     second[OCA_TOC_ENTRY_OFF_HASH] = 0x01u;
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_FAIL_PAYLOAD_ENTRY_HASH);
@@ -2041,10 +2058,10 @@ TEST(test_payload_toc_entry_hash_mismatch_second_entry)
  * the trailing padding this pass does not interpret must not fail a good entry. */
 TEST(test_payload_toc_entry_hash_padding_ignored)
 {
-    uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE];
+    uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];
     memset(pt, 0, sizeof pt);
     toc_set_header(pt, 1u);
-    toc_set_entry(pt, 0u, 0u, 8u);
+    toc_set_entry(pt, 0u, OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE, 8u);
     uint8_t *entry = pt + OCA_TOC_HEADER_SIZE;
     memset(entry + OCA_TOC_ENTRY_OFF_HASH + OCA_MANIFEST_HASH_DIGEST_SIZE, 0xA5u,
            OCA_LEN_MANIFEST_HASH - OCA_MANIFEST_HASH_DIGEST_SIZE);
@@ -2944,10 +2961,11 @@ static void cap_toc_init(uint64_t image_count)
     memset(g_fx.cap_toc, 0, sizeof g_fx.cap_toc);
     toc_set_header(g_fx.cap_toc, image_count);
     toc_put_u64(g_fx.cap_toc + OCA_TOC_OFF_PAYLOAD_LENGTH, sizeof g_fx.cap_toc);
-    /* Distinct 8-byte ranges: non-zero, aligned, in bounds and disjoint, so
-     * nothing but the cap can be the reason for a rejection. */
+    /* Distinct 8-byte ranges after the TOC: non-zero, aligned, in bounds and
+     * disjoint, so nothing but the cap can be the reason for a rejection. */
+    const uint64_t first = OCA_TOC_HEADER_SIZE + image_count * OCA_TOC_ENTRY_SIZE;
     for (uint64_t i = 0u; i < image_count; ++i) {
-        toc_set_entry(g_fx.cap_toc, i, i * 8u, 8u);
+        toc_set_entry(g_fx.cap_toc, i, first + i * 8u, 8u);
     }
 }
 
@@ -6180,6 +6198,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_payload_toc_multi_entry_disjoint_passes);
     RUN_TEST(test_payload_toc_major_at_supported_passes);
     RUN_TEST(test_payload_toc_major_above_supported_rejected);
+    RUN_TEST(test_payload_toc_entry_inside_toc_rejected);
 
     /* Per-entry image hash */
     RUN_TEST(test_payload_toc_entry_hash_mismatch);
