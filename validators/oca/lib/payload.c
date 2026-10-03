@@ -109,7 +109,7 @@ static oca_result_t read_toc_span(const uint8_t *pt, size_t pt_len,
  * on the payload it holds:
  *   - image_count > 0, and TOC_Header_Size + image_count * TOC_Entry_Size
  *     neither overflows nor exceeds the plaintext payload length;
- *   - every entry's offset is a multiple of 8;
+ *   - every entry's offset is a multiple of 8 and lies past the TOC;
  *   - every entry's length is non-zero;
  *   - every entry's [offset, offset+length) is in-bounds and does not overflow;
  *   - no two entries' image ranges overlap.
@@ -151,6 +151,11 @@ static oca_result_t validate_toc_structure(
         uint64_t len_i = oca_le_u64(entry_i + OCA_TOC_ENTRY_OFF_LENGTH);
 
         if ((off_i % 8u) != 0u) {                       /* offset multiple of 8 */
+            return OCA_FAIL_PAYLOAD_TOC;
+        }
+        /* The payload is the TOC followed by its images, so no image may
+         * alias TOC bytes. */
+        if (off_i < toc_bytes) {
             return OCA_FAIL_PAYLOAD_TOC;
         }
         /* Nothing else rejects an empty entry: it is in bounds and overlaps
@@ -1018,11 +1023,11 @@ oca_result_t oca_toc_image_at(const uint8_t *payload, size_t payload_length,
     uint64_t off = oca_le_u64(entry + OCA_TOC_ENTRY_OFF_OFFSET);
     uint64_t len = oca_le_u64(entry + OCA_TOC_ENTRY_OFF_LENGTH);
 
-    /* Same per-entry rules as validate_toc_structure: 8-byte aligned offset,
-     * non-zero length, and [off, off+len) inside the payload without
-     * overflowing. Re-checked here so this function is safe on any buffer, not
-     * only one that already went through oca_check_payload. */
-    if ((off % 8u) != 0u) {
+    /* Same per-entry rules as validate_toc_structure: 8-byte aligned offset
+     * past the TOC, non-zero length, and [off, off+len) inside the payload
+     * without overflowing. Re-checked here so this function is safe on any
+     * buffer, not only one that already went through oca_check_payload. */
+    if ((off % 8u) != 0u || off < toc_bytes) {
         return OCA_FAIL_PAYLOAD_TOC;
     }
     if (len == 0u) {
