@@ -1475,6 +1475,9 @@ static void build_plaintext_toc(void)
     memset(g_fx.plaintext_toc, 0, sizeof g_fx.plaintext_toc);
     memcpy(g_fx.plaintext_toc, "PTOC", 4);
     g_fx.plaintext_toc[OCA_TOC_OFF_IMAGE_COUNT] = 1u;
+    /* ENC_CT_LEN exceeds this plaintext by less than one AES block, as PKCS#7
+     * padding would. */
+    toc_put_u64(g_fx.plaintext_toc + OCA_TOC_OFF_PAYLOAD_LENGTH, sizeof g_fx.plaintext_toc);
     /* Length may not be zero. The range lands on the TOC's own bytes, which the
      * structural rules bound and de-overlap but do not reserve; the stub sha256
      * digests everything to all-zero, so the zeroed hash field still matches. */
@@ -1515,19 +1518,26 @@ static oca_result_t decrypt_no_secret(const oca_decrypt_input_t *in,
  * set, payload_hashed_length = payload_length = ENC_CT_LEN, given payload_hash /
  * chain fields. The two lengths must agree: for an encrypted payload they
  * describe the same stored ciphertext. */
+static void build_encrypted_bundle_len(uint8_t *buf, size_t ct_len,
+                                       const uint8_t payload_hash[32],
+                                       const uint8_t chain[32])
+{
+    memset(buf, 0, OCA_CLASSIC_BODY_SIZE + ct_len);
+    build_minimal_manifest(buf);
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;             /* encrypted_payload */
+    buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;  /* supported cipher */
+    toc_put_u64(buf + OCA_OFF_PAYLOAD_HASHED_LENGTH, ct_len);
+    toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, ct_len);
+    memcpy(buf + OCA_OFF_PAYLOAD_HASH, payload_hash, 32);
+    memcpy(buf + OCA_OFF_PAYLOAD_HASH_CHAIN, chain, 32);
+    memset(buf + OCA_CLASSIC_BODY_SIZE, 0xABu, ct_len);          /* ciphertext */
+}
+
 static void build_encrypted_bundle(uint8_t *buf,
                                    const uint8_t payload_hash[32],
                                    const uint8_t chain[32])
 {
-    memset(buf, 0, OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN);
-    build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;             /* encrypted_payload */
-    buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;  /* supported cipher */
-    toc_put_u64(buf + OCA_OFF_PAYLOAD_HASHED_LENGTH, ENC_CT_LEN);
-    toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, ENC_CT_LEN);
-    memcpy(buf + OCA_OFF_PAYLOAD_HASH, payload_hash, 32);
-    memcpy(buf + OCA_OFF_PAYLOAD_HASH_CHAIN, chain, 32);
-    memset(buf + OCA_CLASSIC_BODY_SIZE, 0xABu, ENC_CT_LEN);      /* ciphertext */
+    build_encrypted_bundle_len(buf, ENC_CT_LEN, payload_hash, chain);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1886,24 +1896,44 @@ static void toc_set_entry(uint8_t *pt, uint64_t idx, uint64_t off, uint64_t len)
     toc_put_u64(e + OCA_TOC_ENTRY_OFF_LENGTH, len);
 }
 
+#define STRUCT_PT_MAX 1024u
+
 /* Run oca_check_payload over an encrypted bundle whose ciphertext hash
- * matches and whose decryption yields (pt, pt_len). The embedded
+ * matches and whose decryption yields (pt, pt_len) with its TOC payload_length
+ * set to @p toc_len. The ciphertext is pt_len plus one PKCS#7 pad. The embedded
  * payload_hash_chain is all-zero and the stub sha256 recomputes all-zero for
  * any non-ciphertext input, so a structurally-valid TOC reaches OCA_OK. */
-static oca_result_t run_struct_payload(const uint8_t *pt, size_t pt_len)
+static oca_result_t run_struct_payload_toc_len(const uint8_t *pt, size_t pt_len,
+                                               uint64_t toc_len)
 {
-    uint8_t buf[OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN];
+    static uint8_t buf[OCA_CLASSIC_BODY_SIZE + STRUCT_PT_MAX + OCA_AES_BLOCK_SIZE];
+    static uint8_t plain[STRUCT_PT_MAX];
+    if (pt_len > sizeof plain || pt_len < OCA_TOC_HEADER_SIZE) {
+        return OCA_FAIL_INVALID_ARG;   /* fixture misuse: no rule under test returns this */
+    }
+    memcpy(plain, pt, pt_len);
+    toc_put_u64(plain + OCA_TOC_OFF_PAYLOAD_LENGTH, toc_len);
+
+    size_t ct_len = (pt_len / OCA_AES_BLOCK_SIZE + 1u) * OCA_AES_BLOCK_SIZE;
     uint8_t ph[32]; memset(ph, 0x5A, 32);
     uint8_t chain[32]; memset(chain, 0, 32);
-    build_encrypted_bundle(buf, ph, chain);
+    build_encrypted_bundle_len(buf, ct_len, ph, chain);
 
     payload_sha_ctx_init(buf + OCA_CLASSIC_BODY_SIZE, true, 0x5A);
+    g_fx.ciphertext_len = ct_len;
     oca_callbacks_t cb;
     payload_cb(&cb, decrypt_returns_struct_pt);
 
-    g_fx.struct_pt = pt;
+    g_fx.struct_pt = plain;
     g_fx.struct_pt_len = pt_len;
-    return oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL);
+    return oca_check_payload(buf, OCA_CLASSIC_BODY_SIZE + ct_len, &cb, &g_authenticated, NULL);
+}
+
+/* As above with a TOC payload_length naming the whole plaintext, so a test
+ * trips only the rule it shapes. */
+static oca_result_t run_struct_payload(const uint8_t *pt, size_t pt_len)
+{
+    return run_struct_payload_toc_len(pt, pt_len, pt_len);
 }
 
 TEST(test_payload_toc_zero_image_count)
@@ -1981,6 +2011,41 @@ TEST(test_payload_toc_multi_entry_disjoint_passes)
     toc_set_entry(pt, 0u, 0u, 8u);                /* [0, 8), 8-byte aligned */
     toc_set_entry(pt, 1u, 8u, 8u);                /* [8, 16), aligned, disjoint */
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_OK);
+}
+
+/* One 8-byte image straight after a 1-entry TOC: structurally valid, so each
+ * test below changes exactly one field. */
+static void toc1_valid(uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u])
+{
+    memset(pt, 0, OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u);
+    toc_set_header(pt, 1u);
+    toc_set_entry(pt, 0u, OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE, 8u);
+}
+
+/* Encrypted: the ciphertext exceeds the TOC payload_length by 1..block_size. */
+TEST(test_payload_encrypted_toc_length_within_one_block_passes)
+{
+    uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];   /* 320: ciphertext 336 */
+    toc1_valid(pt);
+    ASSERT_EQ_INT(run_struct_payload_toc_len(pt, sizeof pt, sizeof pt), OCA_OK);
+    ASSERT_EQ_INT(run_struct_payload_toc_len(pt, sizeof pt, sizeof pt + OCA_AES_BLOCK_SIZE - 1u),
+                  OCA_OK);
+}
+
+TEST(test_payload_encrypted_toc_length_equal_to_ciphertext_rejected)
+{
+    uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];
+    toc1_valid(pt);
+    ASSERT_EQ_INT(run_struct_payload_toc_len(pt, sizeof pt, sizeof pt + OCA_AES_BLOCK_SIZE),
+                  OCA_FAIL_PAYLOAD_TOC);
+}
+
+TEST(test_payload_encrypted_toc_length_more_than_one_block_short_rejected)
+{
+    uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];
+    toc1_valid(pt);
+    ASSERT_EQ_INT(run_struct_payload_toc_len(pt, sizeof pt, sizeof pt - 1u),
+                  OCA_FAIL_PAYLOAD_TOC);
 }
 
 /* Per-entry image hash. The stub sha256 digests everything to all-zero, so a
@@ -2781,9 +2846,10 @@ TEST(test_toc_image_at_never_returns_out_of_range_bytes)
 /* If any of those ever stops holding, these tests fail.                */
 /* ------------------------------------------------------------------ */
 
-/* Payload region big enough for a real 1-entry TOC (so the callback can write a
- * valid plaintext over the ciphertext) and a whole number of AES blocks. */
-#define INPLACE_CT_LEN TOC1_PT_SIZE
+/* Ciphertext for a real 1-entry TOC plaintext (so the callback can write a
+ * valid plaintext over it): the plaintext plus one full PKCS#7 block, since
+ * TOC1_PT_SIZE is itself a whole number of AES blocks. */
+#define INPLACE_CT_LEN (TOC1_PT_SIZE + OCA_AES_BLOCK_SIZE)
 
 static void build_inplace_bundle(uint8_t *buf, const uint8_t payload_hash[32])
 {
@@ -2808,10 +2874,10 @@ static oca_result_t decrypt_over_ciphertext(const oca_decrypt_input_t *in,
     uint8_t *region = (uint8_t *)(uintptr_t)in->ciphertext;   /* caller's buffer is mutable */
     memset(region, 0, in->ciphertext_len);
     toc_set_header(region, 1u);
-    toc_put_u64(region + OCA_TOC_OFF_PAYLOAD_LENGTH, in->ciphertext_len);
+    toc_put_u64(region + OCA_TOC_OFF_PAYLOAD_LENGTH, TOC1_PT_SIZE);
     toc_set_entry(region, 0u, TOC1_IMG_OFF, TOC1_IMG_LEN);
     *out_pt = region;
-    *out_pt_len = in->ciphertext_len;
+    *out_pt_len = TOC1_PT_SIZE;
     return OCA_OK;
 }
 
@@ -2877,7 +2943,7 @@ TEST(test_toc_accessors_work_on_in_place_plaintext)
 
     /* oca_payload_region still reports the stored region as encrypted; for
      * in-place the plaintext is at that very address, so only the length
-     * differs (here they happen to be equal). */
+     * differs. */
     const uint8_t *region = 0;
     size_t region_len = 0u;
     bool encrypted = false;
@@ -6152,6 +6218,9 @@ int main(int argc, char **argv)
     RUN_TEST(test_payload_toc_entries_overlap);
     RUN_TEST(test_payload_toc_entries_overlap_unsorted);
     RUN_TEST(test_payload_toc_multi_entry_disjoint_passes);
+    RUN_TEST(test_payload_encrypted_toc_length_within_one_block_passes);
+    RUN_TEST(test_payload_encrypted_toc_length_equal_to_ciphertext_rejected);
+    RUN_TEST(test_payload_encrypted_toc_length_more_than_one_block_short_rejected);
 
     /* Per-entry image hash */
     RUN_TEST(test_payload_toc_entry_hash_mismatch);
