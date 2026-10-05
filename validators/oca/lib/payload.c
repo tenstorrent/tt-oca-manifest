@@ -109,7 +109,8 @@ static oca_result_t read_toc_span(const uint8_t *pt, size_t pt_len,
  * on the payload it holds:
  *   - image_count > 0, and TOC_Header_Size + image_count * TOC_Entry_Size
  *     neither overflows nor exceeds the plaintext payload length;
- *   - every entry's offset is a multiple of 8;
+ *   - toc_version_major is not above OCA_LIB_TOC_MAJOR;
+ *   - every entry's offset is a multiple of 8 and lies past the TOC;
  *   - every entry's length is non-zero;
  *   - every entry's [offset, offset+length) is in-bounds and does not overflow;
  *   - no two entries' image ranges overlap.
@@ -144,6 +145,9 @@ static oca_result_t validate_toc_structure(
     if (sr != OCA_OK) {
         return sr;
     }
+    if (oca_le_u16(pt + OCA_TOC_OFF_VERSION_MAJOR) > OCA_LIB_TOC_MAJOR) {
+        return OCA_FAIL_PAYLOAD_TOC;
+    }
 
     for (uint64_t i = 0u; i < image_count; ++i) {
         const uint8_t *entry_i = pt + OCA_TOC_HEADER_SIZE + (size_t)i * OCA_TOC_ENTRY_SIZE;
@@ -151,6 +155,11 @@ static oca_result_t validate_toc_structure(
         uint64_t len_i = oca_le_u64(entry_i + OCA_TOC_ENTRY_OFF_LENGTH);
 
         if ((off_i % 8u) != 0u) {                       /* offset multiple of 8 */
+            return OCA_FAIL_PAYLOAD_TOC;
+        }
+        /* The payload is the TOC followed by its images, so no image may
+         * alias TOC bytes. */
+        if (off_i < toc_bytes) {
             return OCA_FAIL_PAYLOAD_TOC;
         }
         /* Nothing else rejects an empty entry: it is in bounds and overlaps
@@ -297,17 +306,22 @@ static oca_result_t check_payload_hash_chain_and_entries(
  * entry-hash failure only once the chain has tied the payload bytes to the
  * signed manifest.
  *
- * @param[in] pt      Plaintext payload region.
- * @param[in] pt_len  Length of @p pt.
- * @param[in] body    Manifest body holding the expected digests.
- * @param[in] cb      Callback table; cb->sha256 is required.
- * @retval OCA_OK  Every plaintext check passed.
+ * @param[in] pt          Plaintext payload region.
+ * @param[in] pt_len      Length of @p pt.
+ * @param[in] cipher_len  Ciphertext length the plaintext was decrypted from,
+ *                        bounding the TOC's payload_length; 0 for cleartext,
+ *                        whose caller checks that field itself.
+ * @param[in] body        Manifest body holding the expected digests.
+ * @param[in] cb          Callback table; cb->sha256 is required.
+ * @retval OCA_OK                Every plaintext check passed.
+ * @retval OCA_FAIL_PAYLOAD_TOC  @p cipher_len does not exceed the TOC's
+ *                               payload_length by 1..OCA_AES_BLOCK_SIZE.
  * @return Otherwise the first failing check's result — the structural,
  *         chain, and per-entry codes documented on the two functions it
  *         composes.
  */
 static oca_result_t check_plaintext_payload(
-    const uint8_t *pt, size_t pt_len,
+    const uint8_t *pt, size_t pt_len, uint64_t cipher_len,
     const uint8_t *body, const oca_callbacks_t *cb)
 {
     uint64_t image_count = 0u;
@@ -315,6 +329,15 @@ static oca_result_t check_plaintext_payload(
     oca_result_t r = validate_toc_structure(pt, pt_len, &image_count, &toc_bytes);
     if (r != OCA_OK) {
         return r;
+    }
+    /* The TOC records the plaintext length; PKCS#7 adds 1..block_size bytes,
+     * so the ciphertext must exceed it by at most one block. */
+    if (cipher_len != 0u) {
+        uint64_t toc_payload_len = oca_le_u64(pt + OCA_TOC_OFF_PAYLOAD_LENGTH);
+        if (toc_payload_len >= cipher_len
+            || cipher_len - toc_payload_len > OCA_AES_BLOCK_SIZE) {
+            return OCA_FAIL_PAYLOAD_TOC;
+        }
     }
     return check_payload_hash_chain_and_entries(pt, image_count, toc_bytes,
                                                 body, cb);
@@ -379,7 +402,7 @@ static oca_result_t check_cleartext_payload(const uint8_t *payload, size_t paylo
         return OCA_FAIL_PAYLOAD_TOC;
     }
 
-    oca_result_t final = check_plaintext_payload(payload, payload_len, body, cb);
+    oca_result_t final = check_plaintext_payload(payload, payload_len, 0u, body, cb);
     if (final == OCA_OK) {
         report_plaintext(out_plaintext, payload, payload_len);
     }
@@ -499,7 +522,7 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
     /* 3. Validate the recovered plaintext, and report where it is only if every
      * check over it passed. The plaintext address is the callback's choice and is
      * not re-computable afterwards, so this is the one place it can be captured. */
-    r = check_plaintext_payload(plaintext, plaintext_len, body, cb);
+    r = check_plaintext_payload(plaintext, plaintext_len, cipher_len, body, cb);
     if (r == OCA_OK) {
         report_plaintext(out_plaintext, plaintext, plaintext_len);
     }
@@ -1018,11 +1041,11 @@ oca_result_t oca_toc_image_at(const uint8_t *payload, size_t payload_length,
     uint64_t off = oca_le_u64(entry + OCA_TOC_ENTRY_OFF_OFFSET);
     uint64_t len = oca_le_u64(entry + OCA_TOC_ENTRY_OFF_LENGTH);
 
-    /* Same per-entry rules as validate_toc_structure: 8-byte aligned offset,
-     * non-zero length, and [off, off+len) inside the payload without
-     * overflowing. Re-checked here so this function is safe on any buffer, not
-     * only one that already went through oca_check_payload. */
-    if ((off % 8u) != 0u) {
+    /* Same per-entry rules as validate_toc_structure: 8-byte aligned offset
+     * past the TOC, non-zero length, and [off, off+len) inside the payload
+     * without overflowing. Re-checked here so this function is safe on any
+     * buffer, not only one that already went through oca_check_payload. */
+    if ((off % 8u) != 0u || off < toc_bytes) {
         return OCA_FAIL_PAYLOAD_TOC;
     }
     if (len == 0u) {
