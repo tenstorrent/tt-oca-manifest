@@ -272,11 +272,6 @@ integrator knows the current boundary; several are tracked as follow-on work:
   revoked, nor require a cohort the device demands beyond what the manifest's
   own class bits already name — the per-class dispatch those registers need
   exists now, but the accumulated device state is not yet read back into it.
-- **The encrypted-payload padding bound** — for an encrypted payload this build
-  requires the manifest's `payload_length` to equal `payload_hashed_length` and
-  to cover at least a one-entry TOC, but does not yet check it against the TOC's
-  own `payload_length` within one cipher block. The cleartext equality check
-  *is* implemented.
 
 ## Integrating into a target firmware project
 
