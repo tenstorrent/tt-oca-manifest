@@ -60,7 +60,8 @@ static uint8_t *read_file(const char *path, size_t *out_len)
 static const cli_options_t *g_cli_opt;
 
 
-/* Map an oca_result_t to a one-line human reason. */
+/* Map an oca_result_t to a one-line human reason. The switch deliberately has no
+ * default, so -Wswitch fails the build when a result code has no reason. */
 static const char *reason_for(oca_result_t r)
 {
     switch (r) {
@@ -142,12 +143,18 @@ static const char *reason_for(oca_result_t r)
         case OCA_FAIL_SECURE_BOOT_UNDETERMINED:
             return "internal: a gated check ran before the secure-boot "
                    "determination";
+        case OCA_FAIL_GROUP_CODE:
+            return "a signature_class_revoke group code is neither 0x00 nor its "
+                   "group's constant";
+        case OCA_FAIL_CRYPTO_FIELD_SIZE:
+            return "signing fields do not describe a key and signature the "
+                   "declared algorithm and encoding can produce";
         case OCA_FAIL_INVALID_ARG:
             return "internal: invalid argument";
         case OCA_OK:
-        default:
             return "ok";
     }
+    return "internal: unrecognized result code";
 }
 
 /* Extract a NUL-padded ASCII manifest_identifier from offset 4..12. */

@@ -188,8 +188,8 @@ void cli_print_help(void)
         "                              memory; what a constrained ROM does)\n"
         "  --trust-any-root-key        authorize whatever ROOT key the manifest\n"
         "                              carries (structural checks only)\n"
-        "  --root-key-digest HEX64     authorize only a key whose modulus has\n"
-        "                              this SHA-256\n"
+        "  --root-key-digest HEX64     authorize only a raw RSA-3072 key whose\n"
+        "                              384-byte modulus has this SHA-256\n"
         "  --secure-boot-active        report the part as ENFORCING secure\n"
         "                              boot (device fuse/life-cycle state).\n"
         "  --secure-boot-disabled      report the part as definitively NOT a\n"
@@ -218,7 +218,8 @@ void cli_print_help(void)
         "  --quiet                     suppress the PASS line on stdout\n"
         "  --help                      print this help and exit 0\n"
         "\n"
-        "Exit codes: 0 = PASS, 1 = FAIL, 2 = usage error.\n",
+        "Exit codes: 0 = PASS, 1 = FAIL, 2 = usage error,\n"
+        "            3 = manifest variant not supported by this build.\n",
         stdout);
 }
 
@@ -382,7 +383,7 @@ int cli_parse_args(int argc, char **argv, cli_options_t *opt)
             case LO_ROOT_KEY_DIGEST:
                 if (parse_hex32(optarg, opt->root_key_digest) != 0) {
                     fprintf(stderr, "usage: --root-key-digest wants 64 hex digits\n");
-                    return false;
+                    return 2;
                 }
                 opt->root_key_digest_present = true;
                 break;

@@ -714,7 +714,7 @@ def test_cli_fail_on_tampered_signed_region():
 
 def test_cli_fail_on_tampered_signature():
     bin_path = _pack_fixture("secure_rsa")
-    # Flip a byte inside signature_classic (offset 3145).
+    # Flip a byte inside signature_classic, which starts at offset 3172.
     with open(bin_path, "r+b") as f:
         f.seek(3200)
         f.write(b"\xFF")
@@ -1943,11 +1943,10 @@ def test_cli_secure_boot_active_still_validates_a_properly_signed_bundle():
 
 
 def test_cli_reports_a_reason_for_every_refusal_it_can_produce(tmp_path):
-    """A failure code with no `reason_for` case prints `FAIL: CODE: ok`, which
-    reads as a pass to anyone skimming a CI log. That is what
-    ENCRYPTION_REQUIRES_SECURE_BOOT did before this test existed — the CLI's
-    switch has a `default:`, so -Wswitch cannot catch the omission the way it
-    does for oca_result_str()."""
+    """A failure code with no `reason_for` case would print `FAIL: CODE: ok`,
+    which reads as a pass to anyone skimming a CI log. The switch has no
+    `default:`, so -Wswitch fails the build on an omission; this checks the
+    reason actually reaches stderr."""
     bin_path = _pack_encryption_without_secure_boot(tmp_path)
     result = _run_cli(["--manifest", bin_path])
     assert result.returncode == 1
@@ -1955,3 +1954,127 @@ def test_cli_reports_a_reason_for_every_refusal_it_can_produce(tmp_path):
         result.stderr
     assert not result.stderr.rstrip().endswith(b": ok"), (
         f"no reason text for this code: {result.stderr!r}")
+
+
+# ---------------------------------------------------------------------------
+# Refusals carry their reason
+#
+# Each case below tampers one signed field and re-seals manifest_hash, so the
+# bundle survives the integrity check and is refused by the check under test.
+# ---------------------------------------------------------------------------
+
+
+def _reseal_manifest_hash(data: bytearray) -> None:
+    """Recompute manifest_hash over the signed region in place, for either
+    variant. Any signature over the region is left stale."""
+    import hashlib
+
+    from tt_boot_manifest.oca import constants as oca_consts
+
+    if bytes(data[:4]) == oca_consts.OCAP_MAGIC:
+        region_end, hash_off = oca_consts.PQC_SIGNED_REGION_END, oca_consts.OFF_PQC_MANIFEST_HASH
+    else:
+        region_end, hash_off = oca_consts.OCA_CLASSIC_SIGNED_REGION_END, oca_consts.OFF_MANIFEST_HASH
+    digest = hashlib.sha256(bytes(data[:region_end])).digest()
+    data[hash_off:hash_off + len(digest)] = digest
+
+
+def _set_le(data: bytearray, offset: int, width: int, value: int) -> None:
+    data[offset:offset + width] = value.to_bytes(width, "little")
+
+
+@pytest.mark.parametrize("code,mutate", [
+    # One short of the raw RSA-3072 signature length.
+    ("CRYPTO_FIELD_SIZE", functools.partial(
+        _set_le, offset=oca_constants.OFF_SIGNATURE_SIZE_CLASSIC, width=2, value=383)),
+    # A classical group code that is neither 0x00 nor the 0xCA constant.
+    ("GROUP_CODE", functools.partial(
+        _set_le, offset=oca_constants.OFF_SIGNATURE_CLASS_REVOKE + 1, width=1, value=0x01)),
+])
+def test_cli_names_the_reason_for_a_malformed_signing_description(tmp_path, code, mutate):
+    """These refusals once printed `FAIL: CODE: ok` for want of a reason_for case."""
+    data = bytearray(open(_pack_fixture("secure_rsa"), "rb").read())
+    mutate(data)
+    _reseal_manifest_hash(data)
+    bin_path = tmp_path / f"{code.lower()}.bin"
+    bin_path.write_bytes(bytes(data))
+
+    result = _run_cli(["--manifest", str(bin_path), "--trust-any-root-key"])
+    assert result.returncode == 1
+    assert re.match(rb"^FAIL: " + code.encode() + rb": ", result.stderr), result.stderr
+    assert not result.stderr.rstrip().endswith(b": ok"), (
+        f"no reason text for this code: {result.stderr!r}")
+
+
+def test_cli_help_documents_every_exit_code():
+    """main() exits 3 for a variant this build does not support; --help says so."""
+    result = _run_cli(["--help"])
+    assert result.returncode == 0
+    for code in (b"0 = PASS", b"1 = FAIL", b"2 = usage error",
+                 b"3 = manifest variant not supported"):
+        assert code in result.stdout, f"--help does not document {code!r}"
+
+
+# ---------------------------------------------------------------------------
+# ROOT-key trust anchor
+#
+# Every secure fixture runs with --trust-any-root-key, which leaves the anchor
+# check untested end to end. These drive --root-key-digest, the CLI's stand-in
+# for a key digest held by a device. Digests are computed here from the
+# committed development keys rather than committed as literals.
+# ---------------------------------------------------------------------------
+
+RSA_F4_KEY = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.f4.pem")
+RSA_E3_KEY = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.e3.pem")
+
+
+def _rsa_modulus_digest(key_path: str) -> str:
+    """SHA-256 of the key's 384-byte big-endian modulus, as --root-key-digest takes it."""
+    import hashlib
+
+    from cryptography.hazmat.primitives import serialization
+
+    with open(key_path, "rb") as f:
+        key = serialization.load_pem_private_key(f.read(), password=None)
+    modulus = key.public_key().public_numbers().n.to_bytes(384, "big")
+    return hashlib.sha256(modulus).hexdigest()
+
+
+def test_cli_root_key_digest_authorizes_the_matching_key():
+    result = _run_cli(["--manifest", _pack_fixture("secure_rsa"),
+                       "--root-key-digest", _rsa_modulus_digest(RSA_F4_KEY)])
+    assert result.returncode == 0, result.stderr
+    assert PASS_RE.match(result.stdout), result.stdout
+
+
+@pytest.mark.parametrize("fixture,anchor_key", [
+    ("secure_rsa", RSA_E3_KEY),     # a different RSA-3072 key
+    ("secure_ecdsa", RSA_F4_KEY),   # an anchor for a key of another algorithm
+])
+def test_cli_root_key_digest_refuses_every_other_key(fixture, anchor_key):
+    result = _run_cli(["--manifest", _pack_fixture(fixture),
+                       "--root-key-digest", _rsa_modulus_digest(anchor_key)])
+    assert result.returncode == 1
+    assert re.match(rb"^FAIL: ROOT_KEY_UNAUTHORIZED: ", result.stderr), result.stderr
+
+
+def test_cli_without_an_anchor_refuses_a_signed_manifest():
+    """No anchor flag at all fails closed rather than trusting the embedded key."""
+    result = _run_cli(["--manifest", _pack_fixture("secure_rsa")])
+    assert result.returncode == 1
+    assert re.match(rb"^FAIL: ROOT_KEY_UNAUTHORIZED: ", result.stderr), result.stderr
+
+
+@pytest.mark.parametrize("digest_first", [True, False])
+@pytest.mark.parametrize("bad_digest", ["ab" * 31, "zz" * 32, ""])
+def test_cli_rejects_a_malformed_root_key_digest(digest_first, bad_digest):
+    """A malformed anchor is a usage error wherever it sits on the command line.
+    It must never be dropped while validation goes ahead without it."""
+    manifest_args = ["--manifest", _pack_fixture("basic")]
+    digest_args = ["--root-key-digest", bad_digest]
+    args = digest_args + manifest_args if digest_first else manifest_args + digest_args
+
+    result = _run_cli(args)
+    assert result.returncode == 2, (
+        f"expected a usage error; rc={result.returncode} stderr={result.stderr!r}")
+    assert b"--root-key-digest" in result.stderr

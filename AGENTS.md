@@ -208,10 +208,11 @@ validators/oca/build/test/oca-validate --manifest out/oca_classic.bin --list-ima
 validators/oca/build/test/oca-validate --help
 ```
 
-Exit codes are 0 = PASS, 1 = FAIL, 2 = usage error. `--help` is the authority on the hardware
-identity, lifecycle, version, payload-secret, root-key and storage-image flags — read it
-rather than guessing. Fixture configs under `validators/oca/test/fixtures/configs/` pair each
-`<name>.yaml` with a `<name>.flags` file holding the CLI flags that fixture needs.
+Exit codes are 0 = PASS, 1 = FAIL, 2 = usage error, 3 = a manifest variant this build compiled
+out. `--help` is the authority on the hardware identity, lifecycle, version, payload-secret,
+root-key and storage-image flags — read it rather than guessing. Fixture configs under
+`validators/oca/test/fixtures/configs/` pair each `<name>.yaml` with a `<name>.flags` file
+holding the CLI flags that fixture needs.
 
 ### Compile-time gates
 
