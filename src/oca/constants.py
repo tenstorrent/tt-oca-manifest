@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
-"""Byte offsets, sizes, enums, and magic values for the OCA-classic manifest format.
+"""Byte offsets, sizes, enums, and magic values for the OCA manifest formats.
 
 Source of truth: the OCA boot manifest specification, published at
 https://www.openchipletatlas.org/specifications/oca/latest. Field offsets and
@@ -243,6 +243,39 @@ OFF_RESERVED_23 = 3776             # 320 bytes (alignment pad to 4096)
 
 
 # ---------------------------------------------------------------------------
+# Field offsets within the OCA-PQC manifest body
+# ---------------------------------------------------------------------------
+# A PQC manifest carries every field above at the same offset up to the
+# classic_manifest_trailer slot, which it fills with 0x35 rather than 0xCA. The
+# PQC-only signed fields follow, closed by the pqc_manifest_trailer, so the
+# unsigned tail starts later and gains signature_pqc. An `OFF_PQC_` name is a
+# field shared with Classic, at its PQC position.
+
+OFF_SIGNATURE_TYPE_PQC = 3172           # 1 byte
+OFF_SIGNATURE_ENCODING_PQC = 3173       # 1 byte
+OFF_SIGNATURE_SIZE_PQC = 3174           # u16 LE
+OFF_PUBLIC_KEY_SELECT_PQC = 3176        # 16 bytes
+OFF_PUBLIC_KEY_PQC = 3192               # 2624 bytes
+OFF_PUBLIC_KEY_ENCODING_PQC = 5816      # 1 byte
+OFF_PUBLIC_KEY_SIZE_PQC = 5817          # u16 LE
+OFF_PUBLIC_KEY_PQC_REVOKE = 5819        # 16 bytes
+OFF_RESERVED_PQC = 5835                 # 64 bytes
+OFF_PQC_MANIFEST_TRAILER = 5899         # 4 bytes
+
+# Unsigned tail
+OFF_PQC_SIGNATURE_CLASSIC = 5903        # 512 bytes
+OFF_PQC_MANIFEST_HASH = 6415            # 64 bytes
+OFF_PQC_PAYLOAD_OFFSET = 6479           # 8 bytes
+OFF_SIGNATURE_PQC = 6495                # 29824 bytes
+
+LEN_PUBLIC_KEY_SELECT_PQC = 16
+LEN_PUBLIC_KEY_PQC = 2624               # a 2592-byte ML-DSA-87 key, the largest the format defines
+LEN_PUBLIC_KEY_PQC_REVOKE = 16
+LEN_RESERVED_PQC = 64
+LEN_SIGNATURE_PQC = 29824               # a 29792-byte SLH-DSA-256s signature, the largest the format defines
+
+
+# ---------------------------------------------------------------------------
 # Multi-byte control-field widths (mirrored by the C validator, which reads
 # these fields as little-endian scalars rather than single bytes)
 # ---------------------------------------------------------------------------
@@ -402,6 +435,25 @@ CLASSIC_DER_SIGNATURE_MAX_LENGTHS = {
 }
 
 
+class OcaPqcSignatureType(Enum):
+    """OCA `signature_type_pqc` byte values, restricted to the algorithms
+    supported by this packer. The spec defines more values; unsupported values
+    are rejected at config-load time.
+
+    Mirrored, with the classic values, by `oca_primitive_type_t` in the C
+    validator's `oca_validator.h`; `tests/test_oca_primitive_enum_sync.py` fails
+    if the two drift apart.
+    """
+    ML_DSA_87 = 0x33
+
+
+# FIPS 204 encodings, which are the format's raw (0x02) encoding for ML-DSA: the
+# public key is pkEncode(rho, t1) and the signature sigEncode(c~, z, h). Neither
+# has a bare ASN.1 structure, so DER (0x01) is undefined for every PQC value.
+ML_DSA_87_PUBLIC_KEY_BYTES = 2592
+ML_DSA_87_SIGNATURE_BYTES = 4627
+
+
 class OcaEncryptionType(Enum):
     """OCA `encryption_type` byte values. Both AES-128-CBC (0x01) and
     AES-256-CBC (0x02) are supported; both derive the key from the expanded KDF
@@ -468,8 +520,7 @@ PAYLOAD_IMAGE_ALIGNMENT = 8
 # parameterizes over (magic, body size, signed-region end, trailer) so both
 # manifest variants flow through one assembly path. Crypto-family field
 # offsets/sizes (the `*_CLASSIC` constants) are shared across variants and are
-# NOT part of the descriptor. The PQC variant descriptor is added in the PQC
-# support pass.
+# NOT part of the descriptor.
 
 OcaVariant = namedtuple(
     "OcaVariant",
@@ -486,26 +537,13 @@ CLASSIC_VARIANT = OcaVariant(
     payload_offset_field=OFF_PAYLOAD_OFFSET,
 )
 
-# PQC variant (OCAP, 36864-byte body). Layout verified against the OCA boot
-# manifest specification: the PQC-only signed block is inserted at the Classic
-# manifest-trailer position, shifting the unsigned tail down by its size, and a
-# `signature_pqc` field is added to the tail. Per-field PQC offsets and the
-# C-side layout mirror are added with the validator's PQC support; this pass
-# emits the PQC-only crypto regions as zero (PQC-native crypto is deferred)
-# bounded by the spec-mandated trailer/fill markers. (Sizes use non-OFF_/LEN_
-# names so the layout-sync gate stays green until the C mirror lands.)
+# PQC variant (OCAP, 36864-byte body). The field offsets are in the OCA-PQC
+# section above.
 OCA_PQC_BODY_SIZE = 36864             # exact total PQC body length
 PQC_SIGNED_REGION_END = 5903          # bytes [0, 5903) covered by manifest_hash / signatures
 PQC_TRAILER = b"\x96\x96\x96\x96"     # pqc_manifest_trailer marker (offset 5899)
 PQC_CLASSIC_TRAILER_FILL = b"\x35\x35\x35\x35"  # classic_manifest_trailer slot in a PQC manifest
-# Signed PQC-only fields between the 0x35 slot and the 0x96 trailer:
-# signature_type_pqc, signature_encoding_pqc, signature_size_pqc,
-# public_key_select_pqc, public_key_pqc, public_key_encoding_pqc,
-# public_key_size_pqc, public_key_pqc_revoke, and a 64-byte reserved region.
-PQC_SIGNED_CRYPTO_BLOCK_SIZE = 2727
-PQC_SIGNATURE_SIZE = 29824            # signature_pqc field (unsigned tail)
 PQC_TAIL_ALIGN_SIZE = 533             # final alignment pad in the PQC unsigned tail
-PQC_PAYLOAD_OFFSET_FIELD = 6479       # payload_offset field offset in the PQC unsigned tail
 
 PQC_VARIANT = OcaVariant(
     format_name="oca-pqc",
@@ -513,7 +551,7 @@ PQC_VARIANT = OcaVariant(
     body_size=OCA_PQC_BODY_SIZE,
     signed_region_end=PQC_SIGNED_REGION_END,
     trailer=PQC_TRAILER,
-    payload_offset_field=PQC_PAYLOAD_OFFSET_FIELD,
+    payload_offset_field=OFF_PQC_PAYLOAD_OFFSET,
 )
 
 

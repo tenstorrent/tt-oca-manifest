@@ -103,15 +103,30 @@ MAPPING: dict[str, tuple[str, str]] = {
     "OCA_CLASSIC_OFF_MANIFEST_HASH":               ("OFF_MANIFEST_HASH", "dec"),
     "OCA_LEN_MANIFEST_HASH":               ("HASH_FIELD_SIZE", "dec"),
     "OCA_MANIFEST_HASH_DIGEST_SIZE":              ("MANIFEST_HASH_DIGEST_SIZE", "dec"),
-    # PQC variant anchors. Only the values the Python packer names
-    # independently are cross-checked here; the PQC per-field offsets are
-    # derived from region sizes on the Python side and asserted internally on
-    # the C side (oca_layout_pqc.h static_asserts), so they have no Python
-    # counterpart to diff against.
+    # PQC variant: the PQC-only fields, then the shared fields at their PQC
+    # positions, then the ML-DSA-87 encoded lengths.
     "OCA_PQC_BODY_SIZE":                   ("OCA_PQC_BODY_SIZE", "dec"),
     "OCA_PQC_SIGNED_REGION_END":           ("PQC_SIGNED_REGION_END", "dec"),
-    "OCA_PQC_OFF_PAYLOAD_OFFSET":          ("PQC_PAYLOAD_OFFSET_FIELD", "dec"),
-    "OCA_PQC_LEN_SIGNATURE_PQC":           ("PQC_SIGNATURE_SIZE", "dec"),
+    "OCA_PQC_OFF_CLASSIC_TRAILER_SLOT":    ("OFF_CLASSIC_MANIFEST_TRAILER", "dec"),
+    "OCA_PQC_OFF_SIGNATURE_TYPE":          ("OFF_SIGNATURE_TYPE_PQC", "dec"),
+    "OCA_PQC_OFF_SIGNATURE_ENCODING":      ("OFF_SIGNATURE_ENCODING_PQC", "dec"),
+    "OCA_PQC_OFF_SIGNATURE_SIZE":          ("OFF_SIGNATURE_SIZE_PQC", "dec"),
+    "OCA_PQC_OFF_PUBLIC_KEY_SELECT":       ("OFF_PUBLIC_KEY_SELECT_PQC", "dec"),
+    "OCA_PQC_LEN_PUBLIC_KEY_SELECT":       ("LEN_PUBLIC_KEY_SELECT_PQC", "dec"),
+    "OCA_PQC_OFF_PUBLIC_KEY":              ("OFF_PUBLIC_KEY_PQC", "dec"),
+    "OCA_PQC_LEN_PUBLIC_KEY":              ("LEN_PUBLIC_KEY_PQC", "dec"),
+    "OCA_PQC_OFF_PUBLIC_KEY_ENCODING":     ("OFF_PUBLIC_KEY_ENCODING_PQC", "dec"),
+    "OCA_PQC_OFF_PUBLIC_KEY_SIZE":         ("OFF_PUBLIC_KEY_SIZE_PQC", "dec"),
+    "OCA_PQC_OFF_PUBLIC_KEY_REVOKE":       ("OFF_PUBLIC_KEY_PQC_REVOKE", "dec"),
+    "OCA_PQC_LEN_PUBLIC_KEY_REVOKE":       ("LEN_PUBLIC_KEY_PQC_REVOKE", "dec"),
+    "OCA_PQC_OFF_TRAILER":                 ("OFF_PQC_MANIFEST_TRAILER", "dec"),
+    "OCA_PQC_OFF_SIGNATURE":               ("OFF_PQC_SIGNATURE_CLASSIC", "dec"),
+    "OCA_PQC_OFF_MANIFEST_HASH":           ("OFF_PQC_MANIFEST_HASH", "dec"),
+    "OCA_PQC_OFF_PAYLOAD_OFFSET":          ("OFF_PQC_PAYLOAD_OFFSET", "dec"),
+    "OCA_PQC_OFF_SIGNATURE_PQC":           ("OFF_SIGNATURE_PQC", "dec"),
+    "OCA_PQC_LEN_SIGNATURE_PQC":           ("LEN_SIGNATURE_PQC", "dec"),
+    "OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES":  ("ML_DSA_87_PUBLIC_KEY_BYTES", "dec"),
+    "OCA_PQC_ML_DSA_87_SIGNATURE_BYTES":   ("ML_DSA_87_SIGNATURE_BYTES", "dec"),
     # Payload encryption + payload-hash fields (consumed by the encrypted-payload
     # validation stage) and the PTOC sizes used to recompute the plaintext chain.
     "OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL":  ("OFF_PAYLOAD_ENCRYPTION_CONTROL", "dec"),

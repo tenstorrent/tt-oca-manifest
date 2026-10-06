@@ -10,7 +10,7 @@ values, so this file pins that correspondence.
 
 Why a dedicated gate rather than `sync_layout.py`: that script parses `#define`s
 out of the `oca_layout*.h` headers, and this is an `enum` in `oca_validator.h`.
-It followed the same pattern as `test_pqc_layout_anchors_match_python_constants`
+It follows the same pattern as `test_pqc_layout_field_matches_python_constant`
 — a script-independent guard that parses the header directly.
 
 The failure this prevents actually happened. The enum was originally

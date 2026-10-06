@@ -291,10 +291,12 @@ Two automated gates:
 ### 1. Drift gate
 
 `tests/test_oca_c_validator_layout_sync.py` runs `scripts/sync_layout.py`
-on every `pytest` invocation. The script compares every
-`OCA_CLASSIC_OFF_*` / `OCA_CLASSIC_LEN_*` / mask in `lib/oca_layout.h`
-against its `tt_boot_manifest.oca.constants` counterpart. Any mismatch
-fails the test with a unified diff and a `sed` fixup suggestion.
+on every `pytest` invocation. The script compares every mapped offset,
+length and mask in the layout headers — the shared `lib/oca_layout.h`
+and the variant headers `lib/oca_layout_classic.h` and
+`lib/oca_layout_pqc.h` — against its `tt_boot_manifest.oca.constants`
+counterpart. Any mismatch fails the test with a unified diff and a `sed`
+fixup suggestion.
 
 ### 2. Completeness gate
 
@@ -311,8 +313,10 @@ the Python side and silently leave the C validator behind.
 2. Run `pytest tests/test_oca_c_validator_layout_sync.py`. It fails:
    `OFF_FOO ... not mapped to the C side`.
 3. Either:
-   - Validator-relevant: add `OCA_CLASSIC_OFF_FOO` to
-     `lib/oca_layout.h` and an entry to `MAPPING` in `sync_layout.py`.
+   - Validator-relevant: add the mirror — `OCA_OFF_FOO` in
+     `lib/oca_layout.h` for a field shared by every variant, or an
+     `OCA_CLASSIC_` / `OCA_PQC_` name in that variant's header — and an
+     entry to `MAPPING` in `sync_layout.py`.
      If the new field is constraint-bearing, write the per-field
      decoder under `lib/` (new `oca_check_foo()`, composed into
      `oca_validate_manifest()` for a manifest-level check or

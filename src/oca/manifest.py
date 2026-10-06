@@ -306,17 +306,37 @@ def build_signed_region(
     # --- 3104:3168 reserved / 3168:3172 classic_manifest_trailer ---
     out += b"\x00" * oca_consts.LEN_RESERVED_20
     if variant.format_name == "oca-pqc":
-        # The classic_manifest_trailer slot is 0x35-filled in a PQC manifest,
-        # followed by the PQC-only signed fields (all 0x00 here — PQC-native
-        # crypto is deferred), closed by the 0x96 pqc_manifest_trailer.
+        # The classic_manifest_trailer slot is 0x35-filled in a PQC manifest.
         out += oca_consts.PQC_CLASSIC_TRAILER_FILL
-        out += b"\x00" * oca_consts.PQC_SIGNED_CRYPTO_BLOCK_SIZE
+        _build_pqc_signed_fields(out)
         out += oca_consts.PQC_TRAILER
     else:
         out += variant.trailer
     _expect_offset(out, variant.signed_region_end, "the signed-region trailer")
 
     return bytes(out)
+
+
+def _build_pqc_signed_fields(out: bytearray) -> None:
+    """Append the PQC-only signed fields, 3172:5899, between the 0x35 slot and
+    the pqc_manifest_trailer. No PQC signature is produced, so every field is
+    zero."""
+    _expect_offset(out, oca_consts.OFF_SIGNATURE_TYPE_PQC, "signature_type_pqc")
+    out += b"\x00"                                  # signature_type_pqc
+    out += b"\x00"                                  # signature_encoding_pqc
+    out += struct.pack("<H", 0)                     # signature_size_pqc
+    _expect_offset(out, oca_consts.OFF_PUBLIC_KEY_SELECT_PQC, "public_key_select_pqc")
+    out += b"\x00" * oca_consts.LEN_PUBLIC_KEY_SELECT_PQC
+    _expect_offset(out, oca_consts.OFF_PUBLIC_KEY_PQC, "public_key_pqc")
+    out += b"\x00" * oca_consts.LEN_PUBLIC_KEY_PQC
+    _expect_offset(out, oca_consts.OFF_PUBLIC_KEY_ENCODING_PQC, "public_key_encoding_pqc")
+    out += b"\x00"                                  # public_key_encoding_pqc
+    out += struct.pack("<H", 0)                     # public_key_size_pqc
+    _expect_offset(out, oca_consts.OFF_PUBLIC_KEY_PQC_REVOKE, "public_key_pqc_revoke")
+    out += b"\x00" * oca_consts.LEN_PUBLIC_KEY_PQC_REVOKE
+    _expect_offset(out, oca_consts.OFF_RESERVED_PQC, "reserved_pqc")
+    out += b"\x00" * oca_consts.LEN_RESERVED_PQC
+    _expect_offset(out, oca_consts.OFF_PQC_MANIFEST_TRAILER, "pqc_manifest_trailer")
 
 
 # ---------------------------------------------------------------------------
@@ -353,9 +373,12 @@ def build_unsigned_tail(
     # unauthenticated_flags (= 0 in this pass)
     out += struct.pack("<Q", 0)
     if variant.format_name == "oca-pqc":
-        # signature_pqc (0x00 — PQC-native signing deferred), then reserved
+        # signature_pqc (0x00 — no PQC signature is produced), then reserved
         # 4 + 8 + alignment pad to the 36864-byte PQC body.
-        out += b"\x00" * oca_consts.PQC_SIGNATURE_SIZE
+        _expect_field_size(
+            out, oca_consts.OFF_SIGNATURE_PQC - variant.signed_region_end,
+            "the unsigned tail before signature_pqc")
+        out += b"\x00" * oca_consts.LEN_SIGNATURE_PQC
         out += b"\x00" * oca_consts.LEN_RESERVED_21
         out += b"\x00" * oca_consts.LEN_RESERVED_22
         out += b"\x00" * oca_consts.PQC_TAIL_ALIGN_SIZE

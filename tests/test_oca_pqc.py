@@ -30,8 +30,6 @@ from tt_boot_manifest.oca.validators import OcaConfigError
 
 OCAP_MAGIC = b"OCAP"
 PTOC_MAGIC = b"PTOC"
-OFF_PAYLOAD_OFFSET_PQC = 6479  # payload_offset field within the PQC unsigned tail
-OFF_SIGNATURE_PQC = 6495       # signature_pqc field within the PQC unsigned tail
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RSA_KEY_FILE = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.f4.pem")
@@ -91,7 +89,7 @@ def test_pqc_manifest_structure(tmp_path):
     assert body[trailer_at:oca_consts.PQC_SIGNED_REGION_END] == oca_consts.PQC_TRAILER
 
     # payload_offset (PQC tail) points just past the manifest body.
-    assert struct.unpack_from("<q", body, OFF_PAYLOAD_OFFSET_PQC)[0] == 36864
+    assert struct.unpack_from("<q", body, oca_consts.OFF_PQC_PAYLOAD_OFFSET)[0] == 36864
 
     # Payload immediately follows the body and begins with the TOC magic.
     assert bundle[36864:36868] == PTOC_MAGIC
@@ -168,13 +166,14 @@ def test_pqc_classic_signed_structure(tmp_path):
     sig_off = oca_consts.PQC_SIGNED_REGION_END
     assert any(body[sig_off: sig_off + oca_consts.SIGNATURE_CLASSIC_SIZE])
     # signature_pqc (PQC-native) stays all-zero — deferred.
-    assert body[OFF_SIGNATURE_PQC: OFF_SIGNATURE_PQC + oca_consts.PQC_SIGNATURE_SIZE] \
-        == b"\x00" * oca_consts.PQC_SIGNATURE_SIZE
+    sig_pqc_off = oca_consts.OFF_SIGNATURE_PQC
+    assert body[sig_pqc_off: sig_pqc_off + oca_consts.LEN_SIGNATURE_PQC] \
+        == b"\x00" * oca_consts.LEN_SIGNATURE_PQC
 
 
 def test_pqc_classic_signature_covers_pqc_signed_region(tmp_path):
     """The embedded RSA-3072 signature verifies over the full PQC signed
-    region — proving the shared signing path signed the PQC extent (5872)."""
+    region — proving the shared signing path signed the PQC extent (5903)."""
     body = pack_oca_bundle(_pqc_secure_rsa_config(tmp_path))[: oca_consts.OCA_PQC_BODY_SIZE]
     assert _classic_signature_valid_over_pqc_region(body)
 
@@ -185,7 +184,7 @@ def test_pqc_classic_signature_rejects_tampered_signed_region(tmp_path):
     body = bytearray(
         pack_oca_bundle(_pqc_secure_rsa_config(tmp_path))[: oca_consts.OCA_PQC_BODY_SIZE]
     )
-    body[100] ^= 0xFF  # a shared-region byte, well inside [0, 5872)
+    body[100] ^= 0xFF  # a shared-region byte, well inside [0, 5903)
     assert not _classic_signature_valid_over_pqc_region(bytes(body))
 
 
