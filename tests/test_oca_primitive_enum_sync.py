@@ -20,12 +20,17 @@ from __future__ import annotations
 import os
 import re
 
+import pytest
+
 from tt_boot_manifest.oca import constants as oca_consts
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VALIDATOR_HEADER = os.path.join(
     PROJECT_ROOT, "validators", "oca", "lib", "oca_validator.h"
+)
+VALIDATOR_PARSER = os.path.join(
+    PROJECT_ROOT, "validators", "oca", "lib", "parser.c"
 )
 
 # `    OCA_PRIMITIVE_ML_DSA_87 = 0x33,  /**< FIPS 204 ML-DSA-87. */`
@@ -126,3 +131,54 @@ def test_spec_only_list_names_no_value_the_packer_writes():
     packer_values = set(_packer_primitives().values())
     overlap = {name for name, value in _SPEC_ONLY.items() if value in packer_values}
     assert not overlap, f"_SPEC_ONLY lists values the packer writes: {sorted(overlap)}"
+
+
+def _c_accepted_primitives_by_class() -> dict[str, set[str]]:
+    """Primitive enumerators `oca_check_crypto_field_sizes()` accepts, per class.
+
+    Reads the function rather than trusting a comment. Each class block names
+    exactly the primitives it admits, and every other value falls through to
+    OCA_FAIL_CRYPTO_FIELD_SIZE, so the names in a block are its accepted set.
+    """
+    with open(VALIDATOR_PARSER) as handle:
+        text = handle.read()
+
+    match = re.search(
+        r"oca_result_t oca_check_crypto_field_sizes\(const uint8_t \*body\)\s*"
+        r"\{(?P<body>.*?)\n\}\n",
+        text,
+        re.DOTALL,
+    )
+    assert match, (
+        f"oca_check_crypto_field_sizes() was not found in {VALIDATOR_PARSER}; if "
+        f"it moved or changed shape, update this parser rather than deleting the "
+        f"test")
+    body = match.group("body")
+    classic_at = body.find("(control & OCA_SECURE_BOOT_CLASSIC_BIT)")
+    pqc_at = body.find("(control & OCA_SECURE_BOOT_PQC_BIT)")
+    assert 0 <= classic_at < pqc_at, (
+        "expected a classical class block followed by a PQC class block in "
+        "oca_check_crypto_field_sizes()")
+    return {
+        "classic": set(re.findall(r"OCA_PRIMITIVE_\w+", body[classic_at:pqc_at])),
+        "pqc": set(re.findall(r"OCA_PRIMITIVE_\w+", body[pqc_at:])),
+    }
+
+
+@pytest.mark.parametrize("signature_class,packer_enum", [
+    ("classic", oca_consts.OcaClassicSignatureType),
+    ("pqc", oca_consts.OcaPqcSignatureType),
+])
+def test_validator_accepts_exactly_the_primitives_the_packer_writes(
+        signature_class, packer_enum):
+    """For each signature class, the primitives the validator's size check admits
+    equal the ones the packer can write: a primitive the packer signs with but
+    the validator refuses, or one the validator admits that no producer makes,
+    is a silent divergence either way."""
+    c_enum = _parse_oca_primitive_enum()
+    accepted = {c_enum[name] for name in _c_accepted_primitives_by_class()[signature_class]}
+    packer = {member.value for member in packer_enum}
+    assert accepted == packer, (
+        f"{signature_class}: the validator accepts "
+        f"{sorted(hex(v) for v in accepted)} but the packer writes "
+        f"{sorted(hex(v) for v in packer)}")

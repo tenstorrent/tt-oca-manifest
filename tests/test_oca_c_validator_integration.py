@@ -2078,3 +2078,34 @@ def test_cli_rejects_a_malformed_root_key_digest(digest_first, bad_digest):
     assert result.returncode == 2, (
         f"expected a usage error; rc={result.returncode} stderr={result.stderr!r}")
     assert b"--root-key-digest" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# PQC signing fields on a non-secure OCAP manifest
+#
+# signature_pqc lies in the unsigned tail, outside manifest_hash, so on a
+# non-secure bundle the secure-boot invariant is the only thing that notices it
+# was populated. public_key_pqc is signed, so its tamper re-seals the hash.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field,reseal", [
+    ("signature_pqc", False),
+    ("public_key_pqc", True),
+])
+def test_cli_non_secure_pqc_bundle_with_a_populated_pqc_field_is_refused(
+        tmp_path, field, reseal):
+    offset = {
+        "signature_pqc": oca_constants.OFF_SIGNATURE_PQC,
+        "public_key_pqc": oca_constants.OFF_PUBLIC_KEY_PQC,
+    }[field]
+    data = bytearray(open(_pack_fixture("pqc_basic"), "rb").read())
+    data[offset] ^= 0x5A
+    if reseal:
+        _reseal_manifest_hash(data)
+    bin_path = tmp_path / f"dirty_{field}.bin"
+    bin_path.write_bytes(bytes(data))
+
+    result = _run_cli(["--manifest", str(bin_path)])
+    assert result.returncode == 1, result.stdout
+    assert re.match(rb"^FAIL: SECURE_BOOT_INVARIANT: ", result.stderr), result.stderr

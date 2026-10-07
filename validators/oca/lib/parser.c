@@ -207,6 +207,29 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body)
         || body[OCA_OFF_PUBLIC_KEY_ENCODING] != 0u) {
         return OCA_FAIL_SECURE_BOOT_INVARIANT;
     }
+    /* The same set again for the PQC class, on a variant that carries it. */
+    if (v->len_pqc_signature != 0u) {
+        for (unsigned i = 0; i < OCA_PQC_LEN_SIGNATURE_PQC; ++i) {
+            if (body[OCA_PQC_OFF_SIGNATURE_PQC + i] != 0u) {
+                return OCA_FAIL_SECURE_BOOT_INVARIANT;
+            }
+        }
+        for (unsigned i = 0; i < OCA_PQC_LEN_PUBLIC_KEY; ++i) {
+            if (body[OCA_PQC_OFF_PUBLIC_KEY + i] != 0u) {
+                return OCA_FAIL_SECURE_BOOT_INVARIANT;
+            }
+        }
+        for (unsigned i = 0; i < OCA_PQC_LEN_PUBLIC_KEY_SELECT; ++i) {
+            if (body[OCA_PQC_OFF_PUBLIC_KEY_SELECT + i] != 0u) {
+                return OCA_FAIL_SECURE_BOOT_INVARIANT;
+            }
+        }
+        if (body[OCA_PQC_OFF_SIGNATURE_TYPE] != 0u
+            || body[OCA_PQC_OFF_SIGNATURE_ENCODING] != 0u
+            || body[OCA_PQC_OFF_PUBLIC_KEY_ENCODING] != 0u) {
+            return OCA_FAIL_SECURE_BOOT_INVARIANT;
+        }
+    }
     return OCA_OK;
 }
 
@@ -294,19 +317,26 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body)
         }
     }
 
-    /* PQC sizes: bounds only, for now. Each size field caps how far a later
-     * parse reads into its companion field, so zero and beyond-the-field are
-     * rejected here; per-algorithm exact sizes (ML-DSA / SLH-DSA) are pinned
-     * when a PQC verification backend exists to consume them. The variant
-     * gate mirrors the invariant's: a class bit naming a region the variant
-     * does not carry is that check's rejection, not this one's. */
+    /* FIPS 204 defines no bare ASN.1 structure for an ML-DSA key or signature,
+     * so DER is undefined for PQC and both encodings must be raw, whose sizes
+     * the parameter set fixes exactly. The variant gate mirrors the
+     * invariant's: a class bit naming a region the variant does not carry is
+     * that check's rejection, not this one's. */
     if ((control & OCA_SECURE_BOOT_PQC_BIT) != 0u && v->len_pqc_signature != 0u) {
         uint16_t pqc_sig_size = oca_le_u16(body + OCA_PQC_OFF_SIGNATURE_SIZE);
         uint16_t pqc_key_size = oca_le_u16(body + OCA_PQC_OFF_PUBLIC_KEY_SIZE);
-        if (pqc_sig_size == 0u
-            || (size_t)pqc_sig_size > (size_t)OCA_PQC_LEN_SIGNATURE_PQC
-            || pqc_key_size == 0u
-            || (size_t)pqc_key_size > (size_t)OCA_PQC_LEN_PUBLIC_KEY) {
+        oca_encoding_t pqc_sig_enc =
+            (oca_encoding_t)body[OCA_PQC_OFF_SIGNATURE_ENCODING];
+        oca_encoding_t pqc_key_enc =
+            (oca_encoding_t)body[OCA_PQC_OFF_PUBLIC_KEY_ENCODING];
+        oca_primitive_type_t pqc_prim =
+            (oca_primitive_type_t)body[OCA_PQC_OFF_SIGNATURE_TYPE];
+
+        if (pqc_prim != OCA_PRIMITIVE_ML_DSA_87
+            || pqc_sig_enc != OCA_ENCODING_RAW
+            || pqc_key_enc != OCA_ENCODING_RAW
+            || pqc_sig_size != OCA_PQC_ML_DSA_87_SIGNATURE_BYTES
+            || pqc_key_size != OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES) {
             return OCA_FAIL_CRYPTO_FIELD_SIZE;
         }
     }

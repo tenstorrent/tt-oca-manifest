@@ -263,12 +263,14 @@ typedef enum oca_result {
      *  revocation be assembled across several updates that no single manifest
      *  ever declared. Rejecting fragments is what keeps that from happening. */
     OCA_FAIL_GROUP_CODE                 = 33,
-    /** signature_size_classic or public_key_size_classic does not describe what
-     *  the declared algorithm and encoding can produce.
+    /** An enforced signature class's description — its primitive, encodings,
+     *  and size fields — does not describe a key and signature this library
+     *  accepts.
      *
      *  Each size field bounds how far a Consumer reads into its companion field,
      *  so a value that is zero, overruns the field, or disagrees with the
-     *  algorithm is rejected before any parse relies on it. Distinct from
+     *  algorithm is rejected before any parse relies on it, as is a primitive or
+     *  encoding the library does not accept for that class. Distinct from
      *  OCA_FAIL_SIGNATURE, which reports a signature that was parsed and did not
      *  verify; this one means the manifest never described a parseable value. */
     OCA_FAIL_CRYPTO_FIELD_SIZE          = 34,
@@ -1449,9 +1451,12 @@ oca_result_t oca_check_reserved_bits  (const uint8_t *body);
  * @brief Reject a non-secure manifest that left its signing fields populated.
  *
  * A manifest declaring secure_boot = 0 must zero the signature, public-key, and
- * related fields. Non-zero content there is a producer error worth catching:
- * the bundle looks signed to a casual reader while nothing will ever verify it,
- * which is exactly the confusion that leads to an unsigned image being trusted.
+ * related fields of every signature class its variant carries — the PQC class
+ * as well as the classical one on a PQC manifest, signature_pqc included even
+ * though it lies outside the signed region. Non-zero content there is a
+ * producer error worth catching: the bundle looks signed to a casual reader
+ * while nothing will ever verify it, which is exactly the confusion that leads
+ * to an unsigned image being trusted.
  *
  * Distinct from OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT, which reports the
  * opposite mistake — encryption declared without authentication.
@@ -1476,11 +1481,12 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body);
 /**
  * @brief Reject a secure manifest whose crypto size fields are inconsistent.
  *
- * signature_size_classic and public_key_size_classic give the number of valid
+ * Each class's signature and public-key size fields give the number of valid
  * bytes in their companion fields, which are sized for the largest supported
- * value and zero-padded beyond. Both bound how far a Consumer reads, so a size
+ * value and zero-padded beyond. They bound how far a Consumer reads, so a size
  * that is zero, overruns its field, or disagrees with what the declared
- * algorithm and encoding can produce is rejected before any parse uses it.
+ * algorithm and encoding can produce is rejected before any parse uses it, as
+ * is a primitive or encoding this library does not accept for the class.
  *
  * Every size is an exact byte count except one: a DER ECDSA signature carries
  * the algorithm's MAXIMUM DER length instead. That field lies inside the region
@@ -1496,9 +1502,10 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body);
  * manifest zeroes the classical fields, and the classical rules must not fire
  * on fields the manifest never uses.
  *
- * The PQC size fields (signature_size_pqc, public_key_size_pqc) get bounds
- * validation only — nonzero, within their fields. Per-algorithm exact sizes
- * are pinned when a PQC verification backend exists to consume them.
+ * The PQC class accepts ML-DSA-87 only, with both encodings raw: FIPS 204
+ * defines no bare ASN.1 structure for an ML-DSA key or signature, so DER is
+ * undefined for PQC. The raw sizes are exact — a 2592-byte public key and a
+ * 4627-byte signature.
  *
  * Structural validation of the DER itself — well-formed, and decoding to no
  * more than the declared size — belongs to the crypto backend, the only
@@ -1507,9 +1514,11 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body);
  * @param[in] body  Whole variant body. See the length contract above.
  * @retval OCA_OK                       Sizes consistent, or manifest non-secure.
  * @retval OCA_FAIL_INVALID_ARG         @p body was NULL.
- * @retval OCA_FAIL_CRYPTO_FIELD_SIZE   A size field is zero, overruns its
- *                                      field, or disagrees with the declared
- *                                      algorithm and encoding.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE   An enforced class names a primitive or
+ *                                      encoding it does not accept, or a size
+ *                                      field is zero, overruns its field, or
+ *                                      disagrees with the declared algorithm
+ *                                      and encoding.
  * @return Otherwise the magic or variant failure from resolving @p body.
  */
 oca_result_t oca_check_crypto_field_sizes(const uint8_t *body);

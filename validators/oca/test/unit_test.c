@@ -5034,38 +5034,155 @@ TEST(test_pqc_class_bit_is_permitted_on_a_pqc_manifest)
 TEST(test_pqc_only_manifest_passes_size_check_with_zeroed_classical_fields)
 {
     static uint8_t buf[OCA_PQC_BODY_SIZE];
-    memset(buf, 0, sizeof buf);
-    memcpy(buf, "OCAP", 4);
-    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x05u;    /* enforced + pqc only */
-    /* ML-DSA-87: raw public key 2592, signature 4627. */
-    toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, 4627u);
-    toc_put_u16(buf + OCA_PQC_OFF_PUBLIC_KEY_SIZE, 2592u);
+    build_secure_pqc_manifest(buf, 0x05u);       /* enforced + pqc only */
+    buf[OCA_OFF_SIGNATURE_TYPE] = 0x00u;
+    buf[OCA_OFF_SIGNATURE_ENCODING] = 0x00u;
+    buf[OCA_OFF_PUBLIC_KEY_ENCODING] = 0x00u;
+    toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 0u);
+    toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 0u);
     ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_OK);
 }
 
-/* The PQC size fields bound how far a later parse reads into their companion
- * fields, so zero and beyond-the-field are rejected. Exact per-algorithm sizes
- * get pinned when a PQC verification backend exists to consume them. */
-TEST(test_pqc_size_fields_are_bounded)
+TEST(test_ml_dsa_87_description_passes_the_size_check)
 {
     static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);       /* pqc only */
+    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_OK);
+    build_secure_pqc_manifest(buf, 0x07u);       /* hybrid */
+    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_OK);
+}
 
-    memset(buf, 0, sizeof buf);
-    memcpy(buf, "OCAP", 4);
-    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x05u;
-    toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, 0u);        /* zero */
-    toc_put_u16(buf + OCA_PQC_OFF_PUBLIC_KEY_SIZE, 2592u);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+/* ML-DSA-87 is the only PQC primitive accepted: the other format-defined PQC
+ * parameter sets, an unset type, a classical code point and integrator values
+ * are all refused, in a PQC-only and a hybrid manifest alike. */
+TEST(test_pqc_description_accepts_only_ml_dsa_87)
+{
+    static const uint8_t refused[] = {
+        0x00u, 0x01u, 0x05u, 0x31u, 0x32u, 0x34u,
+        0x51u, 0x52u, 0x53u, 0x54u, 0x55u, 0x56u, 0xF0u, 0xFFu,
+    };
+    static const uint8_t controls[] = { 0x05u, 0x07u };
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    for (size_t c = 0u; c < sizeof controls / sizeof controls[0]; ++c) {
+        for (size_t i = 0u; i < sizeof refused / sizeof refused[0]; ++i) {
+            build_secure_pqc_manifest(buf, controls[c]);
+            buf[OCA_PQC_OFF_SIGNATURE_TYPE] = refused[i];
+            ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf),
+                          OCA_FAIL_CRYPTO_FIELD_SIZE);
+        }
+    }
+}
 
-    toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, 29825u);    /* overruns */
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+/* FIPS 204 defines no bare ASN.1 structure for an ML-DSA key or signature, so
+ * DER is undefined for PQC and each encoding must be raw. */
+TEST(test_pqc_description_requires_raw_encodings)
+{
+    static const uint8_t refused[] = { 0x00u, OCA_ENCODING_DER, 0x03u, 0xF0u };
+    static const unsigned fields[] = {
+        OCA_PQC_OFF_SIGNATURE_ENCODING, OCA_PQC_OFF_PUBLIC_KEY_ENCODING,
+    };
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    for (size_t f = 0u; f < sizeof fields / sizeof fields[0]; ++f) {
+        for (size_t i = 0u; i < sizeof refused / sizeof refused[0]; ++i) {
+            build_secure_pqc_manifest(buf, 0x05u);
+            buf[fields[f]] = refused[i];
+            ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf),
+                          OCA_FAIL_CRYPTO_FIELD_SIZE);
+        }
+    }
+}
 
-    toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, 4627u);
-    toc_put_u16(buf + OCA_PQC_OFF_PUBLIC_KEY_SIZE, 0u);       /* zero */
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+/* Raw ML-DSA-87 sizes are fixed by the parameter set, so any other value is
+ * refused — including one that still fits inside its field. */
+TEST(test_pqc_size_fields_must_be_the_exact_ml_dsa_87_sizes)
+{
+    static const uint16_t bad_signature[] = {
+        0u, OCA_PQC_ML_DSA_87_SIGNATURE_BYTES - 1u,
+        OCA_PQC_ML_DSA_87_SIGNATURE_BYTES + 1u,
+        OCA_PQC_LEN_SIGNATURE_PQC, OCA_PQC_LEN_SIGNATURE_PQC + 1u,
+    };
+    static const uint16_t bad_key[] = {
+        0u, OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES - 1u,
+        OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES + 1u,
+        OCA_PQC_LEN_PUBLIC_KEY, OCA_PQC_LEN_PUBLIC_KEY + 1u,
+    };
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    for (size_t i = 0u; i < sizeof bad_signature / sizeof bad_signature[0]; ++i) {
+        build_secure_pqc_manifest(buf, 0x05u);
+        toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, bad_signature[i]);
+        ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    }
+    for (size_t i = 0u; i < sizeof bad_key / sizeof bad_key[0]; ++i) {
+        build_secure_pqc_manifest(buf, 0x05u);
+        toc_put_u16(buf + OCA_PQC_OFF_PUBLIC_KEY_SIZE, bad_key[i]);
+        ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    }
+}
 
-    toc_put_u16(buf + OCA_PQC_OFF_PUBLIC_KEY_SIZE, 2625u);    /* overruns */
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+/* A classic-only OCAP manifest never uses its PQC description, so the PQC
+ * rules do not fire on it. */
+TEST(test_pqc_description_is_ignored_when_the_pqc_class_is_off)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x03u);
+    buf[OCA_PQC_OFF_SIGNATURE_TYPE] = 0xF0u;
+    buf[OCA_PQC_OFF_SIGNATURE_ENCODING] = OCA_ENCODING_DER;
+    toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, 1u);
+    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_OK);
+}
+
+/* The classical description admits only the primitives this library accepts:
+ * an unset type, an unsupported classical code point, a PQC code point and an
+ * integrator value are all refused. */
+TEST(test_classic_description_accepts_only_supported_primitives)
+{
+    static const uint8_t refused[] = { 0x00u, 0x02u, 0x33u, 0xF0u };
+    for (size_t i = 0u; i < sizeof refused / sizeof refused[0]; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_secure_manifest(buf);
+        buf[OCA_OFF_SIGNATURE_TYPE] = refused[i];
+        ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    }
+}
+
+/* The first and last byte of every PQC signing field the secure-boot invariant
+ * covers: the same set it covers for the classical class. */
+static const unsigned pqc_signing_field_bytes[] = {
+    OCA_PQC_OFF_SIGNATURE_TYPE,
+    OCA_PQC_OFF_SIGNATURE_ENCODING,
+    OCA_PQC_OFF_PUBLIC_KEY_ENCODING,
+    OCA_PQC_OFF_PUBLIC_KEY_SELECT,
+    OCA_PQC_OFF_PUBLIC_KEY_SELECT + OCA_PQC_LEN_PUBLIC_KEY_SELECT - 1u,
+    OCA_PQC_OFF_PUBLIC_KEY,
+    OCA_PQC_OFF_PUBLIC_KEY + OCA_PQC_LEN_PUBLIC_KEY - 1u,
+    OCA_PQC_OFF_SIGNATURE_PQC,
+    OCA_PQC_OFF_SIGNATURE_PQC + OCA_PQC_LEN_SIGNATURE_PQC - 1u,
+};
+
+TEST(test_secure_boot_off_rejects_each_dirty_pqc_signing_field)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_minimal_pqc_manifest(buf);
+    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_OK);
+    for (size_t i = 0u;
+         i < sizeof pqc_signing_field_bytes / sizeof pqc_signing_field_bytes[0]; ++i) {
+        build_minimal_pqc_manifest(buf);
+        buf[pqc_signing_field_bytes[i]] = 0x5Au;
+        ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf),
+                      OCA_FAIL_SECURE_BOOT_INVARIANT);
+    }
+}
+
+TEST(test_secure_boot_on_permits_populated_pqc_signing_fields)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    for (size_t i = 0u;
+         i < sizeof pqc_signing_field_bytes / sizeof pqc_signing_field_bytes[0]; ++i) {
+        build_minimal_pqc_manifest(buf);
+        buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x05u;
+        buf[pqc_signing_field_bytes[i]] = 0x5Au;
+        ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_OK);
+    }
 }
 
 /* ---- per-class authorization and the hybrid AND ---- */
@@ -6387,7 +6504,14 @@ int main(int argc, char **argv)
     RUN_TEST(test_pqc_class_bit_on_a_classic_manifest_is_rejected);
     RUN_TEST(test_pqc_class_bit_is_permitted_on_a_pqc_manifest);
     RUN_TEST(test_pqc_only_manifest_passes_size_check_with_zeroed_classical_fields);
-    RUN_TEST(test_pqc_size_fields_are_bounded);
+    RUN_TEST(test_ml_dsa_87_description_passes_the_size_check);
+    RUN_TEST(test_pqc_description_accepts_only_ml_dsa_87);
+    RUN_TEST(test_pqc_description_requires_raw_encodings);
+    RUN_TEST(test_pqc_size_fields_must_be_the_exact_ml_dsa_87_sizes);
+    RUN_TEST(test_pqc_description_is_ignored_when_the_pqc_class_is_off);
+    RUN_TEST(test_classic_description_accepts_only_supported_primitives);
+    RUN_TEST(test_secure_boot_off_rejects_each_dirty_pqc_signing_field);
+    RUN_TEST(test_secure_boot_on_permits_populated_pqc_signing_fields);
     RUN_TEST(test_hybrid_authorization_consults_each_classes_anchor);
     RUN_TEST(test_single_class_authorization_leaves_the_other_flag_unset);
     RUN_TEST(test_a_refused_pqc_key_fails_authorization);
