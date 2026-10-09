@@ -108,30 +108,12 @@ oca_result_t oca_check_root_key_authorized(const uint8_t *body,
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
 
-    /* Confirm the recorded enforcement against the manifest bits it was read
-     * from, exactly as the determination itself is confirmed at time of use:
-     * a record and a re-derivation must still agree, or something changed one
-     * of them since the determination — and one glitched context word must not
-     * be able to downgrade a hybrid manifest to single-class verification. */
-    uint8_t control = body[OCA_OFF_SECURE_BOOT_CONTROL];
-    oca_secure_bool_t bit_classic =
-        ((control & OCA_SECURE_BOOT_CLASSIC_BIT) != 0u)
-        ? OCA_SECURE_TRUE : OCA_SECURE_FALSE;
-    oca_secure_bool_t bit_pqc =
-        ((control & OCA_SECURE_BOOT_PQC_BIT) != 0u)
-        ? OCA_SECURE_TRUE : OCA_SECURE_FALSE;
-    if (ctx == 0
-        || ctx->secure_boot_enforce_classic != bit_classic
-        || ctx->secure_boot_enforce_pqc != bit_pqc) {
-        return OCA_FAIL_SECURE_BOOT_STATE_CHANGED;
-    }
-
-    /* Engaged with no class enforced is the policy the determination rejects
-     * outright; a context here in that state can only have been composed by
-     * hand around that rejection. Fail, never skip. */
-    if (ctx->secure_boot_enforce_classic != OCA_SECURE_TRUE
-        && ctx->secure_boot_enforce_pqc != OCA_SECURE_TRUE) {
-        return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
+    /* The recorded class enforcement is confirmed at time of use, exactly as
+     * the determination itself is; a record that cannot be trusted fails
+     * closed rather than skipping a class. */
+    oca_result_t classes = oca_secure_boot_confirm_classes(body, ctx);
+    if (classes != OCA_OK) {
+        return classes;
     }
 
     /* Each enforced class is authorized against its OWN anchor and recorded in

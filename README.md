@@ -227,7 +227,7 @@ for a runnable non-secure PQC example.
 | Signing authority | `local`, `aws` | `hsm` |
 | Payload encryption | AES-256-CBC (`0x02`, the default) and AES-128-CBC (`0x01`), key derived from a pre-shared secret via SP 800-108r1 CTR-HMAC-SHA-256 over the 192-byte input block (`local` authority) | KEM-wrapped keys, any other cipher or KDF identifier, `aws` / `hsm` encryption authority |
 | Multi-image payload | Yes (`PTOC` TOC of 280-byte entries; images 8-byte aligned) | — |
-| ROOT-key revocation & anti-rollback | Classic `public_key_classic_revoke`, `manifest_security_version` (128 posture flags), and `manifest_security_control` update controls — the validator enforces revoke-before-key-use, bit-superset anti-rollback, and a post-verify device-state commit | PQC ROOT-key revocation (lands with PQC signature verification) |
+| ROOT-key revocation & anti-rollback | Classic `public_key_classic_revoke`, `manifest_security_version` (128 posture flags), and `manifest_security_control` update controls — the validator enforces revoke-before-key-use, bit-superset anti-rollback, and a post-verify device-state commit, per signature class (it also checks and commits a PQC manifest's `public_key_pqc_revoke`) | Producing `public_key_pqc_revoke` (lands with PQC signing) |
 | Signature posture registers | `signature_cohort_enforce` and `signature_class_revoke` — validated (including the `0xCA` / `0xAC` group-code interlock) and folded into device state by the post-verify commit | Consulting the accumulated state at boot to reject a revoked algorithm class or an unmet cohort — needs multi-cohort signature support |
 | Public key / signature encodings | Raw bytes (`0x02`, the default) for every algorithm; ASN.1 DER (`0x01`) for RSA public keys (PKCS#1 `RSAPublicKey`) and ECDSA signatures. Each value is bounded by its `*_size_classic` field | Vendor-defined encodings (`0x03`) |
 | Verifier-key entry | — | `use_verifier_key` and every `verifier_*` field |
@@ -358,8 +358,10 @@ signature_class_revoke: 0x00        # no algorithm class revoked
 These checks engage whenever secure boot is in force — the `secure_boot` enable
 bit **or** a device-reported signal (lifecycle/fuses), defaulting to in-force when
 neither is present — and share that determination with signature verification.
-They are validated end-to-end by [`validators/oca/`](validators/oca/);
-PQC ROOT-key revocation is reserved for the PQC signature-verification pass.
+They are validated end-to-end by [`validators/oca/`](validators/oca/). ROOT-key
+revocation is per signature class: a PQC manifest's `public_key_pqc_revoke` is
+checked and committed against the device's PQC state, separately from the
+classic state.
 
 ### Usage-constraints control plane
 

@@ -150,9 +150,16 @@ oca_result_t oca_signature_check(const uint8_t *body,
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
 
-    /* The recorded enforcement must still match the manifest's class bits —
-     * one glitched context word must not downgrade a hybrid manifest to
+    /* The recorded class enforcement is confirmed at time of use — one
+     * glitched context word must not downgrade a hybrid manifest to
      * single-class verification. */
+    oca_result_t classes = oca_secure_boot_confirm_classes(body, ctx);
+    if (classes != OCA_OK) {
+        return classes;
+    }
+
+    /* Derived again here, independently of the confirm, for the final verdict
+     * fold below. */
     uint8_t control = body[OCA_OFF_SECURE_BOOT_CONTROL];
     oca_secure_bool_t bit_classic =
         ((control & OCA_SECURE_BOOT_CLASSIC_BIT) != 0u)
@@ -160,18 +167,6 @@ oca_result_t oca_signature_check(const uint8_t *body,
     oca_secure_bool_t bit_pqc =
         ((control & OCA_SECURE_BOOT_PQC_BIT) != 0u)
         ? OCA_SECURE_TRUE : OCA_SECURE_FALSE;
-    if (ctx == 0
-        || ctx->secure_boot_enforce_classic != bit_classic
-        || ctx->secure_boot_enforce_pqc != bit_pqc) {
-        return OCA_FAIL_SECURE_BOOT_STATE_CHANGED;
-    }
-
-    /* Engaged with no class enforced means the determination's rejection was
-     * composed around by hand. Fail, never skip verification. */
-    if (ctx->secure_boot_enforce_classic != OCA_SECURE_TRUE
-        && ctx->secure_boot_enforce_pqc != OCA_SECURE_TRUE) {
-        return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
-    }
 
     /* Per-class verdict words, folded into the final result below. Each class
      * block must SET its word — verified, or deliberately skipped — so the

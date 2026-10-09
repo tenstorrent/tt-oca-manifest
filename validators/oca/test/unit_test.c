@@ -398,15 +398,17 @@ typedef struct {
     bool     version_present;
 
     /* Device-stored secure-boot state — an in-memory stand-in for fuses and
-     * OTP: per-algorithm ROOT-key revocation bitmap (the classic slot is the
-     * one exercised) plus the 128-bit security-version flags. */
+     * OTP: one ROOT-key revocation bitmap per algorithm family, plus the
+     * 128-bit security-version flags. */
     uint8_t revoke[16];
+    uint8_t revoke_pqc[16];
     uint8_t secver[16];
     /* The two signature posture registers are 8 bytes, not 16 — they mirror
      * their manifest fields, and those are u64. */
     uint8_t cohort[8];
     uint8_t class_revoke[8];
     bool    fail_set;
+    bool    fail_set_revoke_pqc;
 
     /* Ciphertext-aware SHA-256 state. The payload digest stub returns
      * `ct_digest` when hashing the ciphertext (matched by pointer and length)
@@ -436,6 +438,11 @@ typedef struct {
     int lifecycle_calls;
     int version_calls;
     int revoke_calls;
+    /* Per-family split of the revocation reader and writer, so a case can
+     * assert which family's state a check consulted or a commit wrote. */
+    int revoke_pqc_calls;
+    int set_revoke_classic_calls;
+    int set_revoke_pqc_calls;
 
     /* What the decryption descriptor carried, captured for assertions. Inside
      * the fixture rather than beside it for the same reason the counters are:
@@ -3619,11 +3626,19 @@ TEST(test_result_string_covers_the_location_code)
 
 /* Device-state readers and writers over the fixture's fuse/OTP stand-in. */
 
+/* The fixture's bitmap for one algorithm family. */
+static uint8_t *dev_revoke_state(oca_key_algorithm_t algo)
+{
+    return (algo == OCA_KEY_ALGO_PQC) ? g_fx.revoke_pqc : g_fx.revoke;
+}
+
 static oca_result_t dev_get_revoke(oca_key_algorithm_t algo, uint8_t out[16])
 {
-    (void)algo;
     g_fx.revoke_calls++;
-    memcpy(out, g_fx.revoke, 16);
+    if (algo == OCA_KEY_ALGO_PQC) {
+        g_fx.revoke_pqc_calls++;
+    }
+    memcpy(out, dev_revoke_state(algo), 16);
     return OCA_OK;
 }
 
@@ -3635,9 +3650,17 @@ static oca_result_t dev_get_secver(uint8_t out[16])
 
 static oca_result_t dev_set_revoke(oca_key_algorithm_t algo, const uint8_t in[16])
 {
-    (void)algo;    g_fx.set_calls++;
+    g_fx.set_calls++;
+    if (algo == OCA_KEY_ALGO_PQC) {
+        g_fx.set_revoke_pqc_calls++;
+    } else {
+        g_fx.set_revoke_classic_calls++;
+    }
     if (g_fx.fail_set) return OCA_FAIL_SECURITY_STATE_UPDATE;
-    memcpy(g_fx.revoke, in, 16);
+    if (g_fx.fail_set_revoke_pqc && algo == OCA_KEY_ALGO_PQC) {
+        return OCA_FAIL_SECURITY_STATE_UPDATE;
+    }
+    memcpy(dev_revoke_state(algo), in, 16);
     return OCA_OK;
 }
 
@@ -5287,6 +5310,9 @@ TEST(test_key_checks_backstop_a_context_with_no_enforced_class)
     ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     ASSERT_EQ_INT(g_authorize_calls, 0);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+    ASSERT_EQ_INT(g_fx.revoke_calls, 0);
     ctx.secure_boot_key_authorized_classic = OCA_SECURE_TRUE;   /* even vouched-for */
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
@@ -5314,6 +5340,9 @@ TEST(test_key_checks_refuse_a_record_disagreeing_with_the_class_bits)
     ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx),
                   OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
     ASSERT_EQ_INT(g_authorize_calls, 0);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx),
+                  OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
+    ASSERT_EQ_INT(g_fx.revoke_calls, 0);
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
                   OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
     ASSERT_EQ_INT(g_fx.sig_calls, 0);
@@ -5477,6 +5506,9 @@ TEST(test_pqc_enforcement_on_a_classic_variant_fails_closed)
     ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     ASSERT_EQ_INT(g_authorize_calls, 0);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+    ASSERT_EQ_INT(g_fx.revoke_calls, 0);
     ctx.secure_boot_key_authorized_pqc = OCA_SECURE_TRUE;   /* even vouched-for */
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
@@ -5502,6 +5534,268 @@ TEST(test_hybrid_manifest_validates_end_to_end)
     ASSERT_EQ_INT(g_authorize_calls, 2);
     ASSERT_EQ_INT(g_fx.sig_calls, 2);
     ASSERT_TRUE(ctx.secure_boot_authenticated == OCA_SECURE_TRUE);
+}
+
+/* ---- PQC ROOT-key revocation, in its own family ---- */
+
+static void set_pqc_revoke_bit(uint8_t buf[OCA_PQC_BODY_SIZE], unsigned n)
+{
+    buf[OCA_PQC_OFF_PUBLIC_KEY_REVOKE + (n / 8)] |= (uint8_t)(1u << (n % 8));
+}
+
+/* The revocation code sizes one buffer and one loop for either family, and the
+ * get/set_root_key_revocation callbacks take one width for both, so every
+ * ROOT-key bitmap field must have that width. */
+TEST(test_every_root_key_bitmap_has_the_shared_width)
+{
+    ASSERT_EQ_INT(OCA_LEN_PUBLIC_KEY_SELECT, OCA_LEN_ROOT_KEY_BITMAP);
+    ASSERT_EQ_INT(OCA_PQC_LEN_PUBLIC_KEY_SELECT, OCA_LEN_ROOT_KEY_BITMAP);
+    ASSERT_EQ_INT(OCA_PQC_LEN_PUBLIC_KEY_REVOKE, OCA_LEN_ROOT_KEY_BITMAP);
+}
+
+TEST(test_pqc_root_key_revoked_by_manifest)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);       /* PQC key slot 0 selected */
+    set_pqc_revoke_bit(buf, 0);
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_FAIL_ROOT_KEY_REVOKED);
+}
+
+TEST(test_pqc_root_key_revoked_by_device_pqc_state)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    g_fx.revoke_pqc[0] = 0x01u;                  /* device revokes PQC slot 0 */
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_FAIL_ROOT_KEY_REVOKED);
+    ASSERT_EQ_INT(g_fx.revoke_pqc_calls, 1);
+}
+
+/* Classic revocation state says nothing about a PQC key. A PQC-only manifest
+ * reads only the PQC family's state, so a classic slot 0 revoked in both the
+ * manifest and the device leaves PQC slot 0 usable. */
+TEST(test_pqc_key_is_not_revoked_by_classic_state)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x01u;
+    g_fx.revoke[0] = 0x01u;
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke_calls, 1);
+    ASSERT_EQ_INT(g_fx.revoke_pqc_calls, 1);
+}
+
+TEST(test_pqc_root_key_reserved_bits_ignored)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    buf[OCA_PQC_OFF_PUBLIC_KEY_SELECT + 15] |= 0x01u;   /* reserved select bit 120 */
+    set_pqc_revoke_bit(buf, 120);                       /* reserved revoke bit 120 */
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_OK);
+}
+
+/* A hybrid manifest exercises both keys, so either family revoking its own key
+ * is enough to refuse it, and an unrevoked hybrid reads both families. */
+TEST(test_hybrid_revocation_checks_each_family)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+
+    build_secure_pqc_manifest(buf, 0x07u);
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke_calls, 2);
+    ASSERT_EQ_INT(g_fx.revoke_pqc_calls, 1);
+
+    g_fx.revoke[0] = 0x01u;                      /* classic slot 0 revoked */
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_FAIL_ROOT_KEY_REVOKED);
+
+    g_fx.revoke[0] = 0x00u;
+    g_fx.revoke_pqc[0] = 0x01u;                  /* PQC slot 0 revoked */
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_FAIL_ROOT_KEY_REVOKED);
+}
+
+/* A classic-only OCAP manifest never uses its PQC key, so neither the PQC
+ * revocation it carries nor the device's PQC state is consulted. */
+TEST(test_classic_only_ocap_manifest_ignores_pqc_revocation)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x03u);
+    set_pqc_revoke_bit(buf, 0);
+    g_fx.revoke_pqc[0] = 0x01u;
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke_pqc_calls, 0);
+}
+
+/* Pipeline: a revoked PQC key is refused before any signature is verified. */
+TEST(test_revoked_pqc_key_skips_signature_in_pipeline)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    set_pqc_revoke_bit(buf, 0);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    g_fx.sha_hash_off = OCA_PQC_OFF_MANIFEST_HASH;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx),
+                  OCA_FAIL_ROOT_KEY_REVOKED);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
+}
+
+/* ---- device-state commit, per family ---- */
+
+TEST(test_commit_ors_in_each_familys_revocation_for_a_hybrid_manifest)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x07u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x20u;    /* manifest revokes classic slot 5 */
+    set_pqc_revoke_bit(buf, 9);                        /* and PQC slot 9 */
+    g_fx.revoke[1] = 0x01u;                            /* device: classic slot 8 */
+    g_fx.revoke_pqc[2] = 0x01u;                        /* device: PQC slot 16 */
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.revoke[1], 0x01u);
+    ASSERT_EQ_INT(g_fx.revoke_pqc[1], 0x02u);
+    ASSERT_EQ_INT(g_fx.revoke_pqc[2], 0x01u);
+    ASSERT_EQ_INT(g_fx.set_revoke_classic_calls, 1);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 1);
+}
+
+/* A verified manifest commits every revocation bitmap it carries, whichever
+ * signature class authenticated it: a PQC-only manifest can retire classic
+ * keys, and a classic-only OCAP manifest can retire PQC keys. */
+TEST(test_commit_pqc_only_manifest_writes_both_families)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x20u;
+    set_pqc_revoke_bit(buf, 5);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.revoke_pqc[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.set_revoke_classic_calls, 1);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 1);
+}
+
+TEST(test_commit_classic_only_ocap_manifest_writes_both_families)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x03u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x20u;
+    set_pqc_revoke_bit(buf, 5);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.revoke_pqc[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.set_revoke_classic_calls, 1);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 1);
+}
+
+/* A classic manifest carries no PQC bitmap, so the PQC family is never read or
+ * written for it. */
+TEST(test_commit_classic_manifest_writes_only_the_classic_family)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    set_revoke_bit(buf, 5);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.revoke_pqc_calls, 0);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 0);
+}
+
+TEST(test_commit_revoke_disable_suppresses_both_families)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x07u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x20u;
+    set_pqc_revoke_bit(buf, 5);
+    buf[OCA_OFF_MANIFEST_SECURITY_CONTROL] = 0x02u;  /* bit1: suppress revocation OR-in */
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.set_revoke_classic_calls, 0);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 0);
+    ASSERT_EQ_INT(g_fx.revoke_pqc[0], 0x00u);
+}
+
+/* The classic write succeeds and the PQC one fails: the failure surfaces
+ * rather than being masked by the write that worked. */
+TEST(test_commit_pqc_revocation_write_failure_surfaced)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    set_pqc_revoke_bit(buf, 5);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    g_fx.fail_set_revoke_pqc = true;
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx),
+                  OCA_FAIL_SECURITY_STATE_UPDATE);
+    ASSERT_EQ_INT(g_fx.set_revoke_classic_calls, 1);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 1);
+}
+
+/* The commit burns fuses, so it holds the class record to the same standard as
+ * the key checks: a record the manifest bits disagree with, a context enforcing
+ * no class, or PQC enforcement on a body with no PQC fields is refused before
+ * anything is written. */
+TEST(test_commit_refuses_a_class_record_it_cannot_trust)
+{
+    uint8_t classic[OCA_CLASSIC_BODY_SIZE];
+    oca_callbacks_t cb;
+
+    build_secure_manifest(classic);              /* control = 0x03 */
+    build_devstate_cb(&cb, classic);
+    oca_validation_context_t ctx = determined_for(classic, &cb);
+    classic[OCA_OFF_SECURE_BOOT_CONTROL] = 0x07u;    /* bits moved under the record */
+    ASSERT_EQ_INT(oca_commit_security_state(classic, &cb, &ctx),
+                  OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
+
+    build_secure_manifest(classic);
+    classic[OCA_OFF_SECURE_BOOT_CONTROL] = 0x01u;    /* neither class named */
+    ctx = g_determined_secure;
+    ctx.secure_boot_enforce_classic = OCA_SECURE_FALSE;
+    ASSERT_EQ_INT(oca_commit_security_state(classic, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+
+    build_secure_manifest(classic);
+    classic[OCA_OFF_SECURE_BOOT_CONTROL] = 0x05u;    /* pqc named on OCAC */
+    ctx = g_determined_secure;
+    ctx.secure_boot_enforce_classic = OCA_SECURE_FALSE;
+    ctx.secure_boot_enforce_pqc     = OCA_SECURE_TRUE;
+    ASSERT_EQ_INT(oca_commit_security_state(classic, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+
+    ASSERT_EQ_INT(g_fx.set_calls, 0);
 }
 
 TEST(test_commit_disable_revoke_only)
@@ -6523,6 +6817,21 @@ int main(int argc, char **argv)
     RUN_TEST(test_pqc_signature_requires_the_pqc_authorization);
     RUN_TEST(test_pqc_enforcement_on_a_classic_variant_fails_closed);
     RUN_TEST(test_hybrid_manifest_validates_end_to_end);
+    RUN_TEST(test_every_root_key_bitmap_has_the_shared_width);
+    RUN_TEST(test_pqc_root_key_revoked_by_manifest);
+    RUN_TEST(test_pqc_root_key_revoked_by_device_pqc_state);
+    RUN_TEST(test_pqc_key_is_not_revoked_by_classic_state);
+    RUN_TEST(test_pqc_root_key_reserved_bits_ignored);
+    RUN_TEST(test_hybrid_revocation_checks_each_family);
+    RUN_TEST(test_classic_only_ocap_manifest_ignores_pqc_revocation);
+    RUN_TEST(test_revoked_pqc_key_skips_signature_in_pipeline);
+    RUN_TEST(test_commit_ors_in_each_familys_revocation_for_a_hybrid_manifest);
+    RUN_TEST(test_commit_pqc_only_manifest_writes_both_families);
+    RUN_TEST(test_commit_classic_only_ocap_manifest_writes_both_families);
+    RUN_TEST(test_commit_classic_manifest_writes_only_the_classic_family);
+    RUN_TEST(test_commit_revoke_disable_suppresses_both_families);
+    RUN_TEST(test_commit_pqc_revocation_write_failure_surfaced);
+    RUN_TEST(test_commit_refuses_a_class_record_it_cannot_trust);
     RUN_TEST(test_commit_disable_revoke_only);
     RUN_TEST(test_commit_write_failure_surfaced);
     RUN_TEST(test_commit_secure_boot_disabled_noop);

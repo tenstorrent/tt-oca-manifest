@@ -307,3 +307,34 @@ oca_result_t oca_secure_boot_confirm(const uint8_t *body,
     }
     return OCA_OK;
 }
+
+oca_result_t oca_secure_boot_confirm_classes(const uint8_t *body,
+                                             const oca_validation_context_t *ctx)
+{
+    if (body == 0) {
+        return OCA_FAIL_INVALID_ARG;
+    }
+    uint8_t control = body[OCA_OFF_SECURE_BOOT_CONTROL];
+    oca_secure_bool_t bit_classic =
+        ((control & OCA_SECURE_BOOT_CLASSIC_BIT) != 0u)
+        ? OCA_SECURE_TRUE : OCA_SECURE_FALSE;
+    oca_secure_bool_t bit_pqc =
+        ((control & OCA_SECURE_BOOT_PQC_BIT) != 0u)
+        ? OCA_SECURE_TRUE : OCA_SECURE_FALSE;
+    if (ctx == 0
+        || ctx->secure_boot_enforce_classic != bit_classic
+        || ctx->secure_boot_enforce_pqc != bit_pqc) {
+        return OCA_FAIL_SECURE_BOOT_STATE_CHANGED;
+    }
+    if (ctx->secure_boot_enforce_classic != OCA_SECURE_TRUE
+        && ctx->secure_boot_enforce_pqc != OCA_SECURE_TRUE) {
+        return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
+    }
+    /* Reads the variant record oca_secure_boot_confirm() has already held to
+     * this body. */
+    if (ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE
+        && ctx->manifest_is_pqc != OCA_SECURE_TRUE) {
+        return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
+    }
+    return OCA_OK;
+}

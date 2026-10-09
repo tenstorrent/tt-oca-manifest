@@ -133,10 +133,12 @@
 #define OCA_OFF_MANIFEST_SECURITY_VERSION  2042u /* 16 bytes — 128 independent security flags */
 #define OCA_LEN_MANIFEST_SECURITY_VERSION    16u
 #define OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE  2655u /* 16 bytes — classic ROOT-key revoke bitmap */
-#define OCA_LEN_PUBLIC_KEY_CLASSIC_REVOKE    16u
-/* public_key_select_classic and public_key_classic_revoke are 128-bit bitmaps:
+/* Every ROOT-key select and revoke bitmap — public_key_select_classic,
+ * public_key_classic_revoke, and their PQC counterparts — is a 128-bit field, as
+ * is each family's device revocation state the revocation callbacks exchange:
  * bits 0..111 are seven 16-bit key groups (bytes 0..13); bits 127:112
  * (bytes 14..15) are reserved and ignored. Comparisons use the used bytes only. */
+#define OCA_LEN_ROOT_KEY_BITMAP              16u
 #define OCA_ROOT_KEY_BITMAP_USED_BYTES       14u /* bytes 0..13 = 112 used bits */
 
 /* ------------------------------------------------------------------ */

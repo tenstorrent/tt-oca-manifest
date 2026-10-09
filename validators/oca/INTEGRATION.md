@@ -680,7 +680,10 @@ secure boot to run unverified.
 integrator provides it through callbacks on `oca_callbacks_t`:
 `is_secure_boot_active`, `is_secure_boot_disabled`, `is_key_authorized`, `get_root_key_revocation(algo,
 …)`, and `get_security_version(…)`. Classic and PQC ROOT-key revocation state are
-kept separately (`oca_key_algorithm_t`); only the classic slot is exercised today.
+kept separately (`oca_key_algorithm_t`): the revocation check reads the state of
+each family whose signature class the manifest enforces, and the commit writes the
+state of each family whose bitmap the manifest carries, so an implementation that
+ignores `algo` applies one family's revocations to the other's keys.
 
 **Which input decided.** `oca_validate_manifest()` calls
 `oca_determine_secure_boot()` once, early, and the determination records what it
@@ -735,10 +738,14 @@ each into the stored value (setting bits only, never clearing):
 
 | Fold-in | Callbacks | Suppressed by |
 |---|---|---|
-| ROOT-key revocation | `get`/`set_root_key_revocation` | `manifest_security_control` bit 1 |
+| ROOT-key revocation — classic, and PQC on a PQC manifest | `get`/`set_root_key_revocation` | `manifest_security_control` bit 1 |
 | Security-version flags | `get`/`set_security_version` | bit 0 |
 | Signature cohort enforcement | `get`/`set_signature_cohort_enforce` | bit 4 |
 | Signature class revocation | `get`/`set_signature_class_revoke` | bit 5 |
+
+Which signature class authenticated the manifest does not limit what it
+revokes: a PQC-only manifest commits its classic revocations and a classic-only
+PQC manifest its PQC ones.
 
 Bits 2 and 3 are defined by the format and govern verifier-key device state,
 which this library does not implement — see "Not supported" in the README. They

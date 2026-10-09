@@ -257,11 +257,6 @@ integrator knows the current boundary; several are tracked as follow-on work:
 - **Composite CBC-HMAC and AEAD (e.g. GCM-SIV) encryption modes**, and
   **KEM-unwrapped DEK** (`input_key_source` b010) — only plain AES-128-CBC and
   AES-256-CBC with a pre-shared secret are handled.
-- **PQC ROOT-key revocation** — classic ROOT-key revocation and anti-rollback
-  *are* implemented (see [Secure-boot device state](INTEGRATION.md#secure-boot-device-state));
-  the PQC key is authorized against the device's anchor but its
-  `public_key_pqc_revoke` bitmap and the PQC half of the device revocation
-  state are not yet consulted.
 - **Verifier key entry and co-signer entry verification** — the appended-entry
   trust chain is not walked.
 - **Boot-time enforcement of the signature posture registers** — the

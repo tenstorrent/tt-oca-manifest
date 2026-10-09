@@ -639,9 +639,6 @@ typedef enum oca_hw_result {
  * backend to consult without interpreting primitive bytes — the classical and
  * PQC signature_type value spaces both reserve 0xF0+ for integrators, so the
  * primitive value alone cannot distinguish the families there.
- *
- * @note PQC revocation state is not consulted yet; the family is live for
- *       authorization and signature dispatch.
  */
 typedef enum oca_key_algorithm {
     OCA_KEY_ALGO_CLASSIC = 0,  /**< The RSA / ECDSA family. */
@@ -1185,7 +1182,11 @@ struct oca_callbacks {
      * @brief Read the device-stored ROOT-key revocation bitmap.
      *
      * Consulted before the selected key is used to verify anything, so a
-     * revoked key is never exercised.
+     * revoked key is never exercised. The revocation check calls it once per
+     * signature class the manifest enforces, with that class's family, and
+     * the commit once per bitmap it writes. The two families' bitmaps are
+     * separate device state, and an implementation that ignores @p algo would
+     * apply classic revocations to PQC keys.
      *
      * @param[in]  algo      Which algorithm family's state to read.
      * @param[out] out       Receives the 16-byte little-endian bitmap.
@@ -1213,7 +1214,9 @@ struct oca_callbacks {
      *
      * Called only by oca_commit_security_state(), after a validation has
      * already succeeded. The value has been bitwise-OR-ed by the library, so it
-     * only ever sets bits and never clears one.
+     * only ever sets bits and never clears one. Called once per revocation
+     * bitmap the manifest carries — the classic one, then the PQC one on a PQC
+     * manifest — with that bitmap's family; write only that family's state.
      *
      * @param[in] algo      Which algorithm family's state to write.
      * @param[in] in        The 16-byte little-endian bitmap to persist.
@@ -1893,9 +1896,14 @@ oca_result_t oca_check_root_key_authorized(
  * @brief Reject a manifest whose selected ROOT key has been revoked.
  *
  * A no-op returning OCA_OK when @p ctx records that secure boot is not in force.
- * Otherwise rejects if a ROOT key selected in public_key_select_classic is
- * revoked either in the manifest's public_key_classic_revoke or in the
- * device-stored classic revocation state, read via cb->get_root_key_revocation.
+ * Otherwise checks the ROOT key of each signature class the manifest enforces
+ * against that class's own state, because the device keeps classic and PQC
+ * revocation separately: the classical key selected in
+ * public_key_select_classic against public_key_classic_revoke and the device's
+ * classic state, and the PQC key selected in public_key_select_pqc against
+ * public_key_pqc_revoke and the device's PQC state. Device state is read via
+ * cb->get_root_key_revocation, once per enforced class. A classic-only manifest
+ * never consults PQC state, nor a PQC-only manifest classic state.
  *
  * Decided BEFORE the key is used to verify the signature, so compose it before
  * oca_check_signature() — a revoked key must never be exercised, not merely
@@ -1913,10 +1921,17 @@ oca_result_t oca_check_root_key_authorized(
  * @retval OCA_OK                          No selected key is revoked, or secure
  *                                         boot is not in force.
  * @retval OCA_FAIL_ROOT_KEY_REVOKED       A selected ROOT key is revoked.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   Read callback missing under secure boot.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   Read callback missing under secure
+ *                                         boot, or it failed to read a
+ *                                         family's state.
  * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED  @p ctx holds no determination.
- * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination no longer
- *                                         matches the recorded one.
+ * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination, or the
+ *                                         recorded class enforcement, no
+ *                                         longer matches the manifest.
+ * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL  @p ctx enforces no class, or the
+ *                                         PQC class on a body with no PQC
+ *                                         fields — states only a hand-composed
+ *                                         context can hold.
  * @return Otherwise the magic or variant failure from resolving @p body.
  */
 oca_result_t oca_check_root_key_revocation(
@@ -2511,11 +2526,16 @@ oca_result_t oca_toc_image_at(
  *
  * A no-op returning OCA_OK when @p ctx records that secure boot is not in force.
  * Otherwise, unless the matching manifest_security_control disable bit is set, it
- * bitwise-ORs the manifest's public_key_classic_revoke into the device classic
- * revocation state (bit 1) and manifest_security_version into the device
- * security-version flags (bit 0), writing back via cb->set_*. The OR-in only
- * ever sets bits, never clears one, so state cannot be rolled backwards by a
- * commit.
+ * bitwise-ORs each revocation bitmap the manifest carries into its family's
+ * device revocation state (bit 1) — public_key_classic_revoke into the classic
+ * state and, on a PQC manifest, public_key_pqc_revoke into the PQC state — and
+ * manifest_security_version into the device security-version flags (bit 0),
+ * writing back via cb->set_*. The OR-in only ever sets bits, never clears one,
+ * so state cannot be rolled backwards by a commit.
+ *
+ * Which signature class authenticated the manifest does not limit what it may
+ * revoke: a PQC-only manifest commits its public_key_classic_revoke, and a
+ * classic-only PQC manifest its public_key_pqc_revoke.
  *
  * The library never calls this itself: validation is read-only and mutates no
  * device state, which is what lets a caller validate speculatively.
@@ -2535,9 +2555,13 @@ oca_result_t oca_toc_image_at(
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE     A needed callback is NULL.
  * @retval OCA_FAIL_SECURITY_STATE_UPDATE    A write-back failed.
  * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED  @p ctx holds no determination.
- * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination no longer
- *                                           matches the recorded one. Nothing
- *                                           was written.
+ * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination, or the
+ *                                           recorded class enforcement, no
+ *                                           longer matches the manifest.
+ *                                           Nothing was written.
+ * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL  @p ctx enforces no class, or the
+ *                                           PQC class on a body with no PQC
+ *                                           fields. Nothing was written.
  * @return Otherwise the magic or variant failure from resolving @p body.
  *
  * @warning Call this ONLY after oca_validate() returned OCA_OK for @p body —
