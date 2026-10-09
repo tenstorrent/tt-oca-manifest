@@ -262,23 +262,12 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
 
     /* Structural statements about the manifest's own fields, decided from the
      * manifest alone and therefore ahead of the determination — neither asks
-     * what secure boot resolved to.
-     *
-     * oca_check_secure_boot_invariant() in particular reads the RAW
-     * secure_boot_control bit and MUST keep doing so. Its question is "did a
-     * manifest declaring itself non-secure zero its signing fields?", a
-     * producer-side property of these bytes. Rewiring it to the determination
-     * would silently change it into a different question on any part whose
-     * device state disagrees with the manifest — and on a disabled part the two
-     * usually agree, so nothing would notice. */
+     * what secure boot resolved to. The signing fields are not among them: they
+     * are Secure-Boot-only, ignored while secure boot is disabled, and validated
+     * by oca_check_crypto_field_sizes() once the determination is made. */
     r = oca_check_reserved_bits(body);
     if (r != OCA_OK) return r;
     r = oca_check_secure_boot_invariant(body);
-    if (r != OCA_OK) return r;
-    /* The positive counterpart of the invariant above: where that one requires a
-     * non-secure manifest to zero its signing fields, this requires a secure one
-     * to describe them consistently. */
-    r = oca_check_crypto_field_sizes(body);
     if (r != OCA_OK) return r;
     /* Confirm the consistency of the signature revocation group codes; if these
     values are mal-formed then the manifest is suspect. We don't care what
@@ -301,7 +290,7 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
      * disarm all of them at once. Doing both costs an attacker a consistent fault
      * at the determination AND at every confirm.
      *
-     * Placed after framing, integrity, and the invariant, because the
+     * Placed after framing, integrity, and the structural checks, because the
      * determination's highest-priority input is a manifest bit and settling the
      * question out of a body that failed its integrity check would settle it from
      * damage. Placed before every check that consults it, because there is
@@ -322,6 +311,14 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
      * Necessary but not sufficient — the confirmed form runs at the end, once
      * the signature has actually been checked. */
     r = oca_check_payload_encryption_precondition(body, cb, vctx);
+    if (r != OCA_OK) return r;
+
+    /* The signing description, under secure boot only, keyed on the
+     * determination rather than the manifest's enforced bit: a part that
+     * enforces secure boot itself uses these fields whatever that bit says. A
+     * manifest read, no device or key operation, and it must precede ROOT-key
+     * authorization, which presents these fields to the trust anchor. */
+    r = oca_check_crypto_field_sizes(body, cb, vctx);
     if (r != OCA_OK) return r;
 
     /* Identity-byte checks per family. The check functions short-circuit

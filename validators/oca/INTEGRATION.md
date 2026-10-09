@@ -296,9 +296,7 @@ Two things follow for your code:
   reach `oca_check_payload_at()`. Passing a fresh one there refuses, correctly:
   from that call's point of view nothing has been authenticated.
 
-The refusal reports `OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT`, distinct from
-`OCA_FAIL_SECURE_BOOT_INVARIANT` (signing fields left non-zero on a non-secure
-manifest) — different cause, different fix.
+The refusal reports `OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT`.
 
 **Step 3 is the staged flow's advantage.** `oca_validate()` runs the manifest and
 payload stages back to back with no seam between them, so a whole-bundle consumer
@@ -586,17 +584,26 @@ does the whole-bundle resolution including the encrypted substitution, and
 
 ## Secure-boot device state
 
-When secure boot is in force, three checks run ahead of signature verification:
-`oca_check_root_key_authorized()`, `oca_check_root_key_revocation()` and
-`oca_check_security_version()`. All are composed into `oca_validate_manifest()`,
+When secure boot is in force, four checks run ahead of signature verification:
+`oca_check_crypto_field_sizes()`, `oca_check_root_key_authorized()`,
+`oca_check_root_key_revocation()` and `oca_check_security_version()`. All are
+composed into `oca_validate_manifest()`,
 so both entry points run them, and all are callable directly if you are
 composing checks by hand — but composing them by hand now requires the
 validation context `oca_determine_secure_boot()` produced. A fresh one is
 refused, not treated as "not in force". See "Determined once, confirmed at every
 use" below.
 
+- **Signing description** (`oca_check_crypto_field_sizes()`) — each enforced
+  class's signature type, encodings and size fields must describe a key and
+  signature this library accepts (`CRYPTO_FIELD_SIZE` otherwise). These are
+  Secure-Boot-only fields, so the check is keyed on the determination rather
+  than on the manifest's `secure_boot_enforced` bit: a part that enforces secure
+  boot itself validates them even on a manifest that leaves the bit clear, and
+  while secure boot is not in force they are ignored, whatever they hold — a
+  manifest that does not assert secure boot is not refused for carrying them.
 - **ROOT-key authorization** (`oca_check_root_key_authorized()`) — the trust
-  anchor, and the first of the three. The manifest carries the key its own
+  anchor, and the first of the key checks. The manifest carries the key its own
   signature is verified against, so verification establishes only that some
   private key signed it; this is what establishes whose. Each signature class
   the manifest enforces (`secure_boot_classic` / `secure_boot_pqc`) is
@@ -612,11 +619,12 @@ use" below.
   Authorization and revocation are fundamental question questions asked about
   key material: First we ask "was this key ever trusted? and then "is it still trusted?".
   A key can be unauthorized with no revocation bit set anywhere.
-- **ROOT-key revocation** (`oca_check_root_key_revocation()`) — before the
+- **ROOT-key revocation** (`oca_check_root_key_revocation()`) — before a
   selected ROOT key is used to verify the manifest signature, the validator
-  rejects the manifest (`ROOT_KEY_REVOKED`) if
-  the key is revoked in the manifest's `public_key_classic_revoke` bitmap **or**
-  the device-stored classic revocation state. A revoked key is never exercised.
+  rejects the manifest (`ROOT_KEY_REVOKED`) if the key is revoked in its own
+  family's manifest bitmap (`public_key_classic_revoke` or
+  `public_key_pqc_revoke`) **or** in that family's device-stored state. Each
+  enforced class's key is checked; a revoked key is never exercised.
 - **Anti-rollback** (`oca_check_security_version()`) — the validator enforces
   that the 128-bit `manifest_security_version` flag field is a **bit-superset**
   of the device-stored value (`manifest & device == device`); a manifest missing
@@ -714,8 +722,9 @@ Two consequences for your code:
 - **Escalate it; do not retry.** A retry that succeeds has not established that
   the first answer was wrong.
 
-The reporters are consulted roughly six times per validation rather than four,
-which is the price of the above. They are fuse or OTP reads; if that cost is
+The reporters are consulted once for the determination and once per gated
+check — seven times per validation, eight when the manifest declares
+encryption — which is the price of the above. They are fuse or OTP reads; if that cost is
 material on your part, it is worth measuring rather than assuming.
 
 **A context no determination has settled is refused.** `secure_boot_determined`

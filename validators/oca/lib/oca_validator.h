@@ -154,7 +154,10 @@ typedef enum oca_result {
     OCA_FAIL_TRAILER                    = 3,  /**< Trailer closing the signed region is wrong. */
     OCA_FAIL_FORMAT_VERSION_MISMATCH    = 4,  /**< Manifest major version exceeds this build's. */
     OCA_FAIL_RESERVED_BITS              = 5,  /**< A reserved bit is set; the manifest uses a feature this build cannot honour. */
-    OCA_FAIL_SECURE_BOOT_INVARIANT      = 6,  /**< Signing fields left non-zero on a manifest declaring secure_boot = 0. */
+    /** Signing fields left non-zero on a manifest declaring secure_boot = 0.
+     *  Not returned by this library, which ignores those fields while secure
+     *  boot is disabled; kept for a Consumer enforcing a stricter policy. */
+    OCA_FAIL_SECURE_BOOT_INVARIANT      = 6,
     OCA_FAIL_CHIPLET_ID                 = 7,  /**< Hardware chiplet ID does not satisfy the manifest constraint. */
     OCA_FAIL_PACKAGE_ID                 = 8,  /**< Hardware package ID does not satisfy the manifest constraint. */
     OCA_FAIL_SYSTEM_ID                  = 9,  /**< Hardware system ID does not satisfy the manifest constraint. */
@@ -1451,30 +1454,22 @@ oca_result_t oca_check_manifest_length(const uint8_t *body);
 oca_result_t oca_check_reserved_bits  (const uint8_t *body);
 
 /**
- * @brief Reject a non-secure manifest that left its signing fields populated.
+ * @brief Reject a manifest whose secure_boot_control names a signature class
+ *        its variant cannot carry.
  *
- * A manifest declaring secure_boot = 0 must zero the signature, public-key, and
- * related fields of every signature class its variant carries — the PQC class
- * as well as the classical one on a PQC manifest, signature_pqc included even
- * though it lies outside the signed region. Non-zero content there is a
- * producer error worth catching: the bundle looks signed to a casual reader
- * while nothing will ever verify it, which is exactly the confusion that leads
- * to an unsigned image being trusted.
+ * secure_boot_pqc set on a variant with no PQC crypto region is a format
+ * violation regardless of secure-boot state, so it is decided from the manifest
+ * alone, ahead of the determination.
  *
- * Distinct from OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT, which reports the
- * opposite mistake — encryption declared without authentication.
- *
- * Also owns the one class-bit rule that is structural rather than a property
- * of the effective secure-boot state: secure_boot_pqc set on a variant that
- * carries no PQC crypto region is a format violation regardless of whether
- * secure boot is enabled, so it is rejected here, before the enable bit is
- * even consulted.
+ * The signing fields themselves are not judged here. They are Secure-Boot-only:
+ * a Consumer ignores them while secure boot is disabled, whatever they hold, and
+ * oca_check_crypto_field_sizes() validates them once the determination puts
+ * secure boot in force.
  *
  * @param[in] body  Whole variant body. See the length contract above.
- * @retval OCA_OK                              Invariant holds.
+ * @retval OCA_OK                              No class bit the variant cannot
+ *                                             satisfy.
  * @retval OCA_FAIL_INVALID_ARG                @p body was NULL.
- * @retval OCA_FAIL_SECURE_BOOT_INVARIANT      Signing fields non-zero on a
- *                                             secure_boot = 0 manifest.
  * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL    secure_boot_pqc set on a variant
  *                                             with no PQC fields to satisfy it.
  * @return Otherwise the magic or variant failure from resolving @p body.
@@ -1482,7 +1477,8 @@ oca_result_t oca_check_reserved_bits  (const uint8_t *body);
 oca_result_t oca_check_secure_boot_invariant(const uint8_t *body);
 
 /**
- * @brief Reject a secure manifest whose crypto size fields are inconsistent.
+ * @brief Reject a signing description, under secure boot, that names a key and
+ *        signature this library does not accept.
  *
  * Each class's signature and public-key size fields give the number of valid
  * bytes in their companion fields, which are sized for the largest supported
@@ -1497,13 +1493,18 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body);
  * exists, and a DER ECDSA length is value-dependent. The DER length octets give
  * the real size within the declared maximum.
  *
- * Keyed on the manifest's own secure_boot bits, like
- * oca_check_secure_boot_invariant(), and the two partition the question between
- * them: a manifest declaring itself non-secure must zero these fields, one
- * declaring itself secure must describe them consistently. Each class's
- * description is validated only when its class bit names it — a PQC-only
+ * The signing description is Secure-Boot-only, so this is a gated check: a
+ * no-op returning OCA_OK when @p ctx records that secure boot is not in force,
+ * whatever the fields hold. In force is the determination's answer, not the
+ * manifest's own secure_boot_enforced bit — a part that enforces secure boot
+ * itself uses these fields even on a manifest that leaves the bit clear. Each
+ * class's description is validated only when that class is enforced: a PQC-only
  * manifest zeroes the classical fields, and the classical rules must not fire
  * on fields the manifest never uses.
+ *
+ * Compose it after oca_determine_secure_boot() and before
+ * oca_check_root_key_authorized(), which presents these fields to the trust
+ * anchor.
  *
  * The PQC class accepts ML-DSA-87 only, with both encodings raw: FIPS 204
  * defines no bare ASN.1 structure for an ML-DSA key or signature, so DER is
@@ -1515,16 +1516,35 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body);
  * component that parses ASN.1.
  *
  * @param[in] body  Whole variant body. See the length contract above.
- * @retval OCA_OK                       Sizes consistent, or manifest non-secure.
+ * @param[in] cb    Callback table. The secure-boot reporters are consulted
+ *                  again here to confirm the recorded determination; no other
+ *                  callback is used.
+ * @param[in] ctx   The determination oca_determine_secure_boot() recorded. Read,
+ *                  never written. NULL, or a context it has not settled, is
+ *                  refused rather than treated as "not in force".
+ * @retval OCA_OK                       Every enforced class's description is
+ *                                      consistent, or secure boot is not in
+ *                                      force.
  * @retval OCA_FAIL_INVALID_ARG         @p body was NULL.
  * @retval OCA_FAIL_CRYPTO_FIELD_SIZE   An enforced class names a primitive or
  *                                      encoding it does not accept, or a size
  *                                      field is zero, overruns its field, or
  *                                      disagrees with the declared algorithm
  *                                      and encoding.
+ * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED  @p ctx holds no determination.
+ * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination, or the
+ *                                      recorded class enforcement, no longer
+ *                                      matches the manifest.
+ * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL  @p ctx enforces no class, or the
+ *                                      PQC class on a body with no PQC fields
+ *                                      — states only a hand-composed context
+ *                                      can hold.
  * @return Otherwise the magic or variant failure from resolving @p body.
  */
-oca_result_t oca_check_crypto_field_sizes(const uint8_t *body);
+oca_result_t oca_check_crypto_field_sizes(
+    const uint8_t *body,
+    const oca_callbacks_t *cb,
+    const oca_validation_context_t *ctx);
 
 /**
  * @brief Reject a signature_class_revoke group-code byte that is neither 0x00

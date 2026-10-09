@@ -1748,9 +1748,8 @@ def test_cli_rejects_short_hex_flag():
 #   * `manifest_hash` must be recomputed. The encryption control bit at offset
 #     200 lies inside the signed region and the hash check runs early, so an
 #     un-rehashed tamper fails with MANIFEST_HASH.
-#   * the base bundle must be CLEARTEXT and non-secure. Tampering an encrypted
-#     fixture leaves signing fields populated with secure boot off, which trips
-#     SECURE_BOOT_INVARIANT first.
+#   * the base bundle must be CLEARTEXT and non-secure: an encrypted fixture is a
+#     secure-boot manifest, which the gate under test lets through.
 # ---------------------------------------------------------------------------
 
 _ENCRYPTION_GATE_RE = re.compile(rb"^FAIL: ENCRYPTION_REQUIRES_SECURE_BOOT")
@@ -1790,7 +1789,6 @@ def test_cli_refuses_encrypted_payload_without_secure_boot(tmp_path):
     # If either tamper step were wrong the run would still fail — for the wrong
     # reason — and the test would be worthless.
     assert b"MANIFEST_HASH" not in result.stderr, result.stderr
-    assert b"SECURE_BOOT_INVARIANT" not in result.stderr, result.stderr
 
 
 def test_cli_refusal_does_not_leak_secret_or_derivation_inputs(tmp_path):
@@ -2081,31 +2079,31 @@ def test_cli_rejects_a_malformed_root_key_digest(digest_first, bad_digest):
 
 
 # ---------------------------------------------------------------------------
-# PQC signing fields on a non-secure OCAP manifest
+# Signing fields on a non-secure manifest are ignored
 #
-# signature_pqc lies in the unsigned tail, outside manifest_hash, so on a
-# non-secure bundle the secure-boot invariant is the only thing that notices it
-# was populated. public_key_pqc is signed, so its tamper re-seals the hash.
+# A Consumer ignores the Secure-Boot-only fields while secure boot is disabled,
+# so a non-secure bundle whose signing fields are populated still boots. The
+# signatures lie in the unsigned tail; the public keys are signed, so their
+# tamper re-seals manifest_hash.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("field,reseal", [
-    ("signature_pqc", False),
-    ("public_key_pqc", True),
+@pytest.mark.parametrize("fixture,offset,reseal", [
+    ("basic", oca_constants.OFF_SIGNATURE_CLASSIC, False),
+    ("basic", oca_constants.OFF_PUBLIC_KEY_CLASSIC, True),
+    ("pqc_basic", oca_constants.OFF_SIGNATURE_PQC, False),
+    ("pqc_basic", oca_constants.OFF_PUBLIC_KEY_PQC, True),
+    ("pqc_basic", oca_constants.OFF_SIGNATURE_TYPE_PQC, True),
 ])
-def test_cli_non_secure_pqc_bundle_with_a_populated_pqc_field_is_refused(
-        tmp_path, field, reseal):
-    offset = {
-        "signature_pqc": oca_constants.OFF_SIGNATURE_PQC,
-        "public_key_pqc": oca_constants.OFF_PUBLIC_KEY_PQC,
-    }[field]
-    data = bytearray(open(_pack_fixture("pqc_basic"), "rb").read())
+def test_cli_non_secure_bundle_with_populated_signing_fields_validates(
+        tmp_path, fixture, offset, reseal):
+    data = bytearray(open(_pack_fixture(fixture), "rb").read())
     data[offset] ^= 0x5A
     if reseal:
         _reseal_manifest_hash(data)
-    bin_path = tmp_path / f"dirty_{field}.bin"
+    bin_path = tmp_path / f"{fixture}_dirty_{offset}.bin"
     bin_path.write_bytes(bytes(data))
 
     result = _run_cli(["--manifest", str(bin_path)])
-    assert result.returncode == 1, result.stdout
-    assert re.match(rb"^FAIL: SECURE_BOOT_INVARIANT: ", result.stderr), result.stderr
+    assert result.returncode == 0, result.stderr
+    assert PASS_RE.match(result.stdout), result.stdout

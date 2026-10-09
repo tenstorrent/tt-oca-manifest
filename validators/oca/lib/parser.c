@@ -11,6 +11,7 @@
 #include "oca_layout_classic.h"
 #include "oca_layout_pqc.h"
 #include "oca_variant.h"
+#include "secure_boot.h"
 
 oca_result_t oca_check_length(size_t actual_length)
 {
@@ -168,67 +169,18 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body)
     if (v == 0) {
         return status;
     }
-    uint8_t secure_boot_control = body[OCA_OFF_SECURE_BOOT_CONTROL];
     /* secure_boot_pqc names a PQC signature this variant has no fields to
-     * carry — a format violation "regardless of secure-boot state", so it is
-     * checked before the enable bit is even consulted. Data-driven via the
-     * descriptor: a variant with no PQC crypto has len_pqc_signature == 0. */
-    if ((secure_boot_control & OCA_SECURE_BOOT_PQC_BIT) != 0u
+     * carry — a format violation regardless of secure-boot state. Data-driven
+     * via the descriptor: a variant with no PQC crypto has
+     * len_pqc_signature == 0.
+     *
+     * The signing fields themselves are not judged here. They are
+     * Secure-Boot-only, so a Consumer ignores them while secure boot is
+     * disabled and validates them, through oca_check_crypto_field_sizes(), once
+     * the determination puts secure boot in force. */
+    if ((body[OCA_OFF_SECURE_BOOT_CONTROL] & OCA_SECURE_BOOT_PQC_BIT) != 0u
         && v->len_pqc_signature == 0u) {
         return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
-    }
-    bool secure_boot_enabled =
-        (secure_boot_control & OCA_SECURE_BOOT_ENFORCED_BIT) != 0u;
-    if (secure_boot_enabled) {
-        return OCA_OK; /* signing fields are allowed to be non-zero. */
-    }
-    /* secure_boot == 0: signature_classic, public_key_classic, and
-     * public_key_select_classic must be all zero (the packer enforces this
-     * on the producer side; we verify on the consumer side). The
-     * classic-crypto key fields are shared offsets; signature_classic sits at
-     * the variant's signature offset. */
-    for (unsigned i = 0; i < OCA_LEN_SIGNATURE; ++i) {
-        if (body[v->off_signature + i] != 0u) {
-            return OCA_FAIL_SECURE_BOOT_INVARIANT;
-        }
-    }
-    for (unsigned i = 0; i < OCA_LEN_PUBLIC_KEY; ++i) {
-        if (body[OCA_OFF_PUBLIC_KEY + i] != 0u) {
-            return OCA_FAIL_SECURE_BOOT_INVARIANT;
-        }
-    }
-    for (unsigned i = 0; i < OCA_LEN_PUBLIC_KEY_SELECT; ++i) {
-        if (body[OCA_OFF_PUBLIC_KEY_SELECT + i] != 0u) {
-            return OCA_FAIL_SECURE_BOOT_INVARIANT;
-        }
-    }
-    if (body[OCA_OFF_SIGNATURE_TYPE] != 0u
-        || body[OCA_OFF_SIGNATURE_ENCODING] != 0u
-        || body[OCA_OFF_PUBLIC_KEY_ENCODING] != 0u) {
-        return OCA_FAIL_SECURE_BOOT_INVARIANT;
-    }
-    /* The same set again for the PQC class, on a variant that carries it. */
-    if (v->len_pqc_signature != 0u) {
-        for (unsigned i = 0; i < OCA_PQC_LEN_SIGNATURE_PQC; ++i) {
-            if (body[OCA_PQC_OFF_SIGNATURE_PQC + i] != 0u) {
-                return OCA_FAIL_SECURE_BOOT_INVARIANT;
-            }
-        }
-        for (unsigned i = 0; i < OCA_PQC_LEN_PUBLIC_KEY; ++i) {
-            if (body[OCA_PQC_OFF_PUBLIC_KEY + i] != 0u) {
-                return OCA_FAIL_SECURE_BOOT_INVARIANT;
-            }
-        }
-        for (unsigned i = 0; i < OCA_PQC_LEN_PUBLIC_KEY_SELECT; ++i) {
-            if (body[OCA_PQC_OFF_PUBLIC_KEY_SELECT + i] != 0u) {
-                return OCA_FAIL_SECURE_BOOT_INVARIANT;
-            }
-        }
-        if (body[OCA_PQC_OFF_SIGNATURE_TYPE] != 0u
-            || body[OCA_PQC_OFF_SIGNATURE_ENCODING] != 0u
-            || body[OCA_PQC_OFF_PUBLIC_KEY_ENCODING] != 0u) {
-            return OCA_FAIL_SECURE_BOOT_INVARIANT;
-        }
     }
     return OCA_OK;
 }
@@ -248,32 +200,34 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body)
 /** Largest RFC 3279 ECDSA-Sig-Value a P-256 key can produce. */
 #define DER_EC_P256_SIGNATURE_MAX_BYTES 72u
 
-oca_result_t oca_check_crypto_field_sizes(const uint8_t *body)
+oca_result_t oca_check_crypto_field_sizes(const uint8_t *body,
+                                          const oca_callbacks_t *cb,
+                                          const oca_validation_context_t *ctx)
 {
     if (body == 0) {
         return OCA_FAIL_INVALID_ARG;
     }
-    oca_result_t status;
-    const oca_variant_t *v = oca_variant_for_body(body, &status);
-    if (v == 0) {
-        return status;
+    /* The signing description is Secure-Boot-only: validated when secure boot
+     * is in force and ignored otherwise. In force is the determination's
+     * answer, not the manifest's own enforced bit, because a part that enforces
+     * secure boot itself uses these fields whatever that bit says. */
+    oca_secure_bool_t engaged;
+    oca_result_t confirmed = oca_secure_boot_confirm(body, cb, ctx, &engaged);
+    if (confirmed != OCA_OK) {
+        return confirmed;
     }
-    /* Keyed on the manifest's own secure_boot bits, exactly as
-     * oca_check_secure_boot_invariant is, and for the same reason: this is a
-     * producer-side property of these bytes. The two together partition the
-     * question completely — a manifest declaring itself non-secure must zero its
-     * signing fields (that check), and one declaring itself secure must describe
-     * them consistently (this one). Neither asks what the device resolved to.
-     *
-     * Each class's description is validated only when its class bit names it:
-     * a PQC-only manifest zeroes the classical fields, and the classical rules
-     * must not fire on fields the manifest never uses. */
-    uint8_t control = body[OCA_OFF_SECURE_BOOT_CONTROL];
-    if ((control & OCA_SECURE_BOOT_ENFORCED_BIT) == 0u) {
+    if (engaged == OCA_SECURE_FALSE) {
         return OCA_OK;
     }
+    /* Each class's description is validated only when that class is enforced:
+     * a PQC-only manifest zeroes the classical fields, and the classical rules
+     * must not fire on fields the manifest never uses. */
+    oca_result_t classes = oca_secure_boot_confirm_classes(body, ctx);
+    if (classes != OCA_OK) {
+        return classes;
+    }
 
-    if ((control & OCA_SECURE_BOOT_CLASSIC_BIT) != 0u) {
+    if (ctx->secure_boot_enforce_classic == OCA_SECURE_TRUE) {
         uint16_t sig_size = oca_le_u16(body + OCA_OFF_SIGNATURE_SIZE);
         uint16_t key_size = oca_le_u16(body + OCA_OFF_PUBLIC_KEY_SIZE);
         oca_encoding_t sig_enc = (oca_encoding_t)body[OCA_OFF_SIGNATURE_ENCODING];
@@ -319,10 +273,13 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body)
 
     /* FIPS 204 defines no bare ASN.1 structure for an ML-DSA key or signature,
      * so DER is undefined for PQC and both encodings must be raw, whose sizes
-     * the parameter set fixes exactly. The variant gate mirrors the
-     * invariant's: a class bit naming a region the variant does not carry is
-     * that check's rejection, not this one's. */
-    if ((control & OCA_SECURE_BOOT_PQC_BIT) != 0u && v->len_pqc_signature != 0u) {
+     * the parameter set fixes exactly. */
+    if (ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE) {
+        /* Never read PQC offsets out of a body that has none. The confirm
+         * above already refused this; it is repeated at the point of use. */
+        if (ctx->manifest_is_pqc != OCA_SECURE_TRUE) {
+            return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
+        }
         uint16_t pqc_sig_size = oca_le_u16(body + OCA_PQC_OFF_SIGNATURE_SIZE);
         uint16_t pqc_key_size = oca_le_u16(body + OCA_PQC_OFF_PUBLIC_KEY_SIZE);
         oca_encoding_t pqc_sig_enc =

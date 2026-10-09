@@ -144,7 +144,7 @@ def _c_accepted_primitives_by_class() -> dict[str, set[str]]:
         text = handle.read()
 
     match = re.search(
-        r"oca_result_t oca_check_crypto_field_sizes\(const uint8_t \*body\)\s*"
+        r"oca_result_t oca_check_crypto_field_sizes\([^)]*\)\s*"
         r"\{(?P<body>.*?)\n\}\n",
         text,
         re.DOTALL,
@@ -154,8 +154,8 @@ def _c_accepted_primitives_by_class() -> dict[str, set[str]]:
         f"it moved or changed shape, update this parser rather than deleting the "
         f"test")
     body = match.group("body")
-    classic_at = body.find("(control & OCA_SECURE_BOOT_CLASSIC_BIT)")
-    pqc_at = body.find("(control & OCA_SECURE_BOOT_PQC_BIT)")
+    classic_at = body.find("ctx->secure_boot_enforce_classic == OCA_SECURE_TRUE")
+    pqc_at = body.find("ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE")
     assert 0 <= classic_at < pqc_at, (
         "expected a classical class block followed by a PQC class block in "
         "oca_check_crypto_field_sizes()")
