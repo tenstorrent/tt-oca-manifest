@@ -56,13 +56,174 @@ class OcaConfigError(ValueError):
 # ---------------------------------------------------------------------------
 
 
-def _require(config: Dict[str, Any], key: str) -> Any:
+def _require(config: Dict[str, Any], key: str, context: str = "oca-classic") -> Any:
     if key not in config:
         raise OcaConfigError(
-            f"missing required field for oca-classic: {key}",
+            f"missing required field for {context}: {key}",
             field_name=key,
         )
     return config[key]
+
+
+# The fields that describe each signature class's key and signature. A class the
+# manifest does not enforce has no signature, so naming one of these for it is a
+# configuration mistake, not something to zero silently. The revocation bitmaps
+# are not among them: a verified manifest commits every bitmap it carries,
+# whichever class signed it.
+CLASSIC_SIGNING_FIELDS = (
+    "signature_type", "signing_authority", "signing_key_file", "signing_key_id",
+    "public_key_select_classic", "signature_encoding", "public_key_encoding",
+)
+PQC_SIGNING_FIELDS = (
+    "signature_type_pqc", "signing_authority_pqc", "signing_key_file_pqc",
+    "signing_key_id_pqc", "public_key_select_pqc", "signature_encoding_pqc",
+    "public_key_encoding_pqc",
+)
+
+
+def _class_bit(config: Dict[str, Any], field: str, default: int) -> int:
+    value = int(config.get(field, default))
+    if value not in (0, 1):
+        raise OcaConfigError(f"{field} must be 0 or 1; got {value}", field_name=field)
+    return value
+
+
+def _normalize_signature_classes(config: Dict[str, Any], secure_boot: int,
+                                 manifest_format: str) -> tuple:
+    """Resolve secure_boot_classic and secure_boot_pqc, the signature classes
+    secure_boot_control names.
+
+    The classical class defaults on under secure boot, so a config written
+    before the PQC class existed keeps the bytes it always had. A PQC manifest
+    may enforce either class or both, a classic manifest the classical class
+    only, and secure boot must name at least one.
+    """
+    classic = _class_bit(config, "secure_boot_classic", 1 if secure_boot == 1 else 0)
+    pqc = _class_bit(config, "secure_boot_pqc", 0)
+    if pqc and manifest_format != "oca-pqc":
+        raise OcaConfigError(
+            "secure_boot_pqc names a PQC signature, which only an oca-pqc manifest "
+            "can carry",
+            field_name="secure_boot_pqc",
+        )
+    if secure_boot == 0:
+        for field, value in (("secure_boot_classic", classic), ("secure_boot_pqc", pqc)):
+            if value:
+                raise OcaConfigError(f"{field} requires secure_boot: 1", field_name=field)
+    elif not (classic or pqc):
+        raise OcaConfigError(
+            "secure_boot: 1 needs at least one signature class: set "
+            "secure_boot_classic or secure_boot_pqc",
+            field_name="secure_boot",
+        )
+    return classic, pqc
+
+
+def _reject_fields_for_disabled_class(config: Dict[str, Any], fields: tuple,
+                                      requirement: str) -> None:
+    """Refuse a signing field named for a signature class that is not enforced."""
+    for field in fields:
+        if _truthy(config, field):
+            raise OcaConfigError(
+                f"{field} describes a signature this manifest does not carry; it "
+                f"requires {requirement}",
+                field_name=field,
+            )
+
+
+def _reject_integrator_encoding(field: str, value: int) -> None:
+    if value in oca_consts.INTEGRATOR_ENCODINGS:
+        raise OcaConfigError(
+            f"OCA feature deferred to future pass: integrator-defined encoding "
+            f"(field {field})",
+            field_name=field,
+            deferred_feature="integrator-defined encoding",
+        )
+
+
+def _classic_encoding(config: Dict[str, Any], field: str) -> int:
+    value = int(config.get(field, oca_consts.OcaClassicSignatureEncoding.RAW_BYTES.value))
+    if value in oca_consts.OCA_SELECTABLE_ENCODINGS:
+        return value
+    _reject_integrator_encoding(field, value)
+    raise OcaConfigError(
+        f"{field} must be one of {oca_consts.OCA_SELECTABLE_ENCODINGS_TEXT}; got {value:#x}",
+        field_name=field,
+    )
+
+
+def _pqc_encoding(config: Dict[str, Any], field: str) -> int:
+    value = int(config.get(field, oca_consts.OcaClassicSignatureEncoding.RAW_BYTES.value))
+    if value in oca_consts.PQC_SELECTABLE_ENCODINGS:
+        return value
+    if value == oca_consts.OcaClassicSignatureEncoding.ASN1_DER.value:
+        raise OcaConfigError(
+            f"{field} 0x01 (DER) is reserved for PQC: FIPS 204 defines no bare ASN.1 "
+            f"structure for an ML-DSA key or signature. Use 0x02 (raw bytes).",
+            field_name=field,
+        )
+    _reject_integrator_encoding(field, value)
+    raise OcaConfigError(f"{field} must be 0x02 (raw bytes); got {value:#x}", field_name=field)
+
+
+def _normalize_pqc_signing(config: Dict[str, Any], out: Dict[str, Any],
+                           secure_boot: int, pqc: int, manifest_format: str) -> None:
+    """Validate the PQC class's signing description and revocation bitmap into
+    `out`."""
+    for field in ("public_key_pqc", "signature_pqc"):
+        if _truthy(config, field):
+            raise OcaConfigError(
+                f"{field} is produced by the packer from the signing key; it is not a "
+                f"config input",
+                field_name=field,
+            )
+
+    if not pqc:
+        _reject_fields_for_disabled_class(
+            config, PQC_SIGNING_FIELDS, "secure_boot: 1 and secure_boot_pqc: 1")
+        out["signature_type_pqc"] = 0
+        out["public_key_select_pqc"] = 0
+        out["signature_encoding_pqc"] = 0
+        out["public_key_encoding_pqc"] = 0
+    else:
+        context = "the PQC signature class"
+        sig_type = int(_require(config, "signature_type_pqc", context))
+        if sig_type != oca_consts.OcaPqcSignatureType.ML_DSA_87.value:
+            raise OcaConfigError(
+                f"signature_type_pqc must be {oca_consts.OcaPqcSignatureType.ML_DSA_87.value:#04x} "
+                f"(ML-DSA-87); got {sig_type:#x}",
+                field_name="signature_type_pqc",
+            )
+        authority = _require(config, "signing_authority_pqc", context)
+        if authority != "local":
+            raise OcaConfigError(
+                f"signing_authority_pqc must be 'local' for ML-DSA-87; got {authority!r}",
+                field_name="signing_authority_pqc",
+            )
+        _require(config, "signing_key_file_pqc", context)
+        select = int(_require(config, "public_key_select_pqc", context))
+        if not (0 < select < (1 << 128)):
+            raise OcaConfigError(
+                f"public_key_select_pqc must be a non-zero 128-bit bitmask; got {select}",
+                field_name="public_key_select_pqc",
+            )
+        out["signature_type_pqc"] = sig_type
+        out["public_key_select_pqc"] = select
+        out["signature_encoding_pqc"] = _pqc_encoding(config, "signature_encoding_pqc")
+        out["public_key_encoding_pqc"] = _pqc_encoding(config, "public_key_encoding_pqc")
+
+    revoke = int(config.get("public_key_pqc_revoke", 0))
+    if revoke and manifest_format != "oca-pqc":
+        raise OcaConfigError(
+            "public_key_pqc_revoke is a PQC field, which only an oca-pqc manifest carries",
+            field_name="public_key_pqc_revoke",
+        )
+    if not (0 <= revoke < (1 << 128)):
+        raise OcaConfigError(
+            f"public_key_pqc_revoke must fit in 128 bits; got {revoke}",
+            field_name="public_key_pqc_revoke",
+        )
+    out["public_key_pqc_revoke"] = revoke if secure_boot == 1 else 0
 
 
 def _is_printable_ascii(s: str) -> bool:
@@ -160,11 +321,23 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
         )
     out["secure_boot"] = sb
 
-    # public_key_select_classic — 16-byte (128-bit) bitmask. Required when
-    # secure_boot is enabled (≥ 1 bit must be set; otherwise no key is
+    manifest_format = config.get("manifest_format", "oca-classic")
+    sb_classic, sb_pqc = _normalize_signature_classes(config, sb, manifest_format)
+    out["secure_boot_classic"] = sb_classic
+    out["secure_boot_pqc"] = sb_pqc
+    if sb == 1 and not sb_classic:
+        _reject_fields_for_disabled_class(
+            config, CLASSIC_SIGNING_FIELDS, "secure_boot_classic: 1")
+    if sb_classic:
+        _require(config, "signature_type", "the classical signature class")
+        _require(config, "signing_authority", "the classical signature class")
+    _normalize_pqc_signing(config, out, sb, sb_pqc, manifest_format)
+
+    # public_key_select_classic — 16-byte (128-bit) bitmask. Required when the
+    # classical class is enforced (≥ 1 bit must be set; otherwise no key is
     # authorized and secure boot would fail at the Consumer).
     pkscl = config.get("public_key_select_classic")
-    if sb == 1:
+    if sb_classic:
         if pkscl is None:
             raise OcaConfigError(
                 "missing required field for oca-classic secure_boot=1: public_key_select_classic",
@@ -182,7 +355,7 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
         out["public_key_select_classic"] = 0
 
     # Encoding selectors for public-key and signature bytes — DER (0x01) or
-    # raw bytes (0x02). Vendor-defined (0x03) is deferred.
+    # raw bytes (0x02). Integrator-defined (0xF0-0xFF) is deferred.
     #
     # Both default to raw, because raw is the only encoding available for every
     # algorithm. DER is defined solely for RSA public keys and ECDSA signatures;
@@ -190,36 +363,10 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
     # hand most configurations an encoding the format does not define. Which
     # (type, encoding) pairs are legal is enforced in signing.py, where the
     # concrete key and signature are produced.
-    pk_enc = int(config.get("public_key_encoding", 0x02))
-    sig_enc = int(config.get("signature_encoding", 0x02))
-    if pk_enc not in oca_consts.OCA_SELECTABLE_ENCODINGS:
-        if pk_enc == 0x03:
-            raise OcaConfigError(
-                "OCA feature deferred to future pass: vendor-defined encoding "
-                "(field public_key_encoding)",
-                field_name="public_key_encoding",
-                deferred_feature="vendor-defined encoding",
-            )
-        raise OcaConfigError(
-            f"public_key_encoding must be one of "
-            f"{oca_consts.OCA_SELECTABLE_ENCODINGS_TEXT}; got {pk_enc:#x}",
-            field_name="public_key_encoding",
-        )
-    if sig_enc not in oca_consts.OCA_SELECTABLE_ENCODINGS:
-        if sig_enc == 0x03:
-            raise OcaConfigError(
-                "OCA feature deferred to future pass: vendor-defined encoding "
-                "(field signature_encoding)",
-                field_name="signature_encoding",
-                deferred_feature="vendor-defined encoding",
-            )
-        raise OcaConfigError(
-            f"signature_encoding must be one of "
-            f"{oca_consts.OCA_SELECTABLE_ENCODINGS_TEXT}; got {sig_enc:#x}",
-            field_name="signature_encoding",
-        )
-    out["public_key_encoding"] = pk_enc if sb == 1 else 0
-    out["signature_encoding"] = sig_enc if sb == 1 else 0
+    pk_enc = _classic_encoding(config, "public_key_encoding")
+    sig_enc = _classic_encoding(config, "signature_encoding")
+    out["public_key_encoding"] = pk_enc if sb_classic else 0
+    out["signature_encoding"] = sig_enc if sb_classic else 0
 
     # public_key_classic_revoke — 16-byte bitmask, default 0.
     pkrev = int(config.get("public_key_classic_revoke", 0))
@@ -383,9 +530,9 @@ def reject_deferred_features(config: Dict[str, Any]) -> None:
     """Raise OcaConfigError for any config that enables an OCA capability
     deferred to a future feature pass.
 
-    Checked features (per `contracts/yaml-config-schema.md`):
-      - PQC signature/key/control fields (the 'oca-pqc' framing itself is
-        supported; PQC-native signing and KEM are not)
+    Checked features:
+      - PQC signature algorithms other than ML-DSA-87 (0x33), and an ML-DSA
+        signing authority other than `local`
       - Payload encryption fields
       - Verifier-key entry fields
       - Co-signer entries
@@ -409,20 +556,24 @@ def reject_deferred_features(config: Dict[str, Any]) -> None:
             field_name="manifest_format",
         )
 
-    # PQC fields (any non-default value triggers).
-    for fname in (
-        "signature_type_pqc",
-        "public_key_pqc",
-        "public_key_select_pqc",
-        "public_key_pqc_revoke",
-        "secure_boot_pqc",
-        "signature_pqc",
-    ):
-        if _truthy(config, fname):
+    # PQC signature algorithm and authority. ML-DSA-87 is the only PQC
+    # algorithm, and it signs through `local` only. Checked whatever secure_boot
+    # says, so an unsupported request is named before any class rule fires.
+    if _truthy(config, "signature_type_pqc") and \
+            int(config["signature_type_pqc"]) != oca_consts.OcaPqcSignatureType.ML_DSA_87.value:
+        raise OcaConfigError(
+            "OCA feature deferred to future pass: Unsupported signature algorithm "
+            "(field signature_type_pqc)",
+            field_name="signature_type_pqc",
+            deferred_feature="Unsupported signature algorithm",
+        )
+    for authority, label in (("aws", "AWS signing authority for ML-DSA"),
+                             ("hsm", "HSM signing authority")):
+        if config.get("signing_authority_pqc") == authority:
             raise OcaConfigError(
-                f"OCA feature deferred to future pass: PQC signature fields (field {fname})",
-                field_name=fname,
-                deferred_feature="PQC signature fields",
+                f"OCA feature deferred to future pass: {label} (field signing_authority_pqc)",
+                field_name="signing_authority_pqc",
+                deferred_feature=label,
             )
 
     # Payload encryption. The supported path — AES-256-CBC or AES-128-CBC with a key

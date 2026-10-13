@@ -16,6 +16,10 @@ binary diff in the pull request description.
 
 Every config must be pinned or listed in `_UNBUILDABLE`, so a newly added
 config cannot go unpinned.
+
+ML-DSA signing is hedged, so a bundle carrying an ML-DSA-87 signature is pinned
+with that signature value masked: it is the one span allowed to differ between
+builds, and the mask asserts the rest of signature_pqc is zero.
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ import os
 
 import pytest
 
+from oca_fixtures.manifest_reader import mask_pqc_signature
+from tt_boot_manifest.oca import constants as oca_consts
 from tt_boot_manifest.pack_images import generate_images
 from tt_boot_manifest.utils import load_config
 
@@ -49,6 +55,10 @@ _PINNED = {
         4432, "3beb4472ce7c886cd9d13efa268dfce31e38743862a0d6c03fde0d13d6c127b1"),
     "configs/oca_pqc_example.yaml": (
         37184, "45b5942978d04d0f9f0ccea33cd80d4d9f54899c747e78e7e885ac7d644514a0"),
+    "configs/oca_pqc_hybrid_example.yaml": (
+        37184, "af28a0f71ee762c75d70966a2de415a3da0059e341e42203ea8d88234b65ebdc"),
+    "configs/oca_pqc_signed_example.yaml": (
+        37184, "a60569e16dfd6f541001f681c240cefde9b3b29fe27cf9aef93ea8eaa3cb26a1"),
     "configs/oca_secure_boot_device_state_example.yaml": (
         4416, "dd4880e2acc67bd8f77766aa872614c2a0e37e45ceb3aaae278c46fc803103dc"),
     "examples/oca_classic_basic/config.yaml": (
@@ -109,11 +119,19 @@ def _pack(config_relpath):
         os.chdir(prev)
 
 
+def _reproducible_bytes(packed: bytes) -> bytes:
+    """The bundle with its ML-DSA-87 signature value masked, when it carries one."""
+    is_pqc = packed[:4] == oca_consts.OCAP_MAGIC
+    if is_pqc and packed[oca_consts.OFF_SECURE_BOOT_CONTROL] & 0x04:
+        return mask_pqc_signature(packed)
+    return packed
+
+
 @pytest.mark.parametrize("config_relpath", sorted(_PINNED))
 def test_committed_config_packs_to_pinned_bytes(config_relpath):
     """Each buildable config packs to exactly its pinned length and digest."""
     expected_len, expected_sha = _PINNED[config_relpath]
-    packed = _pack(config_relpath)
+    packed = _reproducible_bytes(_pack(config_relpath))
 
     assert len(packed) == expected_len, (
         f"{config_relpath}: packed length changed: {len(packed)} != {expected_len}")

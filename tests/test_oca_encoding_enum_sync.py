@@ -35,6 +35,7 @@ import re
 
 import pytest
 
+from oca_fixtures.validator_source import size_check_class_blocks
 from tt_boot_manifest.oca import constants as oca_consts
 
 
@@ -159,6 +160,8 @@ def test_selectable_encodings_are_accepted_by_the_validator_config_path(encoding
         "manifest_identifier": "ENCCHK",
         "description": "encoding round-trip",
         "secure_boot": 1,
+        "signature_type": 0x01,
+        "signing_authority": "local",
         "public_key_select_classic": 0x01,
         "signature_encoding": encoding,
         "public_key_encoding": encoding,
@@ -167,6 +170,18 @@ def test_selectable_encodings_are_accepted_by_the_validator_config_path(encoding
     normalized = validate_and_normalize_oca_classic(config)
     assert normalized["signature_encoding"] == encoding
     assert normalized["public_key_encoding"] == encoding
+
+
+def test_c_pqc_encoding_gate_matches_the_packer_pqc_encodings():
+    """The PQC class's encodings the validator accepts equal the ones the packer
+    lets a config select: raw only, since DER is reserved for PQC."""
+    c_enum = _parse_oca_encoding_enum()
+    pqc_block = size_check_class_blocks()["pqc"]
+    accepted = {c_enum[name] for name in re.findall(r"OCA_ENCODING_\w+", pqc_block)}
+    assert accepted == set(oca_consts.PQC_SELECTABLE_ENCODINGS), (
+        f"the validator accepts PQC encodings {sorted(hex(v) for v in accepted)} but "
+        f"the packer's PQC_SELECTABLE_ENCODINGS is "
+        f"{sorted(hex(v) for v in oca_consts.PQC_SELECTABLE_ENCODINGS)}")
 
 
 # ---------------------------------------------------------------------------

@@ -208,28 +208,80 @@ the same offset.
 | `oca-classic` | `OCAC` | 4096 bytes | Classical-crypto manifest. |
 | `oca-pqc` | `OCAP` | 36864 bytes | Post-Quantum manifest — a **superset** of Classic: every shared field keeps its Classic offset, with the PQC-only fields inserted ahead of the unsigned tail. |
 
-A PQC manifest may be signed today with a classic RSA-3072 / ECC P-256 key —
-the same signing path covers both variants, computing the signature over each
-variant's signed region. PQC-native signing (ML-DSA / FN-DSA / SLH-DSA) and
-KEM (ML-KEM) are deferred and rejected fast (see the table below).
+A secure-boot manifest carries one or two signatures, each over the variant's
+signed region. `secure_boot_classic` and `secure_boot_pqc` choose which:
+
+| Signed with | Variant | `secure_boot_classic` | `secure_boot_pqc` | `secure_boot_control` |
+|---|---|---|---|---|
+| RSA-3072 or ECC P-256 | `oca-classic` or `oca-pqc` | 1 (the default) | 0 (the default) | `0x03` |
+| Classical **and** ML-DSA-87 (hybrid) | `oca-pqc` | 1 | 1 | `0x07` |
+| ML-DSA-87 only | `oca-pqc` | 0 | 1 | `0x05` |
+
+A classically signed manifest needs only the classical fields, and they are the
+same on either variant:
+
+```yaml
+manifest_format: oca-classic        # or oca-pqc
+secure_boot: 1
+signature_type: 0x01                # RSA-3072 PKCS#1 v1.5 / SHA-256; 0x05 for ECC P-256
+signing_authority: local            # or aws
+signing_key_file: "<path to classical private key>"
+public_key_select_classic: 0x01     # authorize classical key slot 0
+```
+
+A hybrid manifest adds the PQC class alongside them. ML-DSA-87 is pure FIPS 204
+over the signed region with the empty context, and signs through the `local`
+authority:
+
+```yaml
+manifest_format: oca-pqc
+secure_boot: 1
+secure_boot_classic: 1              # the default, stated for clarity
+secure_boot_pqc: 1
+
+# Classical class
+signature_type: 0x01
+signing_authority: local
+signing_key_file: "<path to classical private key>"
+public_key_select_classic: 0x01
+
+# PQC class
+signature_type_pqc: 0x33            # FIPS 204 ML-DSA-87
+signing_authority_pqc: local
+signing_key_file_pqc: "<path to ML-DSA-87 private key>"
+public_key_select_pqc: 0x01         # authorize PQC key slot 0
+```
+
+A consumer verifies a hybrid manifest as a logical AND: both signatures must
+verify against authorized, unrevoked keys. For an ML-DSA-87-only manifest, set
+`secure_boot_classic: 0` and remove the classical fields; the packer rejects a
+signing field whose class is off.
+
+ML-DSA signing is hedged, so the 4627-byte ML-DSA-87 signature value differs from
+one build to the next; every other byte of the bundle is reproducible. Other PQC
+signature algorithms and KEM (ML-KEM) are deferred and rejected fast (see the
+table below).
 
 See [examples/oca_classic_basic/](examples/oca_classic_basic/) for a runnable
-Classic demo, and [configs/oca_pqc_example.yaml](configs/oca_pqc_example.yaml)
-for a runnable non-secure PQC example.
+Classic demo; [configs/oca_pqc_example.yaml](configs/oca_pqc_example.yaml) for a
+non-secure PQC example; and
+[configs/oca_pqc_signed_example.yaml](configs/oca_pqc_signed_example.yaml) and
+[configs/oca_pqc_hybrid_example.yaml](configs/oca_pqc_hybrid_example.yaml) for
+PQC-only and hybrid signing.
 
 ### Supported / deferred OCA features (beta release)
 
 | Area | Supported | Deferred to a future feature pass |
 |------|-----------|-----------------------------------|
 | Format selector | `oca-classic`, `oca-pqc`, `oca-combined` | — |
-| Signature algorithm | RSA-3072 PKCS#1 v1.5 + SHA-256 (`0x01`), ECC P-256 + SHA-256 (`0x05`) — for both variants | RSA-PSS, RSA-4096, ECC P-384, Ed25519; PQC-native signing (ML-DSA, FN-DSA, SLH-DSA) and KEM (ML-KEM) |
+| Signature algorithm | Classical class: RSA-3072 PKCS#1 v1.5 + SHA-256 (`0x01`), ECC P-256 + SHA-256 (`0x05`), for both variants. PQC class (`oca-pqc`): ML-DSA-87 (`signature_type_pqc: 0x33`). PQC-only and hybrid signing | RSA-PSS, RSA-4096, ECC P-384, Ed25519; ML-DSA-44 / -65, FN-DSA, SLH-DSA; KEM (ML-KEM) |
 | Hash algorithm | SHA-256 (`0x01`) | All others (`manifest_hash_type` / `payload_hash_type` ≠ `0x01`) |
-| Signing authority | `local`, `aws` | `hsm` |
+| Signing authority | `local`, `aws` for the classical class; `local` for ML-DSA-87 | `hsm`; `aws` for ML-DSA-87 |
 | Payload encryption | AES-256-CBC (`0x02`, the default) and AES-128-CBC (`0x01`), key derived from a pre-shared secret via SP 800-108r1 CTR-HMAC-SHA-256 over the 192-byte input block (`local` authority) | KEM-wrapped keys, any other cipher or KDF identifier, `aws` / `hsm` encryption authority |
 | Multi-image payload | Yes (`PTOC` TOC of 280-byte entries; images 8-byte aligned) | — |
-| ROOT-key revocation & anti-rollback | Classic `public_key_classic_revoke`, `manifest_security_version` (128 posture flags), and `manifest_security_control` update controls — the validator enforces revoke-before-key-use, bit-superset anti-rollback, and a post-verify device-state commit, per signature class (it also checks and commits a PQC manifest's `public_key_pqc_revoke`) | Producing `public_key_pqc_revoke` (lands with PQC signing) |
+| ROOT-key revocation & anti-rollback | Classic `public_key_classic_revoke`, `manifest_security_version` (128 posture flags), and `manifest_security_control` update controls — the validator enforces revoke-before-key-use, bit-superset anti-rollback, and a post-verify device-state commit, per signature class, and `public_key_pqc_revoke` on a PQC manifest | — |
 | Signature posture registers | `signature_cohort_enforce` and `signature_class_revoke` — validated (including the `0xCA` / `0xAC` group-code interlock) and folded into device state by the post-verify commit | Consulting the accumulated state at boot to reject a revoked algorithm class or an unmet cohort — needs multi-cohort signature support |
-| Public key / signature encodings | Raw bytes (`0x02`, the default) for every algorithm; ASN.1 DER (`0x01`) for RSA public keys (PKCS#1 `RSAPublicKey`) and ECDSA signatures. Each value is bounded by its `*_size_classic` field | Vendor-defined encodings (`0x03`) |
+| Public key / signature encodings | Raw bytes (`0x02`, the default) for every algorithm, and the only PQC encoding; ASN.1 DER (`0x01`) for RSA public keys (PKCS#1 `RSAPublicKey`) and ECDSA signatures. Each value is bounded by its size field | Integrator-defined encodings (`0xF0`–`0xFF`) |
 | Verifier-key entry | — | `use_verifier_key` and every `verifier_*` field |
 | Co-signer entries | — | `co_signers: [...]` and every `co_signer_*` field |
 
@@ -361,7 +413,8 @@ neither is present — and share that determination with signature verification.
 They are validated end-to-end by [`validators/oca/`](validators/oca/). ROOT-key
 revocation is per signature class: a PQC manifest's `public_key_pqc_revoke` is
 checked and committed against the device's PQC state, separately from the
-classic state.
+classic state. Either bitmap is carried and committed whichever class signs the
+manifest, so an ML-DSA-87-only manifest can still revoke classical keys.
 
 ### Usage-constraints control plane
 
@@ -640,6 +693,7 @@ Tests are grouped by the side they exercise:
 **Python producer:**
 - **`tests/test_oca_*.py`** — manifest body / TOC, signing, encryption, PQC, combined, determinism, and format dispatch
 - **`tests/test_oca_example_configs.py`** — builds each `configs/oca_*.yaml` example and validates the manifest output in pure Python (framing, `manifest_hash` recompute, signature) — no C toolchain needed; also applies the `examples/oca_classic_basic` README's signed-bundle step as written and checks the result with that example's `verify.py`
+- **`tests/test_oca_readme_signing_snippets.py`** — packs the signing snippets and the signature-class table in this README's [OCA manifest variants](#oca-manifest-variants) section as written, so the documentation fails a test when it stops matching the packer
 
 **C consumer/validator:**
 - **`tests/test_oca_c_validator_integration.py`** — packs fixtures and round-trips them through the compiled `oca-validate` CLI (skips if `make`/`pkg-config` are unavailable)

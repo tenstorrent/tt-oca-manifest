@@ -266,9 +266,10 @@ crypto, no ad-hoc constant-time routines, no experimental algorithm choices.
 Supported signature algorithms are exactly RSA-3072 PKCS#1 v1.5 + SHA-256
 (`signature_type: 0x01`) and ECDSA P-256 + SHA-256 (`signature_type: 0x05`) for the classical
 class, and ML-DSA-87 (`signature_type_pqc: 0x33`) for the PQC class. ML-DSA-87 is pure FIPS 204
-ML-DSA signed over the raw signed region with the empty context. We do not pre-hash, utlize 
-HashML-DSA and there is external μ value. Signing is through the `local` signing authority only
-(as of now). The specification defines more values; the packer rejects them at config-load time. Adding another requires both boot ROM support and a deliberate amendment to these rules.
+ML-DSA signed over the raw signed region with the empty context. We do not pre-hash, and use
+neither HashML-DSA nor an external μ. Signing is through the `local` signing authority only (as
+of now). The specification defines more values; the packer rejects them at config-load time.
+Adding another requires both boot ROM support and a deliberate amendment to these rules.
 
 Encryption, when enabled, is AES-CBC with KBKDF-derived keys, either 128- or 256-bit per the
 manifest's `encryption_type`; mode, key length and KDF parameters including the input-block
@@ -284,6 +285,14 @@ Identical inputs must produce byte-identical output. Non-deterministic inputs �
 IVs, salts, non-deterministic signature schemes — either default to a stable value or are
 supplied explicitly by the caller. They must not silently vary between runs. ECDSA uses RFC
 6979 specifically to preserve this; the rest of the pipeline holds the same line.
+
+One exception: the ML-DSA-87 signature value. `cryptography` signs ML-DSA hedged and exposes
+no deterministic mode, so the 4627 bytes at the start of an OCA-PQC body's `signature_pqc`
+(offset 6495) — and that span wherever such a body sits in a combined image — may differ
+between runs. Every other byte stays byte-identical, including `manifest_hash`, the classical
+signature, and the zero padding of `signature_pqc`. Tests that pin or compare packed bytes mask
+exactly that span (`oca_fixtures.manifest_reader.mask_pqc_signature`) and verify the signature
+instead of comparing it; release diffs do the same.
 
 Release artifacts are audited, re-signed and diffed against rebuilds. A field that varies run
 to run destroys that.

@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+# OCA Post-Quantum (PQC) manifest example — hybrid: RSA-3072 AND ML-DSA-87.
+# See README.md ("OCA manifest variants") for the full guide.
+#
+# Build from the repository root:
+#   python -m tt_boot_manifest.pack_images \
+#       --config configs/oca_pqc_hybrid_example.yaml --out out/oca_pqc_hybrid.bin -v
+#
+# This is a DEMONSTRATION, signed with development keys committed to this
+# repository so it builds from a clean checkout. It is not a starting point for a
+# real build.
+#
+# With both secure_boot_classic and secure_boot_pqc set, the manifest carries two
+# signatures over the same signed region, and a consumer must verify both: a
+# hybrid manifest is never accepted on the strength of one signature alone. The
+# classical signature is deterministic; ML-DSA signing is hedged, so the 4627-byte
+# ML-DSA-87 signature value differs from one build to the next.
+
+manifest_format: oca-pqc
+manifest_identifier: "PQCHYBR1"
+description: "OCA-PQC example bundle signed with RSA-3072 and ML-DSA-87"
+
+secure_boot: 1
+secure_boot_classic: 1
+secure_boot_pqc: 1
+allow_test_signing_key: true   # committed development keys — never for a real build
+
+# Classical class
+signature_type: 0x01                     # RSA-3072 PKCS#1 v1.5 / SHA-256
+signing_authority: local
+signing_key_file: "tests/signing_keys/rsa_private_key.f4.pem"
+public_key_select_classic: 0x01          # authorize classical key slot 0
+
+# PQC class
+signature_type_pqc: 0x33                 # FIPS 204 ML-DSA-87
+signing_authority_pqc: local
+signing_key_file_pqc: "tests/signing_keys/mldsa87_private_key.pem"
+public_key_select_pqc: 0x01              # authorize PQC key slot 0
+
+# Pinning the timestamp makes everything but the ML-DSA signature value
+# byte-deterministic across runs.
+timestamp: 1764633600
+
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+
+payload_images:
+  - type: "PQCHYBR1BLSTAGE1"
+    path: "tests/oca_fixtures/dummy_image.bin"

@@ -278,6 +278,22 @@ def test_der_signature_rejected_for_rsa(tmp_path):
     assert exc.value.field_name == "signature_encoding"
 
 
+@pytest.mark.parametrize("field", ["signature_encoding", "public_key_encoding"])
+@pytest.mark.parametrize("value,deferred", [
+    (0x03, None),                                # reserved
+    (0xEF, None),                                # reserved
+    (0xF0, "integrator-defined encoding"),
+    (0xFF, "integrator-defined encoding"),
+])
+def test_classic_encodings_beyond_der_and_raw_are_refused(tmp_path, field, value, deferred):
+    cfg = _secure_config(tmp_path, sig_type_oca=0x01, key_file=RSA_3072_KEY_PATH)
+    cfg[field] = value
+    with pytest.raises(OcaConfigError) as exc:
+        pack_oca_bundle(cfg)
+    assert exc.value.field_name == field
+    assert exc.value.deferred_feature == deferred
+
+
 def test_der_ecdsa_signature_size_field_carries_the_maximum(tmp_path):
     """The one place a size field is a maximum rather than an exact count.
 

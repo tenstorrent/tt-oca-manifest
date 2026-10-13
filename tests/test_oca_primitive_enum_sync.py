@@ -22,15 +22,13 @@ import re
 
 import pytest
 
+from oca_fixtures.validator_source import size_check_class_blocks
 from tt_boot_manifest.oca import constants as oca_consts
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VALIDATOR_HEADER = os.path.join(
     PROJECT_ROOT, "validators", "oca", "lib", "oca_validator.h"
-)
-VALIDATOR_PARSER = os.path.join(
-    PROJECT_ROOT, "validators", "oca", "lib", "parser.c"
 )
 
 # `    OCA_PRIMITIVE_ML_DSA_87 = 0x33,  /**< FIPS 204 ML-DSA-87. */`
@@ -134,34 +132,10 @@ def test_spec_only_list_names_no_value_the_packer_writes():
 
 
 def _c_accepted_primitives_by_class() -> dict[str, set[str]]:
-    """Primitive enumerators `oca_check_crypto_field_sizes()` accepts, per class.
-
-    Reads the function rather than trusting a comment. Each class block names
-    exactly the primitives it admits, and every other value falls through to
-    OCA_FAIL_CRYPTO_FIELD_SIZE, so the names in a block are its accepted set.
-    """
-    with open(VALIDATOR_PARSER) as handle:
-        text = handle.read()
-
-    match = re.search(
-        r"oca_result_t oca_check_crypto_field_sizes\([^)]*\)\s*"
-        r"\{(?P<body>.*?)\n\}\n",
-        text,
-        re.DOTALL,
-    )
-    assert match, (
-        f"oca_check_crypto_field_sizes() was not found in {VALIDATOR_PARSER}; if "
-        f"it moved or changed shape, update this parser rather than deleting the "
-        f"test")
-    body = match.group("body")
-    classic_at = body.find("ctx->secure_boot_enforce_classic == OCA_SECURE_TRUE")
-    pqc_at = body.find("ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE")
-    assert 0 <= classic_at < pqc_at, (
-        "expected a classical class block followed by a PQC class block in "
-        "oca_check_crypto_field_sizes()")
+    """Primitive enumerators `oca_check_crypto_field_sizes()` accepts, per class."""
     return {
-        "classic": set(re.findall(r"OCA_PRIMITIVE_\w+", body[classic_at:pqc_at])),
-        "pqc": set(re.findall(r"OCA_PRIMITIVE_\w+", body[pqc_at:])),
+        signature_class: set(re.findall(r"OCA_PRIMITIVE_\w+", block))
+        for signature_class, block in size_check_class_blocks().items()
     }
 
 

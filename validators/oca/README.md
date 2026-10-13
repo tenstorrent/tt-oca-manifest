@@ -252,7 +252,7 @@ integrator knows the current boundary; several are tracked as follow-on work:
 - **A PQC signature backend** — the library side of PQC verification is in
   place. The manifest `secure_boot_classic` / `secure_boot_pqc` class control 
   bits are enforced. Secure boot with neither class named is rejected, as is `secure_boot_pqc` on a classic manifest. Each enforced class's ROOT key is authorized against its own anchor and its signature dispatched through `verify_signature` with the blob's `key_algorithm` naming the family.
-  A hybrid signed manifest is verified as logical AND with either class failing causing a rejection. What does not exist is any in-tree PQC implementation: the reference harness verifies classical RSA/ECDSA only and fails closed on `OCA_KEY_ALGO_PQC`, and the packer cannot yet produce a PQC-signed manifest. 
+  A hybrid signed manifest is verified as logical AND with either class failing causing a rejection. What does not exist is any in-tree PQC implementation: the reference harness verifies classical RSA/ECDSA only and fails closed on `OCA_KEY_ALGO_PQC`, although the packer produces ML-DSA-87-signed manifests. 
   The PQC description is pinned to raw ML-DSA-87 with exact sizes; any other PQC primitive or encoding is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE`.
 - **Composite CBC-HMAC and AEAD (e.g. GCM-SIV) encryption modes**, and
   **KEM-unwrapped DEK** (`input_key_source` b010) — only plain AES-128-CBC and

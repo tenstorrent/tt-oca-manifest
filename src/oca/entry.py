@@ -8,13 +8,14 @@ Wired into `src/pack_images.py` via deferred import when
 Pipeline:
   0. reject_deferred_features(config)
   1. validate_and_normalize_oca_classic(config)
-  2. Build signing key (secure_boot=1 only)
+  2. Build a signing key per enforced signature class (classical, PQC, or both)
   3. Assemble payload (TOC + image bytes)
   4. Compute payload_hash + payload_hash_chain
-  5. Build signed region (with public_key_classic embedded when signing)
+  5. Build signed region (with each enforced class's public key embedded)
   6. Compute manifest_hash over signed region
-  7. Sign the signed region (secure_boot=1 only) → 512-byte signature_classic field
-  8. Build unsigned tail with manifest_hash + signature_classic
+  7. Sign the signed region once per enforced class → signature_classic and/or
+     signature_pqc, both over the same bytes
+  8. Build unsigned tail with manifest_hash and the signatures
   9. Concatenate manifest_body + payload → bundle bytes
   10. Write to disk if output_path is given
 """
@@ -30,10 +31,14 @@ from . import encryption
 from .manifest import build_signed_region, build_unsigned_tail, compute_manifest_hash
 from .payload import assemble_multi_image_payload, compute_payload_hashes
 from .signing import (
+    build_pqc_signing_key,
     build_signing_key,
     declared_signature_size,
+    declared_signature_size_pqc,
     encode_public_key,
+    encode_public_key_pqc,
     sign_signed_region,
+    sign_signed_region_pqc,
 )
 from .validators import (
     OcaConfigError,
@@ -74,17 +79,17 @@ def pack_oca_bundle(
                 normalized["manifest_identifier_bytes"].rstrip(b"\x00").decode("ascii"),
                 normalized["timestamp"])
 
-    # 2. Signing key (only on the secure-boot path).
+    # 2. Signing keys, one per enforced signature class.
     #
-    # Both `*_size_classic` values are resolved here, before the signed region is
-    # built, because both fields live inside that region. The key's size is its
-    # real encoded length; the signature's is what the algorithm and encoding
+    # Every `*_size_*` value is resolved here, before the signed region is
+    # built, because those fields live inside that region. A key's size is its
+    # real encoded length; a signature's is what the algorithm and encoding
     # will produce, which cannot be measured yet — see declared_signature_size().
     signing_key = None
     public_key_classic_field = None
     public_key_size_classic = 0
     signature_size_classic = 0
-    if normalized["secure_boot"] == 1:
+    if normalized["secure_boot_classic"]:
         signature_type = int(config["signature_type"])
         signing_key = build_signing_key(config)
         encoded_key = encode_public_key(
@@ -97,6 +102,18 @@ def pack_oca_bundle(
         signature_size_classic = declared_signature_size(
             signature_type, normalized["signature_encoding"]
         )
+
+    signing_key_pqc = None
+    public_key_pqc_field = None
+    public_key_size_pqc = 0
+    signature_size_pqc = 0
+    if normalized["secure_boot_pqc"]:
+        signature_type_pqc = normalized["signature_type_pqc"]
+        signing_key_pqc = build_pqc_signing_key(config)
+        encoded_key_pqc = encode_public_key_pqc(signing_key_pqc, signature_type_pqc)
+        public_key_pqc_field = encoded_key_pqc.field
+        public_key_size_pqc = encoded_key_pqc.size
+        signature_size_pqc = declared_signature_size_pqc(signature_type_pqc)
 
     # 3. Assemble the cleartext payload (TOC + images).
     images = normalized["payload_images"]
@@ -152,18 +169,26 @@ def pack_oca_bundle(
         signature_size_classic=signature_size_classic,
         encryption=encryption_fields,
         variant=variant,
+        public_key_pqc_field=public_key_pqc_field,
+        public_key_size_pqc=public_key_size_pqc,
+        signature_size_pqc=signature_size_pqc,
     )
 
     # 7. Manifest hash over the signed region.
     manifest_hash_field = compute_manifest_hash(signed_region, variant=variant)
 
-    # 8. Signature over the signed region (secure_boot=1 only).
+    # 8. One signature per enforced class, each over the whole signed region.
     signature_field = None
     if signing_key is not None:
         signature_field = sign_signed_region(
             signed_region, signing_key,
             encoding=normalized["signature_encoding"],
             declared_size=signature_size_classic,
+        )
+    signature_pqc_field = None
+    if signing_key_pqc is not None:
+        signature_pqc_field = sign_signed_region_pqc(
+            signed_region, signing_key_pqc, declared_size=signature_size_pqc,
         )
 
     # 9. Unsigned tail.
@@ -174,6 +199,7 @@ def pack_oca_bundle(
         payload_offset=payload_offset,
         signature_classic_field=signature_field,
         variant=variant,
+        signature_pqc_field=signature_pqc_field,
     )
 
     # 10. Concatenate manifest body + stored payload.

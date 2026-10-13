@@ -2,9 +2,10 @@
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Tests for OCA Post-Quantum (PQC) manifest assembly.
 
-This pass produces the PQC manifest structure (OCAP magic, 36864-byte body, shared
-classic fields at their offsets, PQC-only regions present) on the non-secure path.
-PQC-native cryptography (ML-DSA / SLH-DSA / ML-KEM) is deferred and rejected fast.
+The PQC manifest structure (OCAP magic, 36864-byte body, shared classic fields at
+their offsets, PQC-only regions present), and a PQC manifest signed with a
+classical key. ML-DSA-87 signing, PQC-only and hybrid, is covered in
+test_oca_pqc_signing.py.
 
 PQC layout anchors (verified against the OCA boot manifest specification):
     classic_manifest_trailer slot @ 3168  -> 0x35 x4 in a PQC manifest
@@ -18,15 +19,12 @@ from __future__ import annotations
 import os
 import struct
 
-import pytest
-
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
 from tt_boot_manifest.oca import constants as oca_consts
 from tt_boot_manifest.oca.entry import pack_oca_bundle
-from tt_boot_manifest.oca.validators import OcaConfigError
 
 OCAP_MAGIC = b"OCAP"
 PTOC_MAGIC = b"PTOC"
@@ -120,8 +118,8 @@ def test_pqc_determinism(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Classic-signed PQC: a PQC manifest may carry a classic RSA-3072 / ECC-P256
-# signature over the PQC signed region (PQC-native signing is still deferred).
+# Classic-signed PQC: a PQC manifest may carry only a classic RSA-3072 /
+# ECC-P256 signature over the PQC signed region.
 # ---------------------------------------------------------------------------
 
 
@@ -150,9 +148,9 @@ def _classic_signature_valid_over_pqc_region(body: bytes) -> bool:
 
 
 def test_pqc_classic_signed_structure(tmp_path):
-    """A secure-boot PQC manifest populates the classic signing fields (at their
-    shared offsets / PQC signature offset) and leaves the PQC-native signature
-    region zero."""
+    """A classic-only secure-boot PQC manifest populates the classic signing
+    fields (at their shared offsets / PQC signature offset) and leaves
+    signature_pqc zero."""
     body = pack_oca_bundle(_pqc_secure_rsa_config(tmp_path))[: oca_consts.OCA_PQC_BODY_SIZE]
 
     # secure_boot_enforced bit set.
@@ -165,7 +163,7 @@ def test_pqc_classic_signed_structure(tmp_path):
     # signature_classic populated at the PQC signature offset.
     sig_off = oca_consts.PQC_SIGNED_REGION_END
     assert any(body[sig_off: sig_off + oca_consts.SIGNATURE_CLASSIC_SIZE])
-    # signature_pqc (PQC-native) stays all-zero — deferred.
+    # The PQC class is not enforced, so signature_pqc stays all-zero.
     sig_pqc_off = oca_consts.OFF_SIGNATURE_PQC
     assert body[sig_pqc_off: sig_pqc_off + oca_consts.LEN_SIGNATURE_PQC] \
         == b"\x00" * oca_consts.LEN_SIGNATURE_PQC
@@ -191,27 +189,3 @@ def test_pqc_classic_signature_rejects_tampered_signed_region(tmp_path):
 def test_pqc_classic_signed_determinism(tmp_path):
     cfg = _pqc_secure_rsa_config(tmp_path)
     assert pack_oca_bundle(cfg) == pack_oca_bundle(cfg)
-
-
-# ---------------------------------------------------------------------------
-# Deferred PQC-native crypto is rejected fast
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("sig_type_pqc", [0x31, 0x36, 0x37, 0x3E, 0xF0])
-def test_pqc_native_signature_rejected(tmp_path, sig_type_pqc):
-    """Any PQC-native signature_type_pqc value (ML-DSA / FN-DSA / SLH-DSA /
-    integrator) is rejected as a deferred feature, across the full range."""
-    cfg = _pqc_config(tmp_path)
-    cfg["signature_type_pqc"] = sig_type_pqc
-    with pytest.raises(OcaConfigError) as exc:
-        pack_oca_bundle(cfg)
-    assert exc.value.deferred_feature == "PQC signature fields"
-
-
-def test_pqc_secure_boot_pqc_rejected(tmp_path):
-    cfg = _pqc_config(tmp_path)
-    cfg["secure_boot_pqc"] = 1
-    with pytest.raises(OcaConfigError) as exc:
-        pack_oca_bundle(cfg)
-    assert exc.value.deferred_feature == "PQC signature fields"

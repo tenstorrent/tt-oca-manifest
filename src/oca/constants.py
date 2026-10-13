@@ -336,8 +336,9 @@ class OcaClassicSignatureEncoding(Enum):
     """OCA `signature_encoding_classic` byte values.
 
     UNSET (0x00) is what a `secure_boot = 0` bundle carries — the signing fields
-    are zeroed — and is distinct from any real encoding. Vendor-defined (0x03) is
-    deferred.
+    are zeroed — and is distinct from any real encoding. 0xF0-0xFF are
+    integrator-defined (`INTEGRATOR_ENCODINGS`) and deferred; every other value
+    is reserved.
 
     RAW_BYTES is the value as its own standard defines it, in the byte order that
     standard requires — big-endian for both RSA and ECDSA. It is not a
@@ -380,6 +381,10 @@ _ENCODING_LABELS = {
 OCA_SELECTABLE_ENCODINGS_TEXT = ", ".join(
     f"{value:#04x} ({_ENCODING_LABELS[value]})" for value in OCA_SELECTABLE_ENCODINGS
 )
+
+# Encoding values the format leaves to the system integrator, in every
+# signature class.
+INTEGRATOR_ENCODINGS = range(0xF0, 0x100)
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +458,17 @@ class OcaPqcSignatureType(Enum):
 ML_DSA_87_PUBLIC_KEY_BYTES = 2592
 ML_DSA_87_SIGNATURE_BYTES = 4627
 
+# The encodings a producer may select for the PQC class: raw only. 0x01 is
+# reserved for PQC.
+PQC_SELECTABLE_ENCODINGS = (OcaClassicSignatureEncoding.RAW_BYTES.value,)
+
+PQC_RAW_PUBLIC_KEY_LENGTHS = {
+    OcaPqcSignatureType.ML_DSA_87.value: ML_DSA_87_PUBLIC_KEY_BYTES,
+}
+PQC_RAW_SIGNATURE_LENGTHS = {
+    OcaPqcSignatureType.ML_DSA_87.value: ML_DSA_87_SIGNATURE_BYTES,
+}
+
 
 class OcaEncryptionType(Enum):
     """OCA `encryption_type` byte values. Both AES-128-CBC (0x01) and
@@ -483,14 +499,14 @@ class OcaEncryptionKdf(Enum):
 # ---------------------------------------------------------------------------
 
 DEFERRED_FEATURE_NAMES = frozenset({
-    "PQC manifest variant",
-    "PQC signature fields",
     "Payload encryption",
     "Verifier-key entry",
     "Co-signer entries",
     "Unsupported signature algorithm",
     "Hash algorithms beyond SHA-256",
     "HSM signing authority",
+    "AWS signing authority for ML-DSA",
+    "integrator-defined encoding",
     "KEM key wrapping",
     "Unsupported encryption algorithm",
     "Unsupported key-derivation function",
