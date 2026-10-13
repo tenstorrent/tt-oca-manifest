@@ -61,6 +61,8 @@ COMMITTED_TEST_KEY_FINGERPRINTS = {
         "tests/signing_keys/rsa_private_key.f4.pem",
     "5bd317a0701fc47922f9d1647f4811feb5442b7e337389795607386866484844":
         "tests/signing_keys/rsa_private_key.e3.pem",
+    "de42b881569a28b95aa2eeea0d57d3bae07869d0e11dc5bb3a72edc3b9f6dcb1":
+        "tests/signing_keys/mldsa87_private_key.pem",
 }
 
 # Config field: the supported opt-in, visible in any copy of the config.
@@ -80,8 +82,9 @@ class KeyHygieneError(Exception):
 def public_key_fingerprint(public_key) -> str:
     """Return the SHA-256 hex digest of a public key's SubjectPublicKeyInfo DER.
 
-    SPKI is used because it is defined for every algorithm, so RSA and ECDSA
-    keys are covered by one rule and a future key type needs no new code here.
+    SPKI is used because it is defined for every algorithm, so RSA, ECDSA and
+    ML-DSA keys are covered by one rule and a future key type needs no new code
+    here.
     """
     der = public_key.public_bytes(
         serialization.Encoding.DER,

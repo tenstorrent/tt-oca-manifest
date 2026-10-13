@@ -259,14 +259,17 @@ implementation, the principle wins and the convenient implementation is the bug.
 ### Cryptographic correctness (non-negotiable)
 
 All primitives — RSA-3072 PKCS#1 v1.5, ECDSA P-256 with RFC 6979 deterministic signing,
-SHA-256, AES-128-CBC / AES-256-CBC, KBKDF — are invoked exclusively through the `cryptography`
-library or a vetted equivalent such as AWS KMS. No hand-rolled crypto, no ad-hoc constant-time
-routines, no experimental algorithm choices.
+ML-DSA-87 (FIPS 204), SHA-256, AES-128-CBC / AES-256-CBC, KBKDF — are invoked exclusively
+through the `cryptography` library or a vetted equivalent such as AWS KMS. No hand-rolled
+crypto, no ad-hoc constant-time routines, no experimental algorithm choices.
 
 Supported signature algorithms are exactly RSA-3072 PKCS#1 v1.5 + SHA-256
-(`signature_type: 0x01`) and ECDSA P-256 + SHA-256 (`signature_type: 0x05`). The specification
-defines more values; the packer rejects them at config-load time. Adding another requires both
-boot ROM support and a deliberate amendment to these rules — neither alone is sufficient.
+(`signature_type: 0x01`) and ECDSA P-256 + SHA-256 (`signature_type: 0x05`) for the classical
+class, and ML-DSA-87 (`signature_type_pqc: 0x33`) for the PQC class. ML-DSA-87 is pure FIPS 204
+ML-DSA signed over the raw signed region with the empty context. We do not pre-hash, utlize 
+HashML-DSA and there is external μ value. Signing is through the `local` signing authority only
+(as of now). The specification defines more values; the packer rejects them at config-load time. Adding another requires both boot ROM support and a deliberate amendment to these rules.
+
 Encryption, when enabled, is AES-CBC with KBKDF-derived keys, either 128- or 256-bit per the
 manifest's `encryption_type`; mode, key length and KDF parameters including the input-block
 construction must match the boot ROM's expectations.

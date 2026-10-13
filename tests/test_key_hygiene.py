@@ -34,7 +34,10 @@ from tt_boot_manifest.key_hygiene import (
     KeyHygieneError,
     public_key_fingerprint,
 )
+from tt_boot_manifest.manifest_signing import prepare_signing_key
 from tt_boot_manifest.oca.entry import pack_oca_bundle
+from tt_boot_manifest.pack_images_constants import ManifestSignatureType
+from oca_fixtures import ML_DSA_87_KEY_PATH
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_CONFIG = os.path.join(PROJECT_ROOT, "configs", "oca_production_template.yaml")
@@ -158,6 +161,36 @@ def test_every_committed_key_is_refused(tmp_path, monkeypatch):
         with open(path, "rb") as f:
             key = serialization.load_pem_private_key(f.read(), password=None)
         assert public_key_fingerprint(key.public_key()) == fingerprint, rel_path
+
+
+def _ml_dsa_87_signing_manifest(**overrides):
+    """A signing-layer config for the committed ML-DSA-87 development key."""
+    manifest = {
+        "manifest_identifier": 0x324c4254,
+        "signature_type": ManifestSignatureType.ML_DSA_87.value,
+        "signing_authority": "local",
+        "signing_key_name": "ml_dsa_87_test_key",
+        "signing_key_id": "",
+        "signing_key_file": ML_DSA_87_KEY_PATH,
+    }
+    manifest.update(overrides)
+    return manifest
+
+
+def test_committed_ml_dsa_87_key_is_refused(monkeypatch):
+    """The PQC development key falls under the same key-material rule, and is
+    refused at the signing layer before any manifest exists to carry it."""
+    monkeypatch.delenv(ALLOW_ENV_VAR, raising=False)
+    with pytest.raises(KeyHygieneError, match="mldsa87_private_key.pem"):
+        prepare_signing_key(_ml_dsa_87_signing_manifest(), 1)
+
+
+def test_config_field_permits_committed_ml_dsa_87_key(monkeypatch):
+    """The control for the test above: declared, the same key signs."""
+    monkeypatch.delenv(ALLOW_ENV_VAR, raising=False)
+    signing_key = prepare_signing_key(
+        _ml_dsa_87_signing_manifest(**{ALLOW_CONFIG_FIELD: True}), 1)
+    assert signing_key.generate_verified_signature(b"hygiene")
 
 
 # ---------------------------------------------------------------------------

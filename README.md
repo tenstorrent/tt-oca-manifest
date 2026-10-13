@@ -73,7 +73,7 @@ validator integration tests, which skip without it):
 The package is configured via `pyproject.toml` with the following dependencies:
 
 **Core dependencies:**
-- `cryptography>=41.0.0` - Cryptographic operations (RSA, ECDSA, AES, hashing)
+- `cryptography>=48.0.0` - Cryptographic operations (RSA, ECDSA, ML-DSA, AES, hashing); 48.0.0 is the first release whose wheels provide ML-DSA
 - `ruamel.yaml>=0.17.0` - YAML configuration parsing (preserves comments and formatting)
 
 **Optional dependencies:**

@@ -6,13 +6,24 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.asymmetric import ec, rsa, padding, utils
+from cryptography.hazmat.primitives.asymmetric import ec, mldsa, rsa, padding, utils
 from cryptography.hazmat.backends import default_backend
 from .pack_images_constants import *
 from .utils import int_to_bytes_be, check
 from .key_hygiene import reject_committed_test_key
 
 logger = logging.getLogger(__name__)
+
+# The signing authorities that can currently produce each supported signature
+# type. `hsm` is a reserved slot with no implementation, so no type lists it.
+SIGNING_AUTHORITIES_BY_TYPE = {
+    ManifestSignatureType.RSA_3072.value: ("local", "aws"),
+    ManifestSignatureType.ECC_P_256.value: ("local", "aws"),
+    ManifestSignatureType.ML_DSA_87.value: ("local",),
+}
+
+# The signature types a secure-boot signing key may be built for.
+SUPPORTED_SIGNATURE_TYPES = tuple(SIGNING_AUTHORITIES_BY_TYPE)
 
 class SigningError(Exception):
     """A signing or verification operation failed."""
@@ -39,15 +50,22 @@ class SigningKey(ABC):
         self.signature_type = manifest['signature_type']
         self.signing_authority = manifest['signing_authority']
         self.keyID = manifest['signing_key_id']
-        self.public_key = None  # each subclass will populate this with either an EllipticCurvePublicKey or RSAPublicKey
+        self.public_key = None  # set by the subclass that loads or fetches the key
         self.public_key_bytes = b''
         self.signature_digest = b''
         self.signature = None
         self.signature_bytes = b''
         self.signature_verified = False
-        self.hash_func = hashes.SHA256  # every supported signature type digests with SHA-256
+        # RSA and ECDSA sign a SHA-256 digest of the message. ML-DSA-87 is pure
+        # FIPS 204: it hashes the message inside the scheme, so it has none.
+        self.hash_func = hashes.SHA256
+        # Length bounds on public_key_bytes and signature_bytes for the configured
+        # signature type. RSA-3072 and ECDSA P-256 are bounded above by the
+        # 384-byte field; ML-DSA-87's FIPS 204 lengths are exact.
         self.min_pub_key_size = 0
         self.min_signature_size = 0
+        self.max_pub_key_size = PUBLIC_KEY_FIELD_SIZE
+        self.max_signature_size = SIGNATURE_FIELD_SIZE
         self.secure_boot = secure_boot
         self.no_signature = False  # support generation of manifests with broken/bad signature related values for testing
         if self.secure_boot == 1:
@@ -57,26 +75,29 @@ class SigningKey(ABC):
             elif self.signature_type == ManifestSignatureType.ECC_P_256.value:
                 self.min_pub_key_size = EC_256_KEY_SZ_BYTES*2
                 self.min_signature_size = EC_256_KEY_SZ_BYTES*2
+            elif self.signature_type == ManifestSignatureType.ML_DSA_87.value:
+                self.hash_func = None
+                self.min_pub_key_size = self.max_pub_key_size = ML_DSA_87_PUBLIC_KEY_SZ_BYTES
+                self.min_signature_size = self.max_signature_size = ML_DSA_87_SIGNATURE_SZ_BYTES
             else:
-                self.no_signature = check(self.signature_type in [ManifestSignatureType.ECC_P_256.value, ManifestSignatureType.RSA_3072.value],
+                self.no_signature = check(self.signature_type in SUPPORTED_SIGNATURE_TYPES,
                                           f'invalid signature type {self.signature_type} for secure boot being enabled')
         else:
             self.signature_type = ManifestSignatureType.NO_SIGNATURE.value
             self.no_signature = True
 
     def validate_signature_size(self):
-        """Raise unless the signature fits the manifest's fixed signature field
-        and is at least the size the configured algorithm produces."""
-        # the signature bytes to be written into a manifest can never be larger than the designated size of the signature manifest field
-        max_sz = SIGNATURE_FIELD_SIZE
+        """Raise unless the signature length lies within the configured
+        signature type's bounds."""
+        max_sz = self.max_signature_size
         if len(self.signature_bytes) > max_sz or len(self.signature_bytes) < self.min_signature_size:
             raise ValueError(f"Invalid signature length: {len(self.signature_bytes)}. \
                             Max size for type {self.signature_type} is {max_sz}, min size is {self.min_signature_size}.")
 
     def validate_public_key_size(self):
-        """Raise unless the public key fits the manifest's fixed key field and is
-        at least the size the configured algorithm requires."""
-        max_sz = PUBLIC_KEY_FIELD_SIZE
+        """Raise unless the public key length lies within the configured
+        signature type's bounds."""
+        max_sz = self.max_pub_key_size
         if len(self.public_key_bytes) > max_sz or len(self.public_key_bytes) < self.min_pub_key_size:
             raise ValueError(f"Invalid public key length: {len(self.public_key_bytes)}. \
                             Max size for type {self.signature_type} is {max_sz}, min size is {self.min_pub_key_size}.")
@@ -104,6 +125,10 @@ class SigningKey(ABC):
     def digest_message(self, data):
         """Hash `data` and cache it, for authorities that sign a digest rather
         than the message itself."""
+        if self.hash_func is None:
+            raise SigningError(
+                f'signature type {self.signature_type} signs the message itself and '
+                f'has no message digest')
         hasher = hashes.Hash(self.hash_func())
         hasher.update(data)
         self.signature_digest = hasher.finalize()
@@ -111,7 +136,7 @@ class SigningKey(ABC):
     def add_signature(self, signature_value):
         """Record a raw signature and re-encode it the way the manifest carries
         it: RSA zero-padded to the field width, ECDSA decoded from DER to a
-        fixed-width r || s."""
+        fixed-width r || s, ML-DSA-87 as the FIPS 204 encoding it already is."""
         self.signature = signature_value
         if self.signature_type == ManifestSignatureType.RSA_3072.value:
             # Pad out the provided signature value to the maximum size of 384 bytes for insertion into manifests)
@@ -122,6 +147,8 @@ class SigningKey(ABC):
             r_bytes = r.to_bytes(EC_256_KEY_SZ_BYTES, byteorder='big')
             s_bytes = s.to_bytes(EC_256_KEY_SZ_BYTES, byteorder='big')
             self.signature_bytes = r_bytes + s_bytes
+        elif self.signature_type == ManifestSignatureType.ML_DSA_87.value:
+            self.signature_bytes = self.signature
         self.signature_verified = False
 
     @abstractmethod
@@ -211,6 +238,10 @@ class LocalKey(SigningKey):
         elif self.signature_type == ManifestSignatureType.ECC_P_256.value:
             check_ec_private_key(self.private_key)
             self.public_key_bytes = get_ec_public_key_bytes(self.private_key)
+        elif self.signature_type == ManifestSignatureType.ML_DSA_87.value:
+            check_ml_dsa_87_private_key(self.private_key)
+            self.public_key_bytes = self.public_key.public_bytes_raw()
+            self.validate_public_key_size()
 
 
     def sign_data(self, data):
@@ -233,6 +264,13 @@ class LocalKey(SigningKey):
                 self.hash_func()
             )
             self.add_signature(signature_result)
+            return self.signature_bytes
+
+        if self.signature_type == ManifestSignatureType.ML_DSA_87.value and\
+                isinstance(self.private_key, mldsa.MLDSA87PrivateKey):
+            # Pure ML-DSA over the message, with the empty context.
+            self.add_signature(self.private_key.sign(data))
+            self.validate_signature_size()
             return self.signature_bytes
 
         if self.signature_type == ManifestSignatureType.NO_SIGNATURE.value:
@@ -263,6 +301,12 @@ class LocalKey(SigningKey):
                 padding.PKCS1v15(),
                 self.hash_func()
             )
+            self.signature_verified = True
+            return self.signature_verified
+
+        if self.signature_type == ManifestSignatureType.ML_DSA_87.value and\
+                isinstance(self.public_key, mldsa.MLDSA87PublicKey):
+            self.public_key.verify(self.signature, data)
             self.signature_verified = True
             return self.signature_verified
 
@@ -441,8 +485,9 @@ def prepare_signing_key(manifest: dict, secure_boot: int) -> SigningKey:
     """Build the signing key named by the manifest's `signing_authority`.
 
     Returns a NoSigningKey when secure boot is off. Otherwise rejects a
-    signature type this packer does not support, and refuses anything but
-    RSA-3072 for a 'TBL1' manifest, before constructing the authority's key.
+    signature type this packer does not support, refuses anything but RSA-3072
+    for a 'TBL1' manifest, and refuses a signing authority that cannot produce
+    the signature type, before constructing the authority's key.
     """
 
     if secure_boot != 1:
@@ -456,7 +501,7 @@ def prepare_signing_key(manifest: dict, secure_boot: int) -> SigningKey:
 
     sig_type = manifest['signature_type']
     manifest_identifier = manifest['manifest_identifier']
-    check(sig_type in [ManifestSignatureType.ECC_P_256.value, ManifestSignatureType.RSA_3072.value],
+    check(sig_type in SUPPORTED_SIGNATURE_TYPES,
         f'invalid signature type {sig_type} for secure boot being enabled')
     # BL0 only support RSA signatures for secure boot authentication
     # Reject any request to sign BL1 manifests with other signature algos (ECC for example)
@@ -467,10 +512,19 @@ def prepare_signing_key(manifest: dict, secure_boot: int) -> SigningKey:
     signing_authority = manifest["signing_authority"]
     signing_class = key_authority_mapping.get(signing_authority)
 
-    if signing_class:
-        return signing_class(manifest, secure_boot)
-    else:
+    if not signing_class:
         raise ValueError(f"Unknown object type: '{signing_authority}'. Valid types are 'local', 'aws', 'hsm'.")
+    # A bare raise rather than check(): a request must never reach an authority
+    # with no path for its signature type, even with checks disabled. A type the
+    # check above let through with checks disabled has no entry, and builds the
+    # unsigned key that path produces.
+    authorities = SIGNING_AUTHORITIES_BY_TYPE.get(sig_type)
+    if authorities is not None and signing_authority not in authorities:
+        raise SigningError(
+            f"signature type {ManifestSignatureType(sig_type).name} cannot be produced "
+            f"through the '{signing_authority}' signing authority; supported: "
+            f"{', '.join(repr(a) for a in authorities)}")
+    return signing_class(manifest, secure_boot)
 
 
 def check_rsa_private_key(key, expected_size=RSA_3072_KEY_SZ_BITS):
@@ -482,6 +536,10 @@ def check_ec_private_key(key, expected_curve=ec.SECP256R1):
     """Raise unless `key` is an EC private key on `expected_curve`."""
     check(isinstance(key, ec.EllipticCurvePrivateKey), f"Key {key.__class__} is not an EC private key")
     check(isinstance(key.curve, expected_curve), f"EC key {key.curve} is not using the {expected_curve.name}")
+
+def check_ml_dsa_87_private_key(key):
+    """Raise unless `key` is an ML-DSA-87 private key."""
+    check(isinstance(key, mldsa.MLDSA87PrivateKey), f"Key {key.__class__} is not an ML-DSA-87 private key")
 
 def check_rsa_public_key(key, expected_size=RSA_3072_KEY_SZ_BITS):
     """Raise unless `key` is an RSA public key of `expected_size` bits."""

@@ -30,6 +30,9 @@ ECC_P256_KEY_PATH = _key_path("tests/signing_keys/ec_private_key.pem")
 # public_key_size_classic, passes with one key and fails with the other.
 RSA_3072_E3_KEY_PATH = _key_path("tests/signing_keys/rsa_private_key.e3.pem")
 
+# The PQC class's key: ML-DSA-87, stored as a seed-only PKCS#8 PEM.
+ML_DSA_87_KEY_PATH = _key_path("tests/signing_keys/mldsa87_private_key.pem")
+
 # (label, key path, PKCS#1 DER length) for parametrizing over both exponents.
 RSA_EXPONENT_KEYS = [
     ("f4", RSA_3072_KEY_PATH, 398),
