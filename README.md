@@ -50,15 +50,19 @@ Project documents: [CONTRIBUTING.md](CONTRIBUTING.md) ·
 
 For the Python packer:
 
-- **Python 3.9+**
+- **Python 3.10+**
 - **pip** (Python package installer)
 
 Additionally, for building and running the OCA C validator (and the test suite's
 validator integration tests, which skip without it):
 
 - A host **C toolchain** with `-std=c99` support (gcc 12+ or clang 16+)
-- **OpenSSL 3** development headers, discovered via **pkg-config**
-  (macOS: `brew install openssl@3`; Debian/Ubuntu: `apt install libssl-dev pkg-config`)
+- **OpenSSL 3.5 or later** development headers, discovered via **pkg-config**
+  (macOS: `brew install openssl@3`; Debian/Ubuntu 26.04 or later:
+  `apt install libssl-dev pkg-config`). The validator CLI verifies ML-DSA-87,
+  which OpenSSL provides from 3.5; an older OpenSSL fails its build with the
+  reason, so the integration tests fail rather than skip. Ubuntu 24.04's
+  `libssl-dev` is 3.0.
 - **doxygen**, for the documentation gate test, which skips without it. Any
   current release works **except 1.9.8** — the version Ubuntu 24.04 LTS currently
   packages — which falsely reports documented functions as undocumented
@@ -474,7 +478,7 @@ integrity comes from the payload check (`oca_check_payload()` /
 [`validators/oca/INTEGRATION.md`](validators/oca/INTEGRATION.md) is the authority
 on the staged boot flow and on which guarantee each step actually buys.
 
-The library itself is freestanding; the host CLI (`oca-validate`) wires OpenSSL 3
+The library itself is freestanding; the host CLI (`oca-validate`) wires OpenSSL 3.5+
 in for cryptography and takes hardware-identity values via command-line flags. One
 library and one binary handle every variant: the manifest magic selects Classic
 or PQC at runtime and integrators never pick a variant when calling the library.

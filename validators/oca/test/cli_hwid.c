@@ -15,6 +15,7 @@
 
 #include "cli_hwid.h"
 
+#include "oca_layout_pqc.h"
 #include "openssl_crypto.h"
 
 #include <string.h>
@@ -84,13 +85,41 @@ oca_hw_result_t cli_get_version(oca_version_level_t level,
     return OCA_HW_ERROR;
 }
 
-/* Root-key trust anchor.
+/* The bytes of a raw RSA-3072 key that the classical anchor digests. */
+#define RSA_3072_MODULUS_BYTES 384u
+
+/* Whether `public_key` is a raw key of `primitive` whose first `len` bytes
+ * hash to `anchor`, compared in constant time. Only that shape can be matched
+ * against a digest anchor; any other key is unauthorized. */
+static oca_result_t key_matches_anchor(const oca_crypto_blob_t *public_key,
+                                       oca_primitive_type_t primitive, size_t len,
+                                       const uint8_t anchor[32])
+{
+    if (public_key->encoding != OCA_ENCODING_RAW
+        || public_key->primitive_type != primitive
+        || public_key->field_length < len) {
+        return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
+    }
+
+    uint8_t digest[32];
+    if (openssl_sha256(public_key->bytes, len, digest) != OCA_OK) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    unsigned diff = 0u;
+    for (unsigned i = 0u; i < 32u; ++i) {
+        diff |= (unsigned)(digest[i] ^ anchor[i]);
+    }
+    return (diff == 0u) ? OCA_OK : OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
+}
+
+/* Root-key trust anchors.
  *
- * A host tool has no silicon anchor, so this stands in for one: either an
- * explicit digest to match, or --trust-any-root-key for the cases where the key
- * is not what is under test. There is deliberately no default -- an unflagged
- * run fails closed, exactly as an unwired callback would on a real part, so a
- * fixture sweep cannot quietly stop checking authorization.
+ * A host tool has no silicon anchor, so this stands in for one per algorithm
+ * family: an explicit digest to match, or --trust-any-root-key for the cases
+ * where the key is not what is under test. There is deliberately no default --
+ * an unflagged run fails closed, exactly as an unwired callback would on a real
+ * part, so a fixture sweep cannot quietly stop checking authorization. A
+ * family's key is checked against that family's anchor only.
  */
 oca_result_t cli_is_key_authorized(const oca_crypto_blob_t *public_key,
                                    const uint8_t select[16])
@@ -103,24 +132,20 @@ oca_result_t cli_is_key_authorized(const oca_crypto_blob_t *public_key,
     if (g_opt->trust_any_root_key) {
         return OCA_OK;
     }
+    if (public_key == NULL || public_key->bytes == NULL) {
+        return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
+    }
+    if (public_key->key_algorithm == OCA_KEY_ALGO_PQC) {
+        if (!g_opt->root_key_digest_pqc_present) {
+            return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
+        }
+        return key_matches_anchor(public_key, OCA_PRIMITIVE_ML_DSA_87,
+                                  OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES,
+                                  g_opt->root_key_digest_pqc);
+    }
     if (!g_opt->root_key_digest_present) {
         return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
     }
-    if (public_key == NULL || public_key->bytes == NULL
-        || public_key->encoding != OCA_ENCODING_RAW
-        || public_key->primitive_type != OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256) {
-        /* Only a raw RSA-3072 key has a 384-byte modulus to digest; anything
-         * else cannot be matched against this anchor shape. */
-        return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
-    }
-
-    uint8_t digest[32];
-    if (openssl_sha256(public_key->bytes, 384u, digest) != OCA_OK) {
-        return OCA_FAIL_CALLBACK_UNAVAILABLE;
-    }
-    unsigned diff = 0u;
-    for (unsigned i = 0u; i < 32u; ++i) {
-        diff |= (unsigned)(digest[i] ^ g_opt->root_key_digest[i]);
-    }
-    return (diff == 0u) ? OCA_OK : OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
+    return key_matches_anchor(public_key, OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256,
+                              RSA_3072_MODULUS_BYTES, g_opt->root_key_digest);
 }

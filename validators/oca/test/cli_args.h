@@ -43,13 +43,24 @@ typedef struct cli_options {
      * per-check confirm that guards it, have no end-to-end expression.
      * Outranked by --secure-boot-disabled, exactly as on a real part. */
     bool secure_boot_active;
-    /* Root-key trust anchor. --root-key-digest supplies a SHA-256 of the key's
-     * modulus to authorize against; --trust-any-root-key authorizes whatever the
-     * manifest carries, which is only ever right for structural checks on a
-     * fixture whose key is not the point. */
+    /* Root-key trust anchors, one per algorithm family. --root-key-digest
+     * supplies a SHA-256 of a classical RSA-3072 key's modulus and
+     * --root-key-digest-pqc one of a raw ML-DSA-87 key; each family is
+     * authorized by its own anchor only. --trust-any-root-key authorizes
+     * whatever the manifest carries, which is only ever right for structural
+     * checks on a fixture whose key is not the point. */
     bool     trust_any_root_key;
     bool     root_key_digest_present;
     uint8_t  root_key_digest[32];
+    bool     root_key_digest_pqc_present;
+    uint8_t  root_key_digest_pqc[32];
+
+    /* Device-stored ROOT-key revocation state, per family, from
+     * --revoked-root-keys and --revoked-root-keys-pqc: 128-bit bitmaps held
+     * little-endian, as the manifest's revoke fields are. All zero (nothing
+     * revoked) when the flag is absent. */
+    uint8_t  revoked_root_keys[16];
+    uint8_t  revoked_root_keys_pqc[16];
 
     /* Storage-image mode. When --manifest-addr is given, --manifest names a whole
      * storage image rather than a bundle: the manifest is read from that address

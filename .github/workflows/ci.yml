@@ -23,15 +23,27 @@ permissions:
 
 jobs:
   pytest:
-    name: pytest (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: pytest (Python ${{ matrix.python-version }}, cryptography ${{ matrix.cryptography }})
+    # 26.04 is the first Ubuntu LTS whose libssl-dev is OpenSSL 3.5 or later,
+    # which the validator CLI needs for ML-DSA-87. On 24.04 (OpenSSL 3.0) the
+    # CLI build refuses, and every validator integration test fails.
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
-        # 3.9 is the floor declared by requires-python; 3.12 is the newest
+        # 3.10 is the floor declared by requires-python; 3.12 is the newest
         # version the classifiers claim. Local development runs 3.14, which is
         # deliberately not tested here until the classifiers say so.
-        python-version: ['3.9', '3.12']
+        python-version: ['3.10', '3.12']
+        cryptography: ['latest']
+        # The dependency floor. pyproject.toml promises cryptography 48.0.0 is
+        # enough -- the first release whose wheels provide ML-DSA -- but every
+        # other leg resolves the newest release, so without this one the floor
+        # is never exercised. Paired with the Python floor: the oldest
+        # combination a user can install.
+        include:
+          - python-version: '3.10'
+            cryptography: '48.0.0'
     steps:
       - uses: actions/checkout@v5
 
@@ -52,12 +64,13 @@ jobs:
       # doxygen is the entity-discovery documentation gate: absent, its test
       # skips rather than failing, so it is installed here and asserted below.
       #
-      # Not installed from apt: current Ubuntu (noble and plucky alike) 
-      # packages doxygen 1.9.8, and that release reports every documented 
-      # function in a file containing an #include directive as undocumented. 
-      # So "parameters of member X are not documented" against complete 
-      # @param/@return blocks.
-      
+      # Pinned rather than installed from apt. Ubuntu 24.04 through 25.10
+      # package doxygen 1.9.8, and that release reports every documented
+      # function in a file containing an #include directive as undocumented:
+      # "parameters of member X are not documented" against complete
+      # @param/@return blocks. 26.04 packages 1.15.0, which is clean, but the
+      # pin keeps the gate on one known release whatever the runner image.
+      #
       # Upstream this is https://github.com/doxygen/doxygen/issues/11147 :
       # the warnings mis-fire when only XML is generated, which is exactly how
       # the gate's Doxyfile runs.  This was fixed in 1.13.0 by PR #11151. Bug
@@ -90,6 +103,8 @@ jobs:
         run: |
           make --version
           pkg-config --modversion openssl
+          pkg-config --atleast-version=3.5.0 openssl \
+            || { echo "::error::the validator CLI needs OpenSSL 3.5 or later for ML-DSA-87"; exit 1; }
           case "$(doxygen --version)" in
             1.18.0*) doxygen --version ;;
             *) echo "::error::expected pinned doxygen 1.18.0, got '$(doxygen --version)'"
@@ -104,6 +119,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev]'
+          if [ "${{ matrix.cryptography }}" != latest ]; then
+            python -m pip install "cryptography==${{ matrix.cryptography }}"
+          fi
+          python -c "import cryptography; print('cryptography', cryptography.__version__)"
 
       # Deselected rather than skipped: the AWS KMS tests need live credentials,
       # and `-m "not aws"` makes their absence an explicit exclusion instead of
@@ -113,7 +132,8 @@ jobs:
 
   c-validator:
     name: C validator (${{ matrix.cc }})
-    runs-on: ubuntu-latest
+    # OpenSSL 3.5 or later, for ML-DSA-87; see the pytest job.
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:

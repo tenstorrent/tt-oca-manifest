@@ -41,6 +41,29 @@ static int parse_hex32(const char *s, uint8_t out[32])
     return 0;
 }
 
+/* Parse a 128-bit bitmap written as a hex number (optional 0x prefix, 1 to 32
+ * digits) into its 16-byte little-endian form, the layout of a manifest revoke
+ * field. Returns 0 on success, -1 on malformed input. */
+static int parse_bitmap128(const char *s, uint8_t out[16])
+{
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s += 2;
+    }
+    size_t n = strlen(s);
+    if (n == 0u || n > 32u) {
+        return -1;
+    }
+    memset(out, 0, 16u);
+    for (size_t i = 0u; i < n; ++i) {
+        int nibble = hex_nibble((unsigned char)s[n - 1u - i]);  /* least significant first */
+        if (nibble < 0) {
+            return -1;
+        }
+        out[i / 2u] |= (uint8_t)(nibble << (4u * (i % 2u)));
+    }
+    return 0;
+}
+
 /* Read a 32-byte pre-shared secret from `path`: either 32 raw bytes or a
  * hex-text file (64 hex chars, optional 0x prefix). Returns 0 on success. */
 static int read_secret_file(const char *path, uint8_t out[32])
@@ -190,6 +213,12 @@ void cli_print_help(void)
         "                              carries (structural checks only)\n"
         "  --root-key-digest HEX64     authorize only a raw RSA-3072 key whose\n"
         "                              384-byte modulus has this SHA-256\n"
+        "  --root-key-digest-pqc HEX64 authorize only a raw ML-DSA-87 key whose\n"
+        "                              2592 bytes have this SHA-256\n"
+        "  --revoked-root-keys HEX     report this 128-bit bitmap as the device's\n"
+        "                              classical ROOT-key revocation state\n"
+        "  --revoked-root-keys-pqc HEX report this 128-bit bitmap as the device's\n"
+        "                              PQC ROOT-key revocation state\n"
         "  --secure-boot-active        report the part as ENFORCING secure\n"
         "                              boot (device fuse/life-cycle state).\n"
         "  --secure-boot-disabled      report the part as definitively NOT a\n"
@@ -232,7 +261,8 @@ enum {
     LO_LIST_IMAGES, LO_DECRYPT_IN_PLACE, LO_SECURE_BOOT_DISABLED,
     LO_SECURE_BOOT_ACTIVE,
     LO_TRUST_ANY_ROOT_KEY,
-    LO_ROOT_KEY_DIGEST,
+    LO_ROOT_KEY_DIGEST, LO_ROOT_KEY_DIGEST_PQC,
+    LO_REVOKED_ROOT_KEYS, LO_REVOKED_ROOT_KEYS_PQC,
     LO_MANIFEST_ADDR, LO_REGION_BASE, LO_REGION_LIMIT,
     LO_QUIET, LO_HELP,
 };
@@ -255,6 +285,9 @@ static struct option long_opts[] = {
     {"secure-boot-active",   no_argument,   NULL, LO_SECURE_BOOT_ACTIVE},
     {"trust-any-root-key",   no_argument,       NULL, LO_TRUST_ANY_ROOT_KEY},
     {"root-key-digest",      required_argument, NULL, LO_ROOT_KEY_DIGEST},
+    {"root-key-digest-pqc",  required_argument, NULL, LO_ROOT_KEY_DIGEST_PQC},
+    {"revoked-root-keys",    required_argument, NULL, LO_REVOKED_ROOT_KEYS},
+    {"revoked-root-keys-pqc", required_argument, NULL, LO_REVOKED_ROOT_KEYS_PQC},
     {"manifest-addr",    required_argument, NULL, LO_MANIFEST_ADDR},
     {"region-base",      required_argument, NULL, LO_REGION_BASE},
     {"region-limit",     required_argument, NULL, LO_REGION_LIMIT},
@@ -386,6 +419,25 @@ int cli_parse_args(int argc, char **argv, cli_options_t *opt)
                     return 2;
                 }
                 opt->root_key_digest_present = true;
+                break;
+            case LO_ROOT_KEY_DIGEST_PQC:
+                if (parse_hex32(optarg, opt->root_key_digest_pqc) != 0) {
+                    fprintf(stderr, "usage: --root-key-digest-pqc wants 64 hex digits\n");
+                    return 2;
+                }
+                opt->root_key_digest_pqc_present = true;
+                break;
+            case LO_REVOKED_ROOT_KEYS:
+                if (parse_bitmap128(optarg, opt->revoked_root_keys) != 0) {
+                    fprintf(stderr, "usage: --revoked-root-keys wants 1 to 32 hex digits\n");
+                    return 2;
+                }
+                break;
+            case LO_REVOKED_ROOT_KEYS_PQC:
+                if (parse_bitmap128(optarg, opt->revoked_root_keys_pqc) != 0) {
+                    fprintf(stderr, "usage: --revoked-root-keys-pqc wants 1 to 32 hex digits\n");
+                    return 2;
+                }
                 break;
             case LO_SECURE_BOOT_ACTIVE:
                 opt->secure_boot_active = true;

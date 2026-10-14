@@ -33,10 +33,12 @@ Two ways to opt in, deliberately different in depending one what needs to be don
   which builds several hundred manifests from inline config dicts. It is set
   once in `tests/conftest.py`.
 
-Note the fingerprint here is NOT the boot-ROM trust anchor digest. That one is
-SHA-256 over the raw 384-byte RSA modulus (see `validators/oca/test/cli_hwid.c`),
-is RSA-only, and answers a different question; whether silicon trusts a particular 
-public key. This one only answers whether a key came out of this repository.
+Note the fingerprint here is NOT a ROOT-key trust-anchor digest. The reference
+validator harness stands in for one per algorithm family -- SHA-256 over a raw
+RSA-3072 key's 384-byte modulus, or over a raw ML-DSA-87 key's 2592 bytes (see
+`validators/oca/test/cli_hwid.c`) -- and that answers a different question:
+whether silicon trusts a particular public key. This one only answers whether a
+key came out of this repository.
 """
 
 from __future__ import annotations

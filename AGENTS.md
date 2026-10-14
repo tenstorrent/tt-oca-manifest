@@ -93,7 +93,7 @@ future variants slot in under `lib/` without a build-system fork.
 
 ### Python
 
-Python 3.9 or newer. Install the package **editable** into whichever Python environment you
+Python 3.10 or newer. Install the package **editable** into whichever Python environment you
 already use, with the `dev` extra:
 
 ```bash
@@ -119,8 +119,11 @@ Needed to build the validator and to run the validator integration tests, which 
 rather than fail when it is absent:
 
 - A host C toolchain with `-std=c99` support (gcc 12+ or clang 16+)
-- OpenSSL 3 development headers, discovered via `pkg-config`
-  (macOS: `brew install openssl@3`; Debian/Ubuntu: `apt install libssl-dev pkg-config`)
+- OpenSSL **3.5 or later** development headers, discovered via `pkg-config` (macOS:
+  `brew install openssl@3`; Debian/Ubuntu 26.04 or later: `apt install libssl-dev pkg-config`).
+  The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. An older OpenSSL fails the
+  build with the reason, so the integration tests **fail** rather than skip — Ubuntu 24.04's
+  `libssl-dev` is 3.0
 - `doxygen` for the documentation gate — any current release **except 1.9.8**, which falsely
   reports documented functions as undocumented. The test detects that defect and skips with an
   explanation; CI pins 1.18.0
@@ -201,7 +204,7 @@ make -C validators/oca clean
 
 The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic -ffreestanding -nostdlib` to
 prove target portability; the archive is for the host CLI and CI, not a release artifact. The
-CLI links OpenSSL 3.
+CLI links OpenSSL 3.5 or later.
 
 ```bash
 validators/oca/build/test/oca-validate --manifest out/oca_classic.bin --list-images
@@ -582,3 +585,4 @@ Keep pull requests focused; unrelated changes belong in separate ones. Branch na
 | `make check` cannot import the packer | The Makefile's interpreter search found a Python without the editable install. Pass `PYTHON=<path>` explicitly |
 | A new manifest field passes Python tests but the validator ignores it | The completeness gate was satisfied with an allowlist entry instead of a decoder, or the check was composed into `oca_validate()` where the staged flow skips it |
 | `oca-combined` treated as a third manifest variant | It is a packaging mode that places already-built bundles; only `oca-classic` and `oca-pqc` are formats |
+| The validator integration tests fail at the build step with "needs OpenSSL 3.5 or later" | The OpenSSL `pkg-config` found is older than 3.5 — Ubuntu 24.04's `libssl-dev` is 3.0. The CLI verifies ML-DSA-87, which needs 3.5; install a newer OpenSSL and point `pkg-config` at it |

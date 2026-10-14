@@ -73,10 +73,18 @@ _PINNED = {
         4416, "4ab13efc8a810abab38436a453c7df3fae3d12cfaa0f01acc93eb742dbe55f43"),
     "validators/oca/test/fixtures/configs/encrypted_aes_pqc.yaml": (
         37184, "04f7be71675d3889b13df79b8e5a1f6f006125e47cc4f707bcf160c53830754a"),
+    "validators/oca/test/fixtures/configs/encrypted_aes_pqc_mldsa.yaml": (
+        37184, "c126109ee024496b1127d3f77640c7c5c1d85150af735952a1f63319d7500434"),
     "validators/oca/test/fixtures/configs/multi_image.yaml": (
         4988, "78a5b7fd631c75d1c6e3945dde69ee35faac4c8f6176eccab1679b4f07045405"),
     "validators/oca/test/fixtures/configs/pqc_basic.yaml": (
         37180, "24eaca9a37f9f468708d252231ea35a7db89d887f054b2f2857c9316865e01ec"),
+    "validators/oca/test/fixtures/configs/pqc_hybrid_ecdsa.yaml": (
+        37180, "3d3db6c0954ad2dd06e20ee8f2f5b326073e5f214755bfff7175a937fba3b9cc"),
+    "validators/oca/test/fixtures/configs/pqc_hybrid_rsa.yaml": (
+        37180, "97496130eb296ca9bc3ad3d322bfaf5f84ac4bd3915914aea73cdcb64bc716e6"),
+    "validators/oca/test/fixtures/configs/pqc_secure_mldsa.yaml": (
+        37180, "384307600ea67dbaf7b06b5a615abebda650a7ecd896142207e27266bfa62884"),
     "validators/oca/test/fixtures/configs/pqc_secure_rsa.yaml": (
         37180, "1d12fcd74ed2cd837f97e5802d7da91904285603e548bc2c6163079c56e4c19d"),
     "validators/oca/test/fixtures/configs/secure_ecdsa.yaml": (

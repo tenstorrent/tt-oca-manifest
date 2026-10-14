@@ -101,8 +101,9 @@ static const char *reason_for(oca_result_t r)
         case OCA_FAIL_ROOT_KEY_REVOKED:
             return "selected ROOT key is revoked (manifest or device-stored state)";
         case OCA_FAIL_ROOT_KEY_UNAUTHORIZED:
-            return "ROOT key is not authorized by this device "
-                   "(pass --root-key-digest or --trust-any-root-key)";
+            return "ROOT key is not authorized by this device (pass "
+                   "--root-key-digest / --root-key-digest-pqc for each signature "
+                   "class, or --trust-any-root-key)";
         case OCA_FAIL_SIGNATURE_CLASS_CONTROL:
             return "secure_boot_control class bits name a signature policy this "
                    "manifest cannot satisfy (neither class selected under secure "
@@ -192,8 +193,9 @@ static void read_content_version(const uint8_t *body,
 }
 
 /* Host validation defaults for device-anchored secure-boot state. This CLI is a
- * host tool, not a device: it reports no revoked ROOT keys and enforces no
- * security-version floor. A real device would report its fuse/OTP state here.
+ * host tool, not a device: it reports the ROOT-key revocation state given on the
+ * command line (none by default) and enforces no security-version floor. A real
+ * device would report its fuse/OTP state here.
  *
  * --secure-boot-active. Off by default, so the manifest's own
  * secure_boot_control bit drives the secure path and a plain invocation behaves
@@ -217,11 +219,17 @@ static oca_secure_bool_t cli_is_secure_boot_disabled(void)
          ? OCA_SECURE_TRUE : OCA_SECURE_FALSE;
 }
 
+/* --revoked-root-keys / --revoked-root-keys-pqc: each family's revocation
+ * state is separate, as on a device. */
 static oca_result_t cli_get_root_key_revocation(oca_key_algorithm_t algo,
                                                 uint8_t out[16])
 {
-    (void)algo;
-    memset(out, 0, 16);
+    if (g_cli_opt == NULL) {
+        memset(out, 0, 16);
+        return OCA_OK;
+    }
+    memcpy(out, (algo == OCA_KEY_ALGO_PQC) ? g_cli_opt->revoked_root_keys_pqc
+                                           : g_cli_opt->revoked_root_keys, 16);
     return OCA_OK;
 }
 

@@ -48,7 +48,7 @@ make clean
 ```
 
 The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic
--ffreestanding -nostdlib`. The host CLI links OpenSSL 3 (`-lcrypto`).
+-ffreestanding -nostdlib`. The host CLI links OpenSSL 3.5 or later (`-lcrypto`).
 
 ### Compile-time overrides
 
@@ -146,8 +146,13 @@ unit test and every fixture round-trip passes.)
 - A host C toolchain (gcc 12+ or clang 16+) with `-std=c99` support.
 - GNU Make. 3.81 (what macOS bundles) works for ordinary use; **4.x is preferred
   if you script builds** — see "Compile-time overrides" for why.
-- OpenSSL 3 development headers, discovered via `pkg-config` (macOS:
-  `brew install openssl@3`; Debian/Ubuntu: `apt install libssl-dev`).
+- OpenSSL 3.5 or later development headers, discovered via `pkg-config` (macOS:
+  `brew install openssl@3`; Debian/Ubuntu 26.04 or later: `apt install libssl-dev`).
+  The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. When `pkg-config`
+  finds OpenSSL, `make` checks its version before linking the CLI
+  (`OPENSSL_MIN_VERSION`); with `OPENSSL_CFLAGS` supplied by hand, the same
+  minimum is enforced at compile time. The library and the unit tests do not use
+  OpenSSL.
 - For `make check` only: a Python environment with the project's
   `tt_boot_manifest` packer installed. The Makefile invokes
   `python -m tt_boot_manifest.pack_images` to (re-)generate fixture
@@ -196,7 +201,10 @@ boot path.
 | manifest format (magic) | `OCAC` (classic), `OCAP` (PQC) | one library parses both; magic selects the path |
 | `manifest_hash_type` | SHA2-256 (`0x01`) | the only digest this build recomputes |
 | `signature_type_classic` | RSA-3072-PKCS#1v1.5-SHA256 (`0x01`), ECDSA-P256-SHA256 (`0x05`) | the primitive is passed to the host `verify_signature` callback; the callback owns the math |
-| `signature_encoding_classic` / `public_key_encoding_classic` | ASN.1 DER (`0x01`) | |
+| `signature_encoding_classic` / `public_key_encoding_classic` | raw (`0x02`); ASN.1 DER (`0x01`) for RSA public keys and ECDSA signatures | |
+| `secure_boot_control` signature classes | classical, PQC, or both (hybrid) | under secure boot at least one class must be set, and the PQC class only on an `OCAP` manifest (else `OCA_FAIL_SIGNATURE_CLASS_CONTROL`); each enforced class's key is authorized against its own anchor family, and a hybrid manifest needs both signatures to verify |
+| `signature_type_pqc` | ML-DSA-87 (`0x33`) | pure FIPS 204 over the signed region, empty context; the host `verify_signature` callback owns the math |
+| `signature_encoding_pqc` / `public_key_encoding_pqc` | raw (`0x02`) only, with exact sizes: 4627-byte signature, 2592-byte key | any other PQC primitive, encoding or size is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
 | `encryption_type` | AES-128-CBC (`0x01`) or AES-256-CBC (`0x02`) + PKCS#7 | payload decryption is delegated to the host `decrypt_payload` callback; the key length follows the type |
 | `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below) |
 | `input_key_source` | pre-shared secret (b001) | |
@@ -249,11 +257,8 @@ state, so it is reproducible in every lifecycle state.
 **Not supported (rejected or not yet verified).** These are documented so an
 integrator knows the current boundary:
 
-- **A PQC signature backend** — the library side of PQC verification is in
-  place. The manifest `secure_boot_classic` / `secure_boot_pqc` class control 
-  bits are enforced. Secure boot with neither class named is rejected, as is `secure_boot_pqc` on a classic manifest. Each enforced class's ROOT key is authorized against its own anchor and its signature dispatched through `verify_signature` with the blob's `key_algorithm` naming the family.
-  A hybrid signed manifest is verified as logical AND with either class failing causing a rejection. What does not exist is any in-tree PQC implementation: the reference harness verifies classical RSA/ECDSA only and fails closed on `OCA_KEY_ALGO_PQC`, although the packer produces ML-DSA-87-signed manifests. 
-  The PQC description is pinned to raw ML-DSA-87 with exact sizes; any other PQC primitive or encoding is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE`.
+- **PQC signature algorithms other than ML-DSA-87** — ML-DSA-44 / -65 and
+  SLH-DSA are refused with `OCA_FAIL_CRYPTO_FIELD_SIZE`.
 - **Composite CBC-HMAC and AEAD (e.g. GCM-SIV) encryption modes**, and
   **KEM-unwrapped DEK** (`input_key_source` b010) — only plain AES-128-CBC and
   AES-256-CBC with a pre-shared secret are handled.
