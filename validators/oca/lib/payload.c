@@ -192,8 +192,8 @@ static oca_result_t validate_toc_structure(
  *
  * Runs in time independent of the contents, via the primitives in
  * oca_compare.h. The trailing bytes of the field are padding whose width
- * depends on the configured digest type; this pass compares only the leading
- * digest bytes and does not interpret the remainder.
+ * depends on the configured digest type; only the leading digest bytes are
+ * compared, and the remainder is not interpreted.
  *
  * @param[in] field        The stored 64-byte hash field.
  * @param[in] digest       The recomputed digest.
@@ -240,7 +240,7 @@ static oca_result_t compare_digest(const uint8_t *field,
  * signed manifest.
  *
  * The digest occupies the leading OCA_MANIFEST_HASH_DIGEST_SIZE bytes of the
- * 64-byte entry hash field; the remainder is padding this pass does not
+ * 64-byte entry hash field; the remainder is padding the library does not
  * interpret. The TOC is structurally validated before this runs, so the
  * offset and length reads are already known to be in bounds.
  *

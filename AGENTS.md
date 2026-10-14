@@ -476,10 +476,9 @@ the `aws-sso` console script.
 - **`make check` prints two `N/N passed` summaries** — the C unit-test driver, then the
   fixture sweep. Fewer than two means something declined to build and succeeded anyway; CI
   fails the run for exactly this, and so should you.
-- **`make check` exits 0 down several "nothing to build" paths** left over from the skeleton
-  phase: an empty `lib/`, a missing `test/unit_test.c`, zero fixtures. Each prints a notice
-  and succeeds. `skipping archive`, `skipping link` and `no fixtures yet` in the output are
-  failures wearing a green exit code.
+- **`make check` exits 0 down several "nothing to build" paths**: an empty `lib/`, a missing
+  `test/unit_test.c`, zero fixtures. Each prints a notice and succeeds. `skipping archive`,
+  `skipping link` and `no fixtures yet` in the output are failures wearing a green exit code.
 - **A skip is a signal, not a pass.** The validator integration tests skip without `make` or
   `pkg-config`; the doxygen gate skips without doxygen or against 1.9.8. A broken toolchain
   therefore reads as a green run with a quietly smaller suite. Confirm the gates actually ran.

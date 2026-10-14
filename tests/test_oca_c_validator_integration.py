@@ -380,7 +380,7 @@ _ENC_BODY_SIZE = {"encrypted_aes": 4096, "encrypted_aes_pqc": 36864}
 @pytest.mark.parametrize("fixture", ["encrypted_aes", "encrypted_aes_pqc"])
 def test_cli_encrypted_payload_roundtrips(fixture, tmp_path):
     """Correct secret → PASS, and the emitted plaintext is the decrypted
-    payload (PTOC-prefixed). Covers both variants (FR-012)."""
+    payload (PTOC-prefixed). Covers both variants."""
     bin_path = _pack_fixture(fixture)
     out = tmp_path / "plain.bin"
     result = _run_cli(["--manifest", bin_path, "--trust-any-root-key",
@@ -419,8 +419,8 @@ def test_cli_encrypted_wrong_secret_fails():
 
 
 def test_cli_encrypted_secret_and_plaintext_not_leaked(tmp_path):
-    """Principle V: the secret and the decrypted plaintext go to the key input
-    and the --payload-out file respectively — never to stdout/stderr."""
+    """The secret and the decrypted plaintext go to the key input and the
+    --payload-out file respectively — never to stdout/stderr."""
     bin_path = _pack_fixture("encrypted_aes")
     out = tmp_path / "plain.bin"
     result = _run_cli(["--manifest", bin_path, "--trust-any-root-key",

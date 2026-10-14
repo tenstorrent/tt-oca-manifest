@@ -201,7 +201,7 @@
 
 #define OCA_LEN_SIGNATURE                  512u  /* classic signature_classic */
 #define OCA_LEN_MANIFEST_HASH               64u  /* manifest-hash digest + zero pad; digest type per manifest_hash_type */
-#define OCA_MANIFEST_HASH_DIGEST_SIZE       32u  /* digest size this pass validates (SHA-256, manifest_hash_type=0x01) */
+#define OCA_MANIFEST_HASH_DIGEST_SIZE       32u  /* digest size the library validates (SHA-256, manifest_hash_type=0x01) */
 
 /* ------------------------------------------------------------------ */
 /* Payload encryption + payload-hash fields (shared offsets)          */

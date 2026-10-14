@@ -24,7 +24,7 @@ The OCA spec permits two on-disk encodings, but not symmetrically:
 
 Each encoded value is accompanied by a `*_size_classic` field giving its byte
 count, so a consumer can bound its parse instead of guessing from zero padding.
-Integrator-defined encodings (0xF0-0xFF) are deferred to a future feature pass.
+Integrator-defined encodings (0xF0-0xFF) are a deferred feature.
 """
 
 from __future__ import annotations

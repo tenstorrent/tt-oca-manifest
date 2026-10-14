@@ -263,7 +263,7 @@ def compute_payload_hashes(
                            manifest. Computed identically on both paths.
 
     Returns (payload_hash_field, payload_hash_chain_field), each 64 bytes with
-    the digest at offset 0 and trailing 0x00 bytes. This pass uses SHA-256
+    the digest at offset 0 and trailing 0x00 bytes. The packer uses SHA-256
     (payload_hash_type = 0x01); the field width accommodates other digest types
     the format permits.
     """

@@ -365,8 +365,8 @@ oca_result_t openssl_verify_signature(
 }
 
 /* Build the 192-byte expanded KDF input block and derive the AES key via
- * SP 800-108r1 Counter Mode (HMAC-SHA-256), reproducing the OCAH Key Manager
- * PREPARE_BL_DECRYPT_KEY flow:
+ * SP 800-108r1 Counter Mode (HMAC-SHA-256), per the payload-key derivation
+ * contract in validators/oca/README.md:
  *   block = header(32) || "KM_CLASS_BL"(32) || kdf_input(64) || zero-entropy(64)
  *   key   = ( HMAC-SHA256(secret, be16(i) || block || be16(L)) )[0 : L/8]
  * for i = 1,2,... with L = key_bits (128 for AES-128-CBC, 256 for AES-256-CBC).

@@ -154,7 +154,7 @@ def configure_profile(start_url: str, sso_region: str, access_token: str):
         if original_profile is not None:
             os.environ['AWS_PROFILE'] = original_profile
 
-# --- Phase 3: SSO Login with Secure File Permissions ---
+# --- SSO login with secure file permissions ---
 
 def sso_login(profile_name: str) -> bool:
     """Emulates `aws sso login` and saves credentials with secure file permissions."""

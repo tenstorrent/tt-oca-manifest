@@ -192,7 +192,7 @@ def pack_oca_bundle(
         )
 
     # 9. Unsigned tail.
-    payload_offset = variant.body_size  # no verifier/co-signer entries in this pass
+    payload_offset = variant.body_size  # the packer emits no verifier/co-signer entries
     unsigned_tail = build_unsigned_tail(
         signed_region,
         manifest_hash_field=manifest_hash_field,

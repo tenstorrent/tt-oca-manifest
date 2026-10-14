@@ -101,7 +101,7 @@ PUBLIC_KEY_CLASSIC_SIZE = 532
 SIGNATURE_CLASSIC_SIZE = 512
 
 # Hash field size: 64 bytes total. The configured manifest_hash_type's digest
-# occupies the leading bytes (32 for SHA-256, the type this pass emits); the
+# occupies the leading bytes (32 for SHA-256, the only type the packer emits); the
 # remainder is 0x00 padding.
 HASH_FIELD_SIZE = 64
 MANIFEST_HASH_DIGEST_SIZE = 32
@@ -109,10 +109,10 @@ MANIFEST_HASH_DIGEST_SIZE = 32
 # Payload encryption. Supported modes: AES-128-CBC (encryption_type 0x01) and
 # AES-256-CBC (0x02). For BOTH modes the key is derived via NIST SP 800-108r1
 # Counter Mode (HMAC-SHA-256) over the SAME 192-byte expanded input block (see
-# KDF_BLOCK_* below), reproducing the OCAH Key Manager PREPARE_BL_DECRYPT_KEY
-# flow; only the derived-key length and the block's out_bits field / PRF length
-# suffix track the cipher (128 vs 256 bits). The manifest's encryption_kdf_input
-# field is the 64-byte KDF context.
+# KDF_BLOCK_* below), per the payload-key derivation contract in
+# validators/oca/README.md; only the derived-key length and the block's out_bits
+# field / PRF length suffix track the cipher (128 vs 256 bits). The manifest's
+# encryption_kdf_input field is the 64-byte KDF context.
 ENCRYPTION_SECRET_SIZE = 32          # pre-shared secret (the PRF/HMAC key)
 ENCRYPTION_IV_SIZE = 16              # AES-CBC IV (low bytes of the 32-byte field)
 ENCRYPTION_KDF_INPUT_SIZE = 64       # encryption_kdf_input field == full KDF context
@@ -316,7 +316,7 @@ LEN_RESERVED_23 = 320
 
 
 # ---------------------------------------------------------------------------
-# Algorithm enums (this feature pass: minimum supported set)
+# Algorithm enums (the supported set only)
 # ---------------------------------------------------------------------------
 
 class OcaClassicSignatureType(Enum):
@@ -328,7 +328,7 @@ class OcaClassicSignatureType(Enum):
 
 
 class OcaClassicHashType(Enum):
-    """OCA `*_hash_type` byte values; this feature pass supports SHA2-256 only."""
+    """OCA `*_hash_type` byte values; the packer supports SHA2-256 only."""
     SHA2_256 = 0x01
 
 
@@ -484,12 +484,12 @@ ENCRYPTION_KEY_BITS = {
     OcaEncryptionType.AES_128_CBC.value: 128,
     OcaEncryptionType.AES_256_CBC.value: 256,
 }
-# encryption_type values this pass supports (plain AES-CBC; CBC-HMAC/AEAD deferred).
+# encryption_type values the packer supports (plain AES-CBC; CBC-HMAC/AEAD deferred).
 ENCRYPTION_TYPES_SUPPORTED = frozenset(ENCRYPTION_KEY_BITS)
 
 
 class OcaEncryptionKdf(Enum):
-    """OCA `encryption_key_derivation_function` values; this feature pass supports
+    """OCA `encryption_key_derivation_function` values; the packer supports
     NIST SP 800-108r1 Counter Mode (HMAC-SHA-256) only."""
     SP800_108_CTR_HMAC_SHA256 = 0x0001
 
@@ -516,7 +516,7 @@ DEFERRED_FEATURE_NAMES = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# Version policy for this feature pass
+# Version policy
 # ---------------------------------------------------------------------------
 
 OCA_MANIFEST_VERSION_MAJOR = 1
@@ -602,7 +602,7 @@ SELECTOR_BIT_VERSION_PACKAGE_MAX = 102
 SELECTOR_BIT_VERSION_SYSTEM_MIN  = 103
 SELECTOR_BIT_VERSION_SYSTEM_MAX  = 104
 
-# Bits 0..104 of selector_bits are used in this feature pass; bits 105..127
+# Bits 0..104 of selector_bits are used; bits 105..127
 # are reserved and rejected.
 SELECTOR_BITS_USED_LIMIT = 105
 SELECTOR_BITS_RESERVED_MASK = ((1 << 128) - 1) ^ ((1 << SELECTOR_BITS_USED_LIMIT) - 1)

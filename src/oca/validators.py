@@ -527,8 +527,8 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
 
 
 def reject_deferred_features(config: Dict[str, Any]) -> None:
-    """Raise OcaConfigError for any config that enables an OCA capability
-    deferred to a future feature pass.
+    """Raise OcaConfigError for any config that enables an OCA capability the
+    packer does not support yet.
 
     Checked features:
       - PQC signature algorithms other than ML-DSA-87 (0x33), and an ML-DSA

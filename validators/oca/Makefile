@@ -149,10 +149,6 @@ classic-only:
 pqc-only:
 	$(MAKE) BUILD=build/pqc-only EXTRA_CFLAGS="$(EXTRA_CFLAGS) -DOCA_SUPPORT_CLASSIC=0" all
 
-# Phase-1 stub: the per-target rules below are filled in by later phases.
-# The skeleton commits to the strict-warnings posture so that the moment
-# a real .c file shows up under lib/ or test/ it inherits the right flags.
-
 # Always evaluated, but only writes when the flags differ — so it does not
 # invalidate objects on every invocation.
 .PHONY: FORCE

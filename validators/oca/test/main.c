@@ -5,7 +5,8 @@
  *
  * Reads a manifest file, wires the validator callbacks (OpenSSL for
  * crypto, CLI flags for hardware identity), invokes oca_validate(), and
- * prints a single-line verdict per the cli_surface contract.
+ * prints a single-line verdict: PASS on stdout, or FAIL with its reason on
+ * stderr.
  */
 
 #include <errno.h>
@@ -514,7 +515,7 @@ int main(int argc, char **argv)
         }
         /* Emit the recovered plaintext when the payload was decrypted and an
          * output path was requested. Plaintext goes only to that file — never
-         * to stdout/stderr/logs (Principle V). */
+         * to stdout, stderr or logs. */
         if (opt.payload_out_path != NULL && plaintext.bytes != NULL) {
             FILE *out = fopen(opt.payload_out_path, "wb");
             if (out == NULL) {

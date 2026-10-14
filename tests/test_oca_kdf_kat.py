@@ -3,8 +3,8 @@
 """Known-answer + domain-separation tests for the payload-decryption KDF.
 
 The payload key is derived via NIST SP 800-108r1 Counter Mode (HMAC-SHA-256)
-over a 192-byte expanded input block, reproducing the OCAH Key Manager
-PREPARE_BL_DECRYPT_KEY flow. These tests anchor the derivation to the reference
+over a 192-byte expanded input block, per the payload-key derivation contract
+in validators/oca/README.md. These tests anchor the derivation to the reference
 design's known-answer vectors (so producer + consumer are correct against the
 silicon, not merely self-consistent) and prove the structured block gives real
 cryptographic domain separation.

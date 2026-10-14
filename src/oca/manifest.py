@@ -14,7 +14,7 @@ Build sequence (offsets parameterized by the variant descriptor):
      → bytes [0, variant.signed_region_end) (the signed region, ending in the
        variant trailer).
   2. compute_manifest_hash(signed_region, variant=...) → 64-byte field
-     (digest + zero pad; SHA-256 this pass, per manifest_hash_type).
+     (digest + zero pad; SHA-256, per manifest_hash_type).
   3. build_unsigned_tail(signed_region, manifest_hash, payload_offset, variant=...)
      → bytes [variant.signed_region_end, variant.body_size).
   4. Concatenate → variant.body_size body, asserted at assembly time.
@@ -396,7 +396,7 @@ def build_unsigned_tail(
     out += manifest_hash_field
     # payload_offset (signed int64)
     out += struct.pack("<q", int(payload_offset))
-    # unauthenticated_flags (= 0 in this pass)
+    # unauthenticated_flags (the packer sets none)
     out += struct.pack("<Q", 0)
     if variant.format_name == "oca-pqc":
         # signature_pqc, then reserved 4 + 8 + alignment pad to the 36864-byte
@@ -432,7 +432,7 @@ def compute_manifest_hash(
     variant: "oca_consts.OcaVariant" = oca_consts.CLASSIC_VARIANT,
 ) -> bytes:
     """Return the 64-byte manifest_hash field: the signed-region digest at
-    offset 0, zero-padded to 64 bytes. This pass emits a SHA-256 digest
+    offset 0, zero-padded to 64 bytes. The packer emits a SHA-256 digest
     (manifest_hash_type = 0x01); the field width accommodates other digest
     types the format permits."""
     if len(signed_region) != variant.signed_region_end:

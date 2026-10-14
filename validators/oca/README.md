@@ -247,7 +247,7 @@ payload. The pre-shared secret is the HMAC key; the derivation binds no device
 state, so it is reproducible in every lifecycle state.
 
 **Not supported (rejected or not yet verified).** These are documented so an
-integrator knows the current boundary; several are tracked as follow-on work:
+integrator knows the current boundary:
 
 - **A PQC signature backend** — the library side of PQC verification is in
   place. The manifest `secure_boot_classic` / `secure_boot_pqc` class control 

@@ -2,10 +2,9 @@
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """OCA payload TOC header (32 bytes) and TOC entry (280 bytes) builders.
 
-Source-of-truth byte layouts: contracts/oca-payload-toc.md, which mirrors the
-"Payload TOC" / "Payload TOC entry" tables in the OCA spec. Every field is
-written through an `OFF_TOC_*` constant so the packer and the C validator
-address the same bytes.
+Source-of-truth byte layouts: the "Payload TOC" / "Payload TOC entry" tables in
+the OCA boot manifest specification. Every field is written through an
+`OFF_TOC_*` constant so the packer and the C validator address the same bytes.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ _U64_ENTRY_FIELDS = {
 
 
 def build_toc_header(payload_length: int, image_count: int) -> bytes:
-    """Build the 32-byte PTOC header per contracts/oca-payload-toc.md."""
+    """Build the 32-byte PTOC header."""
     if image_count < 1:
         raise ValueError(f"image_count must be ≥ 1; got {image_count}")
     if payload_length < 0:

@@ -5,9 +5,9 @@
 The cipher key is DERIVED from a pre-shared secret via NIST SP 800-108r1 Counter
 Mode (HMAC-SHA-256). Both supported ciphers (``encryption_type`` 0x01 = AES-128-CBC,
 0x02 = AES-256-CBC) derive the key from the SAME 192-byte expanded input block —
-reproducing the OCAH Key Manager ``PREPARE_BL_DECRYPT_KEY`` flow byte-for-byte —
-differing only in the derived-key length (128 vs 256 bits), which also sets the
-block's ``out_bits`` header field and the PRF length suffix. The manifest's
+the payload-key derivation contract in ``validators/oca/README.md``, byte for
+byte — differing only in the derived-key length (128 vs 256 bits), which also
+sets the block's ``out_bits`` header field and the PRF length suffix. The manifest's
 64-byte ``encryption_kdf_input`` field supplies the KDF context. The pre-shared
 secret, the derived key, and the plaintext are never logged.
 
@@ -168,8 +168,8 @@ def encrypt_payload(plaintext: bytes, secret: bytes, kdf_input: bytes, iv: bytes
 #
 # Mirrors manifest_signing's signing_authority abstraction. A provider turns the
 # manifest's KDF input into the AES cipher key and encrypts the payload. The key
-# derivation + cipher run wherever the authority dictates (locally today; inside
-# KMS/HSM in a future pass). The provider carries the encryption_type so it
+# derivation + cipher run wherever the authority dictates (locally today; KMS
+# and HSM are reserved). The provider carries the encryption_type so it
 # derives a key of the correct length and selects the matching cipher.
 
 ENCRYPTION_AUTHORITIES = ("local", "aws", "hsm")

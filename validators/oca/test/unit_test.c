@@ -2104,7 +2104,7 @@ TEST(test_payload_toc_entry_hash_mismatch_second_entry)
 }
 
 /* Only the leading digest_size bytes of the 64-byte hash field are compared;
- * the trailing padding this pass does not interpret must not fail a good entry. */
+ * the trailing padding the library does not interpret must not fail a good entry. */
 TEST(test_payload_toc_entry_hash_padding_ignored)
 {
     uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];

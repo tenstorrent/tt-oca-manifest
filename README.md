@@ -356,8 +356,8 @@ Supply one secret per provisioned slot with `--payload-secret <slot>:<hex>`
 `encryption_shared_secret_select`.
 
 Where the key material comes from is an *encryption authority* abstraction
-(`encryption_authority`, default `local`); `aws` and `hsm` are reserved for a
-future pass and rejected today rather than shipping a partial implementation.
+(`encryption_authority`, default `local`); `aws` and `hsm` are reserved and
+rejected today rather than shipping a partial implementation.
 
 ### Secure-boot device state (ROOT-key revocation & anti-rollback)
 
