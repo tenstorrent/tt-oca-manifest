@@ -34,7 +34,9 @@ cryptography transition.
 
 Key features:
 - **Manifest-based packaging**: YAML config files define the bundle; `manifest_format` picks the variant
-- **Secure boot / signing**: RSA-3072 and ECDSA P-256, via local keys, AWS KMS, or HSM (future)
+- **Secure boot / signing**: RSA-3072 and ECDSA P-256 via local keys or AWS KMS, and post-quantum
+  signatures (ML-DSA-87 today) via local keys, alone or alongside a classical signature
+  (hybrid); HSM is reserved
 - **Payload encryption**: AES-256-CBC (default) or AES-128-CBC, keyed by a
   NIST SP 800-108r1 KDF over a 192-byte structured input block
 - **Usage constraints**: chiplet/package/system-ID, lifecycle, version-range, and demotion gating
@@ -218,8 +220,8 @@ signed region. `secure_boot_classic` and `secure_boot_pqc` choose which:
 | Signed with | Variant | `secure_boot_classic` | `secure_boot_pqc` | `secure_boot_control` |
 |---|---|---|---|---|
 | RSA-3072 or ECC P-256 | `oca-classic` or `oca-pqc` | 1 (the default) | 0 (the default) | `0x03` |
-| Classical **and** ML-DSA-87 (hybrid) | `oca-pqc` | 1 | 1 | `0x07` |
-| ML-DSA-87 only | `oca-pqc` | 0 | 1 | `0x05` |
+| Classical **and** PQC (hybrid) | `oca-pqc` | 1 | 1 | `0x07` |
+| PQC only | `oca-pqc` | 0 | 1 | `0x05` |
 
 A classically signed manifest needs only the classical fields, and they are the
 same on either variant:
@@ -233,9 +235,9 @@ signing_key_file: "<path to classical private key>"
 public_key_select_classic: 0x01     # authorize classical key slot 0
 ```
 
-A hybrid manifest adds the PQC class alongside them. ML-DSA-87 is pure FIPS 204
-over the signed region with the empty context, and signs through the `local`
-authority:
+A hybrid manifest adds the PQC class alongside them. The PQC class supports
+ML-DSA-87 today: pure FIPS 204 over the signed region with the empty context,
+signed through the `local` authority:
 
 ```yaml
 manifest_format: oca-pqc
@@ -257,7 +259,7 @@ public_key_select_pqc: 0x01         # authorize PQC key slot 0
 ```
 
 A consumer verifies a hybrid manifest as a logical AND: both signatures must
-verify against authorized, unrevoked keys. For an ML-DSA-87-only manifest, set
+verify against authorized, unrevoked keys. For a PQC-only manifest, set
 `secure_boot_classic: 0` and remove the classical fields; the packer rejects a
 signing field whose class is off.
 
@@ -418,7 +420,7 @@ They are validated end-to-end by [`validators/oca/`](validators/oca/). ROOT-key
 revocation is per signature class: a PQC manifest's `public_key_pqc_revoke` is
 checked and committed against the device's PQC state, separately from the
 classic state. Either bitmap is carried and committed whichever class signs the
-manifest, so an ML-DSA-87-only manifest can still revoke classical keys.
+manifest, so a PQC-only manifest can still revoke classical keys.
 
 ### Usage-constraints control plane
 
@@ -595,12 +597,16 @@ References:
 
 - [OCA Manifest Generation](#oca-manifest-generation) above, and the runnable examples
   [configs/oca_classic_example.yaml](configs/oca_classic_example.yaml),
-  [configs/oca_encrypted_example.yaml](configs/oca_encrypted_example.yaml), and
-  [configs/oca_secure_boot_device_state_example.yaml](configs/oca_secure_boot_device_state_example.yaml).
+  [configs/oca_encrypted_example.yaml](configs/oca_encrypted_example.yaml),
+  [configs/oca_secure_boot_device_state_example.yaml](configs/oca_secure_boot_device_state_example.yaml),
+  [configs/oca_pqc_signed_example.yaml](configs/oca_pqc_signed_example.yaml) and
+  [configs/oca_pqc_hybrid_example.yaml](configs/oca_pqc_hybrid_example.yaml).
   To start a real build, copy
   [configs/oca_production_template.yaml](configs/oca_production_template.yaml) instead —
   the examples above are signed with development keys and will not serve as a
-  production starting point.
+  production starting point. The template is classical: ML-DSA-87, the PQC algorithm
+  supported today, signs through the `local` authority only, so PQC signing has no
+  managed-key production path yet.
 - `allow_test_signing_key: true` declares a build deliberately signed with one of the
   development keys committed to this repository. The packer **refuses to sign** with
   those keys unless it is set, so a real build cannot pick one up by accident, and the
@@ -734,6 +740,18 @@ Secure boot ensures that only authorized firmware can execute on the device. Whe
 - SHA-256 digest
 - 64-byte signatures (32-byte r + 32-byte s Big Ints)
 - Smaller signature and key sizes, higher security
+
+**ML-DSA-87 (`signature_type_pqc: 0x33`, `oca-pqc` only)**
+- FIPS 204 ML-DSA-87, the first algorithm supported in the post-quantum signature class
+- Pure ML-DSA over the signed region itself, with the empty context: no pre-hash
+- 2592-byte public key and 4627-byte signature, both raw
+- Hedged signing: the signature value differs between builds of the same config,
+  while every other byte of the bundle is reproducible
+- Signs through the `local` authority only. There is no managed-key (AWS KMS or
+  HSM) path for ML-DSA-87 yet, and so no production template for PQC signing
+
+A PQC manifest carries the classical signature, the PQC signature, or both;
+see [OCA manifest variants](#oca-manifest-variants) for choosing between them.
 
 ## Contributing
 

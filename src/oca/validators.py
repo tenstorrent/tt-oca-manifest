@@ -556,8 +556,8 @@ def reject_deferred_features(config: Dict[str, Any]) -> None:
             field_name="manifest_format",
         )
 
-    # PQC signature algorithm and authority. ML-DSA-87 is the only PQC
-    # algorithm, and it signs through `local` only. Checked whatever secure_boot
+    # PQC signature algorithm and authority. Of the PQC algorithms the packer
+    # supports ML-DSA-87 alone, and it signs through `local` only. Checked whatever secure_boot
     # says, so an unsupported request is named before any class rule fires.
     if _truthy(config, "signature_type_pqc") and \
             int(config["signature_type_pqc"]) != oca_consts.OcaPqcSignatureType.ML_DSA_87.value:
