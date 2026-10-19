@@ -2554,3 +2554,102 @@ def test_an_openssl_below_the_minimum_is_a_reason_naming_both_versions(monkeypat
     reason = _validator_unavailable_reason()
     assert reason is not None
     assert "99.0.0" in reason and "pkg-config reports" in reason
+
+
+# ---------------------------------------------------------------------------
+# The device's signature posture
+#
+# --signature-class-revoke and --signature-cohort-enforce stand in for the
+# device-stored registers earlier manifests OR-ed into. Applied at boot: an
+# algorithm the device has disabled refuses any manifest that relies on it, and
+# a cohort the device demands of the ROOT key's signatures must be enforced.
+# ---------------------------------------------------------------------------
+
+_ML_DSA_87_DISABLED = hex(1 << 26)
+_RSA_3072_DISABLED = hex(1 << 0)
+_P256_DISABLED = hex(1 << 2)
+_PQC_GROUP_DISABLED = hex(0xAC << 32)
+_CLASSICAL_GROUP_DISABLED = hex(0xCA << 8)
+_ROOT_DEMANDS_CLASSICAL = "0x1"
+_ROOT_DEMANDS_PQC = "0x2"
+
+
+def _run_with_posture(fixture: str, *, revoke: str = "0x0", cohort: str = "0x0",
+                      extra=()) -> subprocess.CompletedProcess:
+    return _run_cli(["--manifest", _pack_fixture(fixture), *_read_flags(fixture),
+                     "--signature-class-revoke", revoke,
+                     "--signature-cohort-enforce", cohort, *extra])
+
+
+@pytest.mark.parametrize("fixture,revoke,refused", [
+    ("pqc_secure_mldsa", _ML_DSA_87_DISABLED, True),
+    ("pqc_hybrid_rsa", _ML_DSA_87_DISABLED, True),
+    ("pqc_secure_rsa", _ML_DSA_87_DISABLED, False),
+    ("secure_rsa", _RSA_3072_DISABLED, True),
+    ("secure_ecdsa", _RSA_3072_DISABLED, False),
+    ("secure_ecdsa", _P256_DISABLED, True),
+    ("pqc_hybrid_ecdsa", _P256_DISABLED, True),
+    ("pqc_secure_mldsa", _PQC_GROUP_DISABLED, True),
+    ("pqc_secure_rsa", _PQC_GROUP_DISABLED, False),
+    ("pqc_secure_rsa", _CLASSICAL_GROUP_DISABLED, True),
+    ("pqc_secure_mldsa", _CLASSICAL_GROUP_DISABLED, False),
+])
+def test_cli_a_disabled_algorithm_refuses_the_manifests_relying_on_it(fixture, revoke, refused):
+    result = _run_with_posture(fixture, revoke=revoke)
+    if refused:
+        _assert_refused(result, "SIGNATURE_ALGORITHM_REVOKED")
+    else:
+        _assert_passed(result)
+
+
+@pytest.mark.parametrize("fixture,cohort,revoke,refused", [
+    ("pqc_secure_rsa", _ROOT_DEMANDS_PQC, "0x0", True),
+    ("secure_rsa", _ROOT_DEMANDS_PQC, "0x0", True),
+    ("pqc_secure_mldsa", _ROOT_DEMANDS_PQC, "0x0", False),
+    ("pqc_hybrid_rsa", _ROOT_DEMANDS_PQC, "0x0", False),
+    ("pqc_secure_mldsa", _ROOT_DEMANDS_CLASSICAL, "0x0", True),
+    ("pqc_hybrid_rsa", "0x3", "0x0", False),
+    ("pqc_secure_rsa", _ROOT_DEMANDS_PQC, _PQC_GROUP_DISABLED, False),
+    ("pqc_secure_rsa", "0x3333333330", "0x0", False),
+], ids=["classic-only-ocap", "classic", "pqc-only", "hybrid", "pqc-only-classical-demanded",
+        "hybrid-both-demanded", "demand-withdrawn-by-group", "unengaged-entities"])
+def test_cli_a_demanded_cohort_must_be_enforced(fixture, cohort, revoke, refused):
+    """A disabled group withdraws its cohort demand, and bits for the verifier
+    key and co-signers — entities this library does not engage — demand
+    nothing."""
+    result = _run_with_posture(fixture, cohort=cohort, revoke=revoke)
+    if refused:
+        _assert_refused(result, "SIGNATURE_COHORT_REQUIRED")
+    else:
+        _assert_passed(result)
+
+
+def test_cli_the_posture_is_inert_for_a_non_secure_manifest():
+    _assert_passed(_run_with_posture("pqc_basic", revoke="0xffffffffff", cohort="0xff"))
+
+
+@pytest.mark.parametrize("fixture,revoke,refused", [
+    ("pqc_secure_mldsa", _ML_DSA_87_DISABLED, True),
+    ("pqc_secure_mldsa", _RSA_3072_DISABLED, False),
+])
+def test_cli_the_posture_applies_in_storage_mode(fixture, revoke, refused):
+    result = _run_with_posture(fixture, revoke=revoke, extra=("--manifest-addr", "0"))
+    if refused:
+        _assert_refused(result, "SIGNATURE_ALGORITHM_REVOKED")
+    else:
+        _assert_passed(result)
+
+
+@pytest.mark.parametrize("flag", ["--signature-cohort-enforce", "--signature-class-revoke"])
+@pytest.mark.parametrize("bad", ["", "0x", "0x" + "1" * 17, "zz"])
+def test_cli_rejects_a_malformed_posture_register(flag, bad):
+    result = _run_cli(["--manifest", _pack_fixture("basic"), flag, bad])
+    assert result.returncode == 2, result.stderr
+    assert flag.encode() in result.stderr
+
+
+def test_cli_help_documents_the_posture_flags():
+    result = _run_cli(["--help"])
+    assert result.returncode == 0
+    for flag in (b"--signature-cohort-enforce", b"--signature-class-revoke"):
+        assert flag in result.stdout, f"--help does not document {flag!r}"

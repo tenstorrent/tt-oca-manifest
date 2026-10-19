@@ -312,7 +312,30 @@ typedef enum oca_result {
      *  Distinct from OCA_FAIL_SECURE_BOOT_INVARIANT, which reports populated
      *  signing fields on a manifest that disclaims secure boot: that is stale
      *  data left behind, this is a live policy that cannot be satisfied. */
-    OCA_FAIL_SIGNATURE_CLASS_CONTROL    = 36
+    OCA_FAIL_SIGNATURE_CLASS_CONTROL    = 36,
+    /** The device's signature posture demands a cohort this manifest is not
+     *  verified by.
+     *
+     *  The device-stored signature_cohort_enforce state names, per signed
+     *  entity, which cohorts — classical, PQC, or both — must be present. This
+     *  reports a manifest whose secure_boot_control enforces fewer: a
+     *  classical-only manifest on a device that now demands a PQC signature,
+     *  say. A cohort whose whole group the device has disabled is not demanded.
+     *
+     *  Also returned by oca_check_signature() for a context no posture check
+     *  vouched for, so a hand-composed sequence that skipped the check cannot
+     *  verify. Distinct from OCA_FAIL_SIGNATURE_CLASS_CONTROL, which reports a
+     *  class selection that cannot be honoured at all. */
+    OCA_FAIL_SIGNATURE_COHORT_REQUIRED  = 37,
+    /** A signature this manifest relies on uses an algorithm the device has
+     *  disabled.
+     *
+     *  The device-stored signature_class_revoke state disables algorithm
+     *  classes — each by its own bit, or a whole group by its intact group
+     *  code. This reports an enforced class whose signature_type falls in a
+     *  disabled class: the algorithm is no longer trusted at all, whatever key
+     *  signed with it. */
+    OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED = 38
 } oca_result_t;
 
 /**
@@ -445,6 +468,16 @@ typedef struct oca_validation_context {
      *  and the signature check must refuse a PQC verify the PQC anchor never
      *  approved even while the classical anchor has. */
     oca_secure_bool_t secure_boot_key_authorized_pqc;
+    /** The manifest's signatures were checked against the device's signature
+     *  posture and meet it.
+     *
+     *  Set by oca_check_signature_posture(), and only after both the device's
+     *  signature class revocation and cohort enforcement state were read and
+     *  satisfied. Read by oca_check_signature(), which refuses to verify a
+     *  manifest this does not vouch for — so a hand-composed sequence that
+     *  skipped the posture check cannot verify one that relies on a disabled
+     *  algorithm, or lacks a demanded cohort. */
+    oca_secure_bool_t secure_boot_posture_checked;
     /** A signature check actually ran and passed. Set only after the verify
      *  callback returned OCA_OK, never optimistically ahead of the call. */
     oca_secure_bool_t secure_boot_authenticated;
@@ -1189,11 +1222,12 @@ struct oca_callbacks {
         const uint8_t            select[16]);
 
     /* Device-stored secure-boot state (consumed only when secure boot is
-     * enabled). The get_* callbacks are read by the read-only revocation and
-     * anti-rollback checks; the set_* callbacks are used ONLY by
-     * oca_commit_security_state() after a successful validation. All are
-     * OPTIONAL (NULL when unused); a check whose required get_* callback is
-     * NULL under secure boot fails with OCA_FAIL_CALLBACK_UNAVAILABLE. Each
+     * enabled). The get_* callbacks are read by the read-only revocation,
+     * anti-rollback and signature posture checks, and by the commit; the
+     * set_* callbacks are used ONLY by oca_commit_security_state() after a
+     * successful validation. All are OPTIONAL (NULL when unused); a check whose
+     * required get_* callback is NULL under secure boot fails with
+     * OCA_FAIL_CALLBACK_UNAVAILABLE. Each
      * value is the little-endian field mirroring the manifest layout, so the
      * widths differ: 16 bytes for the ROOT-key revocation bitmap and the
      * 128-bit security-version flags, 8 for the two signature posture
@@ -1273,15 +1307,24 @@ struct oca_callbacks {
      * them across two calls would let a group code be written in fragments. */
 
     /**
-     * @brief Read the device-stored signature cohort enforcement register.
+     * @brief Read the device's signature cohort enforcement register.
      *
-     * Read only at commit time, to be OR-ed with the manifest's value. Nothing
-     * in the current boot's verification consults it: the accumulated posture
-     * governs subsequent boots.
+     * Which signature cohorts — classical, PQC, or both — the device demands of
+     * each signed entity, as a 4-bit nibble per entity in the manifest field's
+     * layout. oca_check_signature_posture() reads it on every secure boot and
+     * refuses a manifest that does not enforce a cohort the ROOT key's nibble
+     * demands; the commit ORs a verified manifest's value into it. Report the
+     * device's whole posture here: the accumulated register, and anything the
+     * device's own trust anchors (a lifecycle state, say) add to it. A part
+     * with no posture state reports zeros.
+     *
+     * Required under secure boot. Write all of @p out before returning OCA_OK;
+     * the posture check pre-fills it with every cohort demanded, so a reader
+     * that does not write fails closed.
      *
      * @param[out] out       Receives the 8-byte little-endian register.
      * @retval OCA_OK  Register written to @p out.
-     * @return Any non-OK result fails the commit.
+     * @return Any non-OK result fails the posture check or the commit.
      */
     oca_result_t (*get_signature_cohort_enforce)(
         uint8_t out[8]);
@@ -1300,15 +1343,23 @@ struct oca_callbacks {
         const uint8_t in[8]);
 
     /**
-     * @brief Read the device-stored signature class revocation register.
+     * @brief Read the device's signature class revocation register.
      *
-     * Read only at commit time, to be OR-ed with the manifest's value. Like the
-     * cohort register above it does not gate the current boot; a Consumer that
-     * enforces the accumulated revocations does so on subsequent boots.
+     * Which signature algorithm classes the device has disabled — a bit per
+     * class, and a group code byte per group (0xCA classical, 0xAC PQC) that
+     * disables the whole group — in the manifest field's layout.
+     * oca_check_signature_posture() reads it on every secure boot and refuses
+     * a manifest that relies on a disabled algorithm; the commit ORs a verified
+     * manifest's value into it. As with the cohort register, report the
+     * device's whole posture, and zeros on a part with none.
+     *
+     * Required under secure boot. Write all of @p out before returning OCA_OK;
+     * the posture check pre-fills it with every algorithm disabled, so a reader
+     * that does not write fails closed.
      *
      * @param[out] out       Receives the 8-byte little-endian register.
      * @retval OCA_OK  Register written to @p out.
-     * @return Any non-OK result fails the commit.
+     * @return Any non-OK result fails the posture check or the commit.
      */
     oca_result_t (*get_signature_class_revoke)(
         uint8_t out[8]);
@@ -1835,9 +1886,11 @@ oca_result_t oca_check_manifest_hash(
  * Runs one verification per enforced signature class: the classical signature
  * when secure_boot_classic is set, the PQC signature when secure_boot_pqc is,
  * BOTH when both are — a hybrid manifest is a logical AND, never or-else.
- * Each class is verified only if oca_check_root_key_authorized() recorded that
- * class's OWN anchor vouching for its key; a classical vouching never unlocks
- * a PQC verify. The recorded enforcement is confirmed against the manifest's
+ * Nothing is verified unless oca_check_signature_posture() recorded that the
+ * manifest meets the device's signature posture, and each class only if
+ * oca_check_root_key_authorized() recorded that class's OWN anchor vouching for
+ * its key; a classical vouching never unlocks a PQC verify. The recorded
+ * enforcement is confirmed against the manifest's
  * class bits before it is acted on, the same time-of-use rule the secure-boot
  * determination gets.
  *
@@ -1847,8 +1900,9 @@ oca_result_t oca_check_manifest_hash(
  *                      blob's key_algorithm naming the family — and the
  *                      secure-boot reporters are consulted again here to
  *                      confirm the recorded determination.
- * @param[in,out] ctx   Read for the determination, the enforcement, and the
- *                      per-class authorizations; written for the outcome.
+ * @param[in,out] ctx   Read for the determination, the enforcement, the
+ *                      posture vouching and the per-class authorizations;
+ *                      written for the outcome.
  *                      secure_boot_authenticated is set to OCA_SECURE_TRUE only
  *                      AFTER every enforced class's verifier has returned
  *                      OCA_OK, never on the strength of one signature of a
@@ -1862,6 +1916,9 @@ oca_result_t oca_check_manifest_hash(
  * @retval OCA_FAIL_SIGNATURE              A verification failed.
  * @retval OCA_FAIL_ROOT_KEY_UNAUTHORIZED  An enforced class's key was never
  *                                         vouched for by its anchor.
+ * @retval OCA_FAIL_SIGNATURE_COHORT_REQUIRED  No posture check vouched for
+ *                                         @p ctx — only reachable around
+ *                                         oca_check_signature_posture().
  * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL  No class is enforced in an engaged
  *                                         context, or PQC is enforced on a
  *                                         variant with no PQC fields — both
@@ -1875,6 +1932,73 @@ oca_result_t oca_check_manifest_hash(
  * @return Otherwise the magic or variant failure from resolving @p body.
  */
 oca_result_t oca_check_signature(
+    const uint8_t *body,
+    const oca_callbacks_t *cb,
+    oca_validation_context_t *ctx);
+
+/**
+ * @brief Reject a manifest whose signatures do not meet the device's signature
+ *        posture.
+ *
+ * A no-op returning OCA_OK when @p ctx records that secure boot is not in force.
+ * Otherwise reads the device-stored signature class revocation and cohort
+ * enforcement state — the registers earlier verified manifests OR-ed their
+ * signature_class_revoke and signature_cohort_enforce into — and applies them to
+ * this boot:
+ *
+ *   - **Algorithm revocation.** Each enforced class's signature_type must not
+ *     fall in an algorithm class the device has disabled, whether by that
+ *     class's own bit or by its group's intact group code (0xCA classical,
+ *     0xAC PQC). A partially set group-code byte disables nothing.
+ *   - **Cohort enforcement.** Each cohort the device demands of the ROOT key's
+ *     signatures (the b[3:0] nibble) must be enforced by the manifest's
+ *     secure_boot_control. A demand for a cohort whose whole group is disabled
+ *     is withdrawn: no algorithm remains that could meet it. The verifier key
+ *     and co-signer nibbles are not consulted, because this library verifies
+ *     neither entry.
+ *
+ * The manifest's own posture fields play no part: they govern later boots,
+ * once oca_commit_security_state() has folded them in.
+ *
+ * Compose this after oca_check_crypto_field_sizes(), whose checks make the
+ * signature_type bytes meaningful, and before any key is authorized or used.
+ * oca_check_signature() refuses a context this check did not vouch for.
+ *
+ * @param[in]     body  Whole variant body. See the length contract above.
+ * @param[in]     cb    Callback table; cb->get_signature_class_revoke and
+ *                      cb->get_signature_cohort_enforce are required under
+ *                      secure boot, and the secure-boot reporters are consulted
+ *                      again here to confirm the recorded determination.
+ * @param[in,out] ctx   Read for the determination and the recorded class
+ *                      enforcement, which is confirmed against the manifest's
+ *                      class bits before it is acted on, and written for the
+ *                      outcome: secure_boot_posture_checked is cleared on entry
+ *                      and set to OCA_SECURE_TRUE only once the posture is met.
+ *                      Must be a context oca_determine_secure_boot() has
+ *                      settled; NULL, or one it has not, is refused.
+ * @retval OCA_OK                              The manifest meets the device's
+ *                                             posture, or secure boot is not in
+ *                                             force.
+ * @retval OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED An enforced class's algorithm is
+ *                                             disabled on this device.
+ * @retval OCA_FAIL_SIGNATURE_COHORT_REQUIRED  The device demands a cohort the
+ *                                             manifest does not enforce.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE          An enforced class names a
+ *                                             signature_type the format does
+ *                                             not define — only reachable around
+ *                                             oca_check_crypto_field_sizes().
+ * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL    No class is enforced in an engaged
+ *                                             context, or PQC is enforced on a
+ *                                             variant with no PQC fields.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE       A posture reader is missing under
+ *                                             secure boot, or failed.
+ * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED   @p ctx holds no determination.
+ * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED  The live determination, or the
+ *                                             recorded class enforcement, no
+ *                                             longer matches the manifest.
+ * @return Otherwise the magic or variant failure from resolving @p body.
+ */
+oca_result_t oca_check_signature_posture(
     const uint8_t *body,
     const oca_callbacks_t *cb,
     oca_validation_context_t *ctx);
@@ -2665,6 +2789,10 @@ oca_result_t oca_commit_security_state(
  *     determination: it is the only gated check that spends no hardware read at
  *     all, so an encrypted payload on a non-secure part is rejected before any
  *     identity callback and long before a public-key operation;
+ *   - oca_check_signature_posture() runs after oca_check_crypto_field_sizes(),
+ *     whose checks make the signature_type bytes meaningful, and before any key
+ *     is authorized or used: a manifest relying on an algorithm the device has
+ *     disabled, or lacking a cohort it demands, costs two device-state reads;
  *   - the identity, lifecycle, and version-range checks run BEFORE the crypto
  *     block. They are cheap device reads against manifest constraints, and a
  *     manifest aimed at the wrong part is not worth a signature verification;

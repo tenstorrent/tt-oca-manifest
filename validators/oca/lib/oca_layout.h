@@ -167,6 +167,13 @@
 #define OCA_CLASS_REVOKE_CLASSIC_GROUP_CODE   0xCAu
 #define OCA_CLASS_REVOKE_PQC_GROUP_CODE       0xACu
 
+/* signature_cohort_enforce carries a 4-bit nibble per signed entity; the ROOT
+ * key's signatures are b[3:0]. Within a nibble, bit 0 demands a classical
+ * signature and bit 1 a PQC one; bits 3:2 are reserved. */
+#define OCA_COHORT_ROOT_NIBBLE_MASK          0x0Fu  /* byte 0, b[3:0] */
+#define OCA_COHORT_CLASSICAL_BIT             0x01u
+#define OCA_COHORT_PQC_BIT                   0x02u
+
 /* ------------------------------------------------------------------ */
 /* Appended-entry controls (shared offsets)                           */
 /*                                                                    */

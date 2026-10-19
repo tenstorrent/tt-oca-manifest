@@ -104,6 +104,13 @@ static const char *reason_for(oca_result_t r)
             return "ROOT key is not authorized by this device (pass "
                    "--root-key-digest / --root-key-digest-pqc for each signature "
                    "class, or --trust-any-root-key)";
+        case OCA_FAIL_SIGNATURE_COHORT_REQUIRED:
+            return "the device's signature posture demands a cohort (classical or "
+                   "PQC) this manifest is not verified by "
+                   "(see --signature-cohort-enforce)";
+        case OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED:
+            return "a signature this manifest relies on uses an algorithm the "
+                   "device has disabled (see --signature-class-revoke)";
         case OCA_FAIL_SIGNATURE_CLASS_CONTROL:
             return "secure_boot_control class bits name a signature policy this "
                    "manifest cannot satisfy (neither class selected under secure "
@@ -232,6 +239,29 @@ static oca_result_t cli_get_root_key_revocation(oca_key_algorithm_t algo,
     }
     memcpy(out, (algo == OCA_KEY_ALGO_PQC) ? g_cli_opt->revoked_root_keys_pqc
                                            : g_cli_opt->revoked_root_keys, 16);
+    return OCA_OK;
+}
+
+/* --signature-cohort-enforce / --signature-class-revoke: the device's signature
+ * posture, in the registers' own layout. Nothing demanded or disabled by
+ * default, as on a part that has never committed a posture. */
+static oca_result_t cli_get_signature_cohort_enforce(uint8_t out[8])
+{
+    if (g_cli_opt == NULL) {
+        memset(out, 0, 8);
+        return OCA_OK;
+    }
+    memcpy(out, g_cli_opt->signature_cohort_enforce, 8);
+    return OCA_OK;
+}
+
+static oca_result_t cli_get_signature_class_revoke(uint8_t out[8])
+{
+    if (g_cli_opt == NULL) {
+        memset(out, 0, 8);
+        return OCA_OK;
+    }
+    memcpy(out, g_cli_opt->signature_class_revoke, 8);
     return OCA_OK;
 }
 
@@ -484,6 +514,8 @@ int main(int argc, char **argv)
     cb.is_secure_boot_disabled = cli_is_secure_boot_disabled;
     cb.get_root_key_revocation = cli_get_root_key_revocation;
     cb.get_security_version    = cli_get_security_version;
+    cb.get_signature_cohort_enforce = cli_get_signature_cohort_enforce;
+    cb.get_signature_class_revoke   = cli_get_signature_class_revoke;
 
     /* Storage-image mode runs the staged flow (manifest, locate, copy, verify);
      * the default treats the file as a contiguous bundle. */

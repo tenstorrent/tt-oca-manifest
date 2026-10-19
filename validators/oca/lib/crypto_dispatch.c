@@ -165,6 +165,14 @@ oca_result_t oca_signature_check(const uint8_t *body,
         return classes;
     }
 
+    /* The device's posture comes before any signature: a context the posture
+     * check did not vouch for is refused, so a hand-composed sequence cannot
+     * verify a manifest that relies on a disabled algorithm or lacks a cohort
+     * the device demands. */
+    if (ctx->secure_boot_posture_checked != OCA_SECURE_TRUE) {
+        return OCA_FAIL_SIGNATURE_COHORT_REQUIRED;
+    }
+
     /* Derived again here, independently of the confirm, for the final verdict
      * fold below. */
     uint8_t control = body[OCA_OFF_SECURE_BOOT_CONTROL];

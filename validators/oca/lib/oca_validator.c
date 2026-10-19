@@ -64,6 +64,9 @@ const char *oca_result_str(oca_result_t r)
         case OCA_FAIL_CRYPTO_FIELD_SIZE:        return "CRYPTO_FIELD_SIZE";
         case OCA_FAIL_ROOT_KEY_UNAUTHORIZED:    return "ROOT_KEY_UNAUTHORIZED";
         case OCA_FAIL_SIGNATURE_CLASS_CONTROL:  return "SIGNATURE_CLASS_CONTROL";
+        case OCA_FAIL_SIGNATURE_COHORT_REQUIRED: return "SIGNATURE_COHORT_REQUIRED";
+        case OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED:
+                                                return "SIGNATURE_ALGORITHM_REVOKED";
     }
     return "UNKNOWN";
 }
@@ -179,6 +182,7 @@ void oca_validation_context_init(oca_validation_context_t *ctx)
     ctx->secure_boot_enforce_pqc             = OCA_SECURE_FALSE;
     ctx->secure_boot_key_authorized_classic  = OCA_SECURE_FALSE;
     ctx->secure_boot_key_authorized_pqc      = OCA_SECURE_FALSE;
+    ctx->secure_boot_posture_checked         = OCA_SECURE_FALSE;
     ctx->secure_boot_authenticated           = OCA_SECURE_FALSE;
     ctx->secure_boot_device_disabled         = OCA_SECURE_FALSE;
 }
@@ -319,6 +323,14 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
      * manifest read, no device or key operation, and it must precede ROOT-key
      * authorization, which presents these fields to the trust anchor. */
     r = oca_check_crypto_field_sizes(body, cb, vctx);
+    if (r != OCA_OK) return r;
+
+    /* The device's signature posture: an algorithm it has disabled, or a
+     * cohort it demands that this manifest does not enforce, is refused here —
+     * a manifest read and two device-state reads, before any identity, key or
+     * public-key work. Follows the signing-description check, which makes the
+     * signature_type bytes meaningful. */
+    r = oca_check_signature_posture(body, cb, vctx);
     if (r != OCA_OK) return r;
 
     /* Identity-byte checks per family. The check functions short-circuit

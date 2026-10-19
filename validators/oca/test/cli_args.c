@@ -254,6 +254,14 @@ void cli_print_help(void)
         "                              classical ROOT-key revocation state\n"
         "  --revoked-root-keys-pqc HEX report this 128-bit bitmap as the device's\n"
         "                              PQC ROOT-key revocation state\n"
+        "  --signature-cohort-enforce HEX\n"
+        "                              report this as the device's signature\n"
+        "                              cohort enforcement register (b[3:0] for\n"
+        "                              ROOT: bit0 classical, bit1 PQC required)\n"
+        "  --signature-class-revoke HEX\n"
+        "                              report this as the device's signature\n"
+        "                              class revocation register (per-algorithm\n"
+        "                              bits; 0xCA / 0xAC group codes)\n"
         "  --secure-boot-active        report the part as ENFORCING secure\n"
         "                              boot (device fuse/life-cycle state).\n"
         "  --secure-boot-disabled      report the part as definitively NOT a\n"
@@ -301,6 +309,7 @@ enum {
     LO_TRUST_ANY_ROOT_KEY,
     LO_ROOT_KEY_DIGEST, LO_ROOT_KEY_DIGEST_PQC,
     LO_REVOKED_ROOT_KEYS, LO_REVOKED_ROOT_KEYS_PQC,
+    LO_SIGNATURE_COHORT_ENFORCE, LO_SIGNATURE_CLASS_REVOKE,
     LO_MANIFEST_ADDR, LO_REGION_BASE, LO_REGION_LIMIT,
     LO_QUIET, LO_HELP,
 };
@@ -326,6 +335,8 @@ static struct option long_opts[] = {
     {"root-key-digest-pqc",  required_argument, NULL, LO_ROOT_KEY_DIGEST_PQC},
     {"revoked-root-keys",    required_argument, NULL, LO_REVOKED_ROOT_KEYS},
     {"revoked-root-keys-pqc", required_argument, NULL, LO_REVOKED_ROOT_KEYS_PQC},
+    {"signature-cohort-enforce", required_argument, NULL, LO_SIGNATURE_COHORT_ENFORCE},
+    {"signature-class-revoke",   required_argument, NULL, LO_SIGNATURE_CLASS_REVOKE},
     {"manifest-addr",    required_argument, NULL, LO_MANIFEST_ADDR},
     {"region-base",      required_argument, NULL, LO_REGION_BASE},
     {"region-limit",     required_argument, NULL, LO_REGION_LIMIT},
@@ -480,6 +491,18 @@ int cli_parse_args(int argc, char **argv, cli_options_t *opt)
             case LO_REVOKED_ROOT_KEYS_PQC:
                 if (parse_bitmap(optarg, opt->revoked_root_keys_pqc, 16u) != 0) {
                     fprintf(stderr, "usage: --revoked-root-keys-pqc wants 1 to 32 hex digits\n");
+                    return 2;
+                }
+                break;
+            case LO_SIGNATURE_COHORT_ENFORCE:
+                if (parse_bitmap(optarg, opt->signature_cohort_enforce, 8u) != 0) {
+                    fprintf(stderr, "usage: --signature-cohort-enforce wants 1 to 16 hex digits\n");
+                    return 2;
+                }
+                break;
+            case LO_SIGNATURE_CLASS_REVOKE:
+                if (parse_bitmap(optarg, opt->signature_class_revoke, 8u) != 0) {
+                    fprintf(stderr, "usage: --signature-class-revoke wants 1 to 16 hex digits\n");
                     return 2;
                 }
                 break;

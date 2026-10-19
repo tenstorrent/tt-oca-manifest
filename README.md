@@ -286,7 +286,7 @@ PQC-only and hybrid signing.
 | Payload encryption | AES-256-CBC (`0x02`, the default) and AES-128-CBC (`0x01`), key derived from a pre-shared secret via SP 800-108r1 CTR-HMAC-SHA-256 over the 192-byte input block (`local` authority) | KEM-wrapped keys, any other cipher or KDF identifier, `aws` / `hsm` encryption authority |
 | Multi-image payload | Yes (`PTOC` TOC of 280-byte entries; images 8-byte aligned) | — |
 | ROOT-key revocation & anti-rollback | Classic `public_key_classic_revoke`, `manifest_security_version` (128 posture flags), and `manifest_security_control` update controls — the validator enforces revoke-before-key-use, bit-superset anti-rollback, and a post-verify device-state commit, per signature class, and `public_key_pqc_revoke` on a PQC manifest | — |
-| Signature posture registers | `signature_cohort_enforce` and `signature_class_revoke` — validated (including the `0xCA` / `0xAC` group-code interlock) and folded into device state by the post-verify commit | Consulting the accumulated state at boot to reject a revoked algorithm class or an unmet cohort — needs multi-cohort signature support |
+| Signature posture registers | `signature_cohort_enforce` and `signature_class_revoke` — validated (including the `0xCA` / `0xAC` group-code interlock), folded into device state by the post-verify commit, and the accumulated device state applied at every secure boot: a disabled algorithm class or an unmet ROOT-key cohort is refused | Cohort enforcement for the verifier-key and co-signer entities, which are not verified |
 | Public key / signature encodings | Raw bytes (`0x02`, the default) for every algorithm, and the only PQC encoding; ASN.1 DER (`0x01`) for RSA public keys (PKCS#1 `RSAPublicKey`) and ECDSA signatures. Each value is bounded by its size field | Integrator-defined encodings (`0xF0`–`0xFF`) |
 | Verifier-key entry | — | `use_verifier_key` and every `verifier_*` field |
 | Co-signer entries | — | `co_signers: [...]` and every `co_signer_*` field |
@@ -403,8 +403,11 @@ signature_class_revoke: 0x00        # no algorithm class revoked
   written **exactly** or left `0x00`; a fragment is rejected, because these updates
   accumulate by OR and fragments from separate manifests would otherwise add up to
   a group-wide revocation no single manifest declared. Neither register affects the
-  boot that carries it: both take effect from the next boot onward. Setting both
-  group codes under enforced secure boot bricks the device.
+  boot that carries it: both take effect from the next boot onward, when the
+  validator refuses a manifest verified by a disabled algorithm class, or one whose
+  `secure_boot_control` does not enforce a cohort the device demands of the ROOT
+  key. Setting
+  both group codes under enforced secure boot bricks the device.
 - **Device-state updates** — after a successful verification the consumer OR-s the
   manifest's revocations, security-version flags, and signature posture into its
   stored state (bits only ever turn on). The six disable bits in

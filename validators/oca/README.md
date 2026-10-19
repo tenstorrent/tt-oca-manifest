@@ -120,21 +120,25 @@ Expected `make check` output (tail) — every unit test + every fixture
 round-trip passes:
 
 ```
-245/245 passed
+307/307 passed
 PASS: all_constraints
 PASS: basic
 PASS: control_plane
 PASS: encrypted_aes
 PASS: encrypted_aes_pqc
+PASS: encrypted_aes_pqc_mldsa
 PASS: multi_image
 PASS: pqc_basic
+PASS: pqc_hybrid_ecdsa
+PASS: pqc_hybrid_rsa
+PASS: pqc_secure_mldsa
 PASS: pqc_secure_rsa
 PASS: secure_ecdsa
 PASS: secure_rsa
 PASS: secure_rsa_der
 PASS: secure_rsa_e3
 PASS: secure_rsa_e3_der
-13/13 passed
+17/17 passed
 check: complete
 ```
 
@@ -205,6 +209,7 @@ boot path.
 | `secure_boot_control` signature classes | classical, PQC, or both (hybrid) | under secure boot at least one class must be set, and the PQC class only on an `OCAP` manifest (else `OCA_FAIL_SIGNATURE_CLASS_CONTROL`); each enforced class's key is authorized against its own anchor family, and a hybrid manifest needs both signatures to verify |
 | `signature_type_pqc` | ML-DSA-87 (`0x33`) | pure FIPS 204 over the signed region, empty context; the host `verify_signature` callback owns the math |
 | `signature_encoding_pqc` / `public_key_encoding_pqc` | raw (`0x02`) only, with exact sizes: 4627-byte signature, 2592-byte key | any other PQC primitive, encoding or size is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
+| device signature posture (`signature_class_revoke`, `signature_cohort_enforce` as committed) | per-algorithm class bits and the `0xCA` / `0xAC` group codes; the ROOT key's cohort nibble | applied at every secure boot by `oca_check_signature_posture()`: an enforced class whose algorithm the device has disabled is refused with `OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED`, and a manifest that does not enforce a cohort the device demands of the ROOT key with `OCA_FAIL_SIGNATURE_COHORT_REQUIRED` |
 | `encryption_type` | AES-128-CBC (`0x01`) or AES-256-CBC (`0x02`) + PKCS#7 | payload decryption is delegated to the host `decrypt_payload` callback; the key length follows the type |
 | `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below) |
 | `input_key_source` | pre-shared secret (b001) | |
@@ -264,14 +269,11 @@ integrator knows the current boundary:
   AES-256-CBC with a pre-shared secret are handled.
 - **Verifier key entry and co-signer entry verification** — the appended-entry
   trust chain is not walked.
-- **Boot-time enforcement of the signature posture registers** — the
-  `signature_cohort_enforce` and `signature_class_revoke` fields are validated
-  (including the group-code interlock) and OR-ed into device state by the
-  post-verify commit, but the *accumulated* state is not yet consulted at boot.
-  This build will not reject a signature whose algorithm class the device has
-  revoked, nor require a cohort the device demands beyond what the manifest's
-  own class bits already name — the per-class dispatch those registers need
-  exists now, but the accumulated device state is not yet read back into it.
+- **Cohort enforcement for the verifier key and co-signers** — the device's
+  signature posture is applied at boot to the ROOT key's signatures only. The
+  verifier-key and co-signer nibbles of `signature_cohort_enforce` are
+  committed to device state but not consulted, because those entries are not
+  verified.
 
 ## Integrating into a target firmware project
 

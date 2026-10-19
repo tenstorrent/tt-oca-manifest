@@ -283,8 +283,8 @@ static const oca_validation_context_t g_determined_secure = {
     .secure_boot_device_disabled         = OCA_SECURE_FALSE
 };
 
-/* A determination in force with the ROOT key already authorized, and nothing yet
- * authenticated. This is what oca_check_signature() is handed in the composed
+/* A determination in force with the device posture met and the ROOT key already
+ * authorized, and nothing yet authenticated. This is what oca_check_signature() is handed in the composed
  * pipeline, and the minimum it will act on: authorization is recorded precisely
  * so a context lacking it cannot reach the verifier. Distinct from
  * g_determined_secure, which stops one check earlier. */
@@ -297,6 +297,7 @@ static const oca_validation_context_t g_authorized_secure = {
     .secure_boot_enforce_pqc             = OCA_SECURE_FALSE,
     .secure_boot_key_authorized_classic  = OCA_SECURE_TRUE,
     .secure_boot_key_authorized_pqc      = OCA_SECURE_FALSE,
+    .secure_boot_posture_checked         = OCA_SECURE_TRUE,
     .secure_boot_authenticated           = OCA_SECURE_FALSE,
     .secure_boot_device_disabled         = OCA_SECURE_FALSE
 };
@@ -339,12 +340,13 @@ static oca_validation_context_t determined_for(const uint8_t *body,
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
     (void)oca_determine_secure_boot(body, cb, &ctx);
-    /* Authorization too, because it is the first of the gated key checks and
-     * oca_check_signature() refuses a context that does not record it. A test
-     * handed this context is testing something DOWNSTREAM of authorization, so
-     * reaching it having skipped authorization would not be a state the composed
-     * pipeline can produce. Tests that are about authorization itself build their
-     * own context, the same convention the encryption-gate tests follow. */
+    /* The posture check and authorization too, because oca_check_signature()
+     * refuses a context that does not record both. A test handed this context
+     * is testing something DOWNSTREAM of them, so reaching it having skipped
+     * either would not be a state the composed pipeline can produce. Tests that
+     * are about either check itself build their own context, the same
+     * convention the encryption-gate tests follow. */
+    (void)oca_check_signature_posture(body, cb, &ctx);
     (void)oca_check_root_key_authorized(body, cb, &ctx);
     return ctx;
 }
@@ -3841,6 +3843,15 @@ static void build_secure_pqc_manifest(uint8_t buf[OCA_PQC_BODY_SIZE],
 
 /* Full callback table for device-state pipeline tests: passing sha + counting
  * signature + the device-state stub get/set callbacks. */
+/* Wire the fixture's signature posture readers into a hand-built table, which
+ * every secure-boot signature check now needs: the posture check runs first and
+ * fails closed without them. */
+static void wire_posture(oca_callbacks_t *cb)
+{
+    cb->get_signature_cohort_enforce = dev_get_cohort;
+    cb->get_signature_class_revoke   = dev_get_class_revoke;
+}
+
 static void build_devstate_cb(oca_callbacks_t *cb,
                               const uint8_t *body)
 {
@@ -4403,6 +4414,7 @@ TEST(test_signature_refuses_a_context_without_authorization)
     /* g_determined_secure is exactly this state: determination in force, no
      * authorization recorded. Copied because oca_check_signature writes. */
     oca_validation_context_t ctx = g_determined_secure;
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
     ASSERT_TRUE(ctx.secure_boot_key_authorized_classic != OCA_SECURE_TRUE);
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
                   OCA_FAIL_ROOT_KEY_UNAUTHORIZED);
@@ -4662,14 +4674,14 @@ TEST(test_commit_ors_in_the_signature_posture_registers)
     buf[OCA_OFF_SIGNATURE_CLASS_REVOKE]   = 0x02u;   /* revoke RSA-4096 class */
     test_fixture_reset();
     g_fx.cohort[1] = 0x02u;                          /* prior verifier-key posture */
-    g_fx.class_revoke[0] = 0x01u;                    /* device already revoked RSA-3072 */
+    g_fx.class_revoke[0] = 0x04u;                    /* device already revoked P-256 */
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
     oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_fx.cohort[0], 0x01u);            /* manifest value OR-ed in */
     ASSERT_EQ_INT(g_fx.cohort[1], 0x02u);            /* prior posture retained */
-    ASSERT_EQ_INT(g_fx.class_revoke[0], 0x03u);      /* both classes now revoked */
+    ASSERT_EQ_INT(g_fx.class_revoke[0], 0x06u);      /* both classes now revoked */
 }
 
 TEST(test_commit_disable_cohort_enforce_only)
@@ -5495,9 +5507,11 @@ TEST(test_authorization_presents_the_key_the_verifier_receives)
     memset(&cb, 0, sizeof cb);
     cb.is_key_authorized = authorize_capture_cb;
     cb.verify_signature  = verify_capture_cb;
+    wire_posture(&cb);
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
     ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_authorize_calls, 2);
@@ -5532,6 +5546,7 @@ TEST(test_hybrid_signature_verifies_both_classes)
     memset(&cb, 0, sizeof cb);
     cb.is_key_authorized = authorize_any_cb;
     cb.verify_signature  = verify_capture_cb;
+    wire_posture(&cb);
     oca_validation_context_t ctx = determined_for(buf, &cb);
 
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx), OCA_OK);
@@ -5566,6 +5581,7 @@ TEST(test_hybrid_signature_fails_when_either_class_fails)
         memset(&cb, 0, sizeof cb);
         cb.is_key_authorized = authorize_any_cb;
         cb.verify_signature  = verify_capture_cb;
+        wire_posture(&cb);
         oca_validation_context_t ctx = determined_for(buf, &cb);
 
         ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx), OCA_FAIL_SIGNATURE);
@@ -5590,10 +5606,12 @@ TEST(test_pqc_signature_requires_the_pqc_authorization)
     memset(&cb, 0, sizeof cb);
     cb.is_key_authorized = authorize_any_cb;
     cb.verify_signature  = verify_capture_cb;
+    wire_posture(&cb);
     g_verify_fail_enabled = false;
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
     ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
     /* No authorization ran; vouch for the OTHER class by hand to prove the
      * check reads the flag for the class it is about to verify. */
     ctx.secure_boot_key_authorized_classic = OCA_SECURE_TRUE;
@@ -6100,6 +6118,7 @@ TEST(test_a_manifest_that_outranks_the_device_records_no_disable)
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
     ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
 
     ASSERT_TRUE(ctx.secure_boot_enabled == OCA_SECURE_TRUE);          /* manifest won */
     ASSERT_TRUE(ctx.secure_boot_device_disabled != OCA_SECURE_TRUE);  /* never asked */
@@ -6215,14 +6234,14 @@ static void arm_flip(int after, bool initial)
 }
 
 /* Every consumer that confirms the determination inside
- * oca_validate_manifest(), in order: the crypto-field-size check, ROOT-key
- * authorization, revocation, security_version, signature, and — when built in —
- * the security_version recheck. The encryption precondition confirms too, but
- * only for a manifest that declares encryption. */
+ * oca_validate_manifest(), in order: the crypto-field-size check, the signature
+ * posture, ROOT-key authorization, revocation, security_version, signature, and
+ * — when built in — the security_version recheck. The encryption precondition
+ * confirms too, but only for a manifest that declares encryption. */
 #if OCA_RECHECK_SECURITY_VERSION
-#define GATED_CONSUMERS 6
+#define GATED_CONSUMERS 7
 #else
-#define GATED_CONSUMERS 5
+#define GATED_CONSUMERS 6
 #endif
 
 /* A manifest that names the classical class but leaves secure_boot_enforced
@@ -6914,9 +6933,11 @@ TEST(test_every_blob_carries_its_declared_size)
     memset(&cb, 0, sizeof cb);
     cb.is_key_authorized = authorize_capture_cb;
     cb.verify_signature  = verify_capture_cb;
+    wire_posture(&cb);
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
     ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_auth_pk_blob[0].length, 388);
@@ -6925,6 +6946,342 @@ TEST(test_every_blob_carries_its_declared_size)
     ASSERT_EQ_INT(g_verify_pk_blob[1].length, OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES);
     ASSERT_EQ_INT(g_verify_sig_blob[0].length, 384);
     ASSERT_EQ_INT(g_verify_sig_blob[1].length, OCA_PQC_ML_DSA_87_SIGNATURE_BYTES);
+}
+
+/* ------------------------------------------------------------------ */
+/* The device's signature posture                                     */
+/* ------------------------------------------------------------------ */
+
+/* Device posture values, in the manifest registers' own bit layout. */
+static const uint64_t REVOKE_RSA_3072        = 1ull << 0;
+static const uint64_t REVOKE_P256            = 1ull << 2;
+static const uint64_t REVOKE_ML_DSA_44       = 1ull << 24;
+static const uint64_t REVOKE_ML_DSA_65       = 1ull << 25;
+static const uint64_t REVOKE_ML_DSA_87       = 1ull << 26;
+static const uint64_t REVOKE_CLASSICAL_BITS  = 0xFFull;
+static const uint64_t REVOKE_PQC_BITS        = 0xFFull << 24;
+static const uint64_t REVOKE_CLASSICAL_GROUP = 0xCAull << 8;
+static const uint64_t REVOKE_PQC_GROUP       = 0xACull << 32;
+static const uint64_t COHORT_ROOT_CLASSICAL  = 0x1ull;
+static const uint64_t COHORT_ROOT_PQC        = 0x2ull;
+
+/* Store a register value little-endian, as the device reports it. */
+static void set_posture_register(uint8_t reg[8], uint64_t value)
+{
+    for (unsigned i = 0; i < 8u; ++i) {
+        reg[i] = (uint8_t)(value >> (8u * i));
+    }
+}
+
+/* The posture check's verdict on `buf` under this device posture, with
+ * secure boot determined for it. */
+static oca_result_t posture_verdict(const uint8_t *buf, uint64_t class_revoke,
+                                    uint64_t cohort)
+{
+    test_fixture_reset();
+    set_posture_register(g_fx.class_revoke, class_revoke);
+    set_posture_register(g_fx.cohort, cohort);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    (void)oca_determine_secure_boot(buf, &cb, &ctx);
+    return oca_check_signature_posture(buf, &cb, &ctx);
+}
+
+static oca_result_t posture_for_pqc(uint8_t control, uint64_t class_revoke,
+                                    uint64_t cohort)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, control);
+    return posture_verdict(buf, class_revoke, cohort);
+}
+
+static oca_result_t posture_for_pqc_type(uint8_t pqc_type, uint64_t class_revoke)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    buf[OCA_PQC_OFF_SIGNATURE_TYPE] = pqc_type;
+    return posture_verdict(buf, class_revoke, 0u);
+}
+
+static oca_result_t posture_for_classic(uint8_t classic_type, uint64_t class_revoke,
+                                        uint64_t cohort)
+{
+    static uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    buf[OCA_OFF_SIGNATURE_TYPE] = classic_type;
+    return posture_verdict(buf, class_revoke, cohort);
+}
+
+TEST(test_a_device_with_no_posture_accepts_every_signature_choice)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, 0u, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x07u, 0u, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_classic(OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256, 0u, 0u),
+                  OCA_OK);
+}
+
+/* A disabled algorithm refuses every enforced class that signs with it, and
+ * only those. */
+TEST(test_a_disabled_algorithm_refuses_the_classes_that_use_it)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_ML_DSA_87, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x07u, REVOKE_ML_DSA_87, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_ML_DSA_87, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_RSA_3072, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_RSA_3072, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_classic(OCA_PRIMITIVE_ECDSA_P256_SHA256, REVOKE_P256, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_classic(OCA_PRIMITIVE_ECDSA_P256_SHA256, REVOKE_RSA_3072, 0u),
+                  OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_ML_DSA_44 | REVOKE_ML_DSA_65, 0u), OCA_OK);
+}
+
+/* Each signature_type the format defines maps to its own algorithm-class bit:
+ * that bit refuses it, and every other bit of its group does not. */
+TEST(test_every_defined_signature_type_maps_to_its_revocation_bit)
+{
+    static const struct { uint8_t type; unsigned bit; } classic[] = {
+        {0x01u, 0}, {0x02u, 0}, {0x03u, 1}, {0x04u, 1}, {0x05u, 2}, {0x06u, 3},
+        {0x07u, 4}, {0x0Au, 5}, {0x0Bu, 6}, {0xF0u, 7}, {0xFFu, 7},
+    };
+    static const struct { uint8_t type; unsigned bit; } pqc[] = {
+        {0x31u, 24}, {0x32u, 25}, {0x33u, 26}, {0x41u, 27}, {0x42u, 27},
+        {0x51u, 28}, {0x54u, 28}, {0x52u, 29}, {0x55u, 29}, {0x53u, 30},
+        {0x56u, 30}, {0xF0u, 31}, {0xFFu, 31},
+    };
+    for (unsigned i = 0; i < sizeof classic / sizeof classic[0]; ++i) {
+        uint64_t own = 1ull << classic[i].bit;
+        ASSERT_EQ_INT(posture_for_classic(classic[i].type, own, 0u),
+                      OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+        ASSERT_EQ_INT(posture_for_classic(classic[i].type, REVOKE_CLASSICAL_BITS & ~own, 0u),
+                      OCA_OK);
+    }
+    for (unsigned i = 0; i < sizeof pqc / sizeof pqc[0]; ++i) {
+        uint64_t own = 1ull << pqc[i].bit;
+        ASSERT_EQ_INT(posture_for_pqc_type(pqc[i].type, own),
+                      OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+        ASSERT_EQ_INT(posture_for_pqc_type(pqc[i].type, REVOKE_PQC_BITS & ~own), OCA_OK);
+    }
+}
+
+/* A type the format does not define names no algorithm class, and is refused
+ * rather than waved through. */
+TEST(test_an_undefined_signature_type_is_refused_by_the_posture_check)
+{
+    ASSERT_EQ_INT(posture_for_classic(0x08u, 0u, 0u), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    ASSERT_EQ_INT(posture_for_pqc_type(0x34u, 0u), OCA_FAIL_CRYPTO_FIELD_SIZE);
+}
+
+/* Only the intact group code disables a whole group; a fragment of it, which
+ * can accumulate by OR, disables nothing. */
+TEST(test_only_an_intact_group_code_disables_its_group)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_PQC_GROUP, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_PQC_GROUP, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_CLASSICAL_GROUP, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_CLASSICAL_GROUP, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, 0x8Cull << 32, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0x4Aull << 8, 0u), OCA_OK);
+}
+
+/* The ROOT nibble names the cohorts the device demands; a manifest must
+ * enforce each of them. */
+TEST(test_the_root_cohort_demands_its_signature_classes)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, COHORT_ROOT_PQC),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, 0u, COHORT_ROOT_PQC), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x07u, 0u, COHORT_ROOT_PQC), OCA_OK);
+    ASSERT_EQ_INT(posture_for_classic(OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256, 0u,
+                                      COHORT_ROOT_PQC),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, 0u, COHORT_ROOT_CLASSICAL),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, COHORT_ROOT_CLASSICAL), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x07u, 0u, COHORT_ROOT_CLASSICAL | COHORT_ROOT_PQC), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, 0u, COHORT_ROOT_CLASSICAL | COHORT_ROOT_PQC),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+}
+
+/* A wholly disabled group withdraws the device's demand for that cohort, and
+ * the algorithm revocation still refuses a manifest that relies on it. */
+TEST(test_a_disabled_group_withdraws_its_cohort_demand)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_PQC_GROUP, COHORT_ROOT_PQC), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_PQC_GROUP, COHORT_ROOT_PQC),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_CLASSICAL_GROUP, COHORT_ROOT_CLASSICAL),
+                  OCA_OK);
+    /* Every per-algorithm bit without the group code is not a group disable:
+     * the demand stands. */
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_PQC_BITS, COHORT_ROOT_PQC),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+}
+
+/* Bits for entities this library does not engage — the verifier key and the
+ * co-signers — and the nibble's reserved bits demand nothing. */
+TEST(test_cohort_bits_outside_the_root_demand_are_ignored)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, 0x2ull << 4), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, 0x3333333333ull & ~0xFull), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, 0xCull), OCA_OK);
+}
+
+/* Posture readers that report success without writing leave the buffers as
+ * the check pre-filled them: every algorithm disabled, every cohort demanded. */
+static oca_result_t posture_read_writing_nothing(uint8_t out[8])
+{
+    (void)out;
+    return OCA_OK;
+}
+
+static oca_result_t posture_read_failing(uint8_t out[8])
+{
+    (void)out;
+    return OCA_FAIL_CALLBACK_UNAVAILABLE;
+}
+
+/* Run the posture check on a PQC-only manifest with the given readers. */
+static oca_result_t posture_with_readers(oca_result_t (*class_revoke)(uint8_t[8]),
+                                         oca_result_t (*cohort)(uint8_t[8]))
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    test_fixture_reset();
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    cb.get_signature_class_revoke   = class_revoke;
+    cb.get_signature_cohort_enforce = cohort;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    (void)oca_determine_secure_boot(buf, &cb, &ctx);
+    oca_result_t r = oca_check_signature_posture(buf, &cb, &ctx);
+    if (r != OCA_OK) {
+        ASSERT_TRUE(ctx.secure_boot_posture_checked != OCA_SECURE_TRUE);
+    }
+    return r;
+}
+
+TEST(test_posture_readers_fail_closed)
+{
+    ASSERT_EQ_INT(posture_with_readers(NULL, dev_get_cohort),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(posture_with_readers(dev_get_class_revoke, NULL),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(posture_with_readers(posture_read_failing, dev_get_cohort),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(posture_with_readers(dev_get_class_revoke, posture_read_failing),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(posture_with_readers(posture_read_writing_nothing, dev_get_cohort),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_with_readers(dev_get_class_revoke, posture_read_writing_nothing),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(posture_with_readers(dev_get_class_revoke, dev_get_cohort), OCA_OK);
+}
+
+/* With secure boot not in force there is no posture to meet, and no reader is
+ * needed. */
+TEST(test_the_posture_is_inert_when_secure_boot_is_off)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_minimal_pqc_manifest(buf);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    cb.is_secure_boot_active        = sb_inactive_cb;
+    cb.get_signature_class_revoke   = NULL;
+    cb.get_signature_cohort_enforce = NULL;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
+}
+
+TEST(test_the_posture_check_needs_a_settled_context)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t fresh;
+    oca_validation_context_init(&fresh);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &fresh),
+                  OCA_FAIL_SECURE_BOOT_UNDETERMINED);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, NULL),
+                  OCA_FAIL_SECURE_BOOT_UNDETERMINED);
+}
+
+/* A passing check vouches, a later refusing one withdraws the vouching: the
+ * flag reports the latest posture check, never an earlier one. */
+TEST(test_a_refused_posture_check_withdraws_an_earlier_vouching)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(ctx.secure_boot_posture_checked, OCA_SECURE_TRUE);
+    set_posture_register(g_fx.class_revoke, REVOKE_ML_DSA_87);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_TRUE(ctx.secure_boot_posture_checked != OCA_SECURE_TRUE);
+}
+
+/* The signature check refuses a context the posture check never vouched for,
+ * before verifying anything. */
+TEST(test_the_signature_check_needs_the_posture_vouching)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    test_fixture_reset();
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx), OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
+}
+
+/* The composed pipeline applies the posture before any key is authorized or
+ * used. */
+TEST(test_validation_applies_the_posture_before_any_key_is_used)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    test_fixture_reset();
+    set_posture_register(g_fx.class_revoke, REVOKE_ML_DSA_87);
+    g_authorize_calls = 0;
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    g_fx.sha_hash_off = OCA_PQC_OFF_MANIFEST_HASH;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(g_authorize_calls, 0);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
+
+    build_secure_pqc_manifest(buf, 0x03u);
+    test_fixture_reset();
+    set_posture_register(g_fx.cohort, COHORT_ROOT_PQC);
+    build_devstate_cb(&cb, buf);
+    g_fx.sha_hash_off = OCA_PQC_OFF_MANIFEST_HASH;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -7283,6 +7640,20 @@ int main(int argc, char **argv)
     RUN_TEST(test_commit_writes_nothing_when_the_classic_revocation_read_fails);
     RUN_TEST(test_commit_stops_at_an_unreadable_pqc_revocation_state);
     RUN_TEST(test_every_blob_carries_its_declared_size);
+    RUN_TEST(test_a_device_with_no_posture_accepts_every_signature_choice);
+    RUN_TEST(test_a_disabled_algorithm_refuses_the_classes_that_use_it);
+    RUN_TEST(test_every_defined_signature_type_maps_to_its_revocation_bit);
+    RUN_TEST(test_an_undefined_signature_type_is_refused_by_the_posture_check);
+    RUN_TEST(test_only_an_intact_group_code_disables_its_group);
+    RUN_TEST(test_the_root_cohort_demands_its_signature_classes);
+    RUN_TEST(test_a_disabled_group_withdraws_its_cohort_demand);
+    RUN_TEST(test_cohort_bits_outside_the_root_demand_are_ignored);
+    RUN_TEST(test_posture_readers_fail_closed);
+    RUN_TEST(test_the_posture_is_inert_when_secure_boot_is_off);
+    RUN_TEST(test_the_posture_check_needs_a_settled_context);
+    RUN_TEST(test_a_refused_posture_check_withdraws_an_earlier_vouching);
+    RUN_TEST(test_the_signature_check_needs_the_posture_vouching);
+    RUN_TEST(test_validation_applies_the_posture_before_any_key_is_used);
 
     int reverse = (argc > 1 && strcmp(argv[1], "--reverse") == 0);
     unit_run_all(reverse);

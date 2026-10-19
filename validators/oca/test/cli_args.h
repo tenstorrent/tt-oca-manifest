@@ -65,6 +65,13 @@ typedef struct cli_options {
     uint8_t  revoked_root_keys[16];
     uint8_t  revoked_root_keys_pqc[16];
 
+    /* The device's signature posture, from --signature-cohort-enforce and
+     * --signature-class-revoke: the two 8-byte registers in the manifest
+     * fields' own layout, held little-endian. All zero (nothing demanded,
+     * nothing disabled) when the flag is absent. */
+    uint8_t  signature_cohort_enforce[8];
+    uint8_t  signature_class_revoke[8];
+
     /* Storage-image mode. When --manifest-addr is given, --manifest names a whole
      * storage image rather than a bundle: the manifest is read from that address
      * and the payload is LOCATED via payload_offset instead of being assumed to

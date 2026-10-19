@@ -53,6 +53,8 @@ oca_result_t oca_manifest_hash_check(const uint8_t *body,
  * @retval OCA_FAIL_SIGNATURE              A verification failed.
  * @retval OCA_FAIL_ROOT_KEY_UNAUTHORIZED  An enforced class's key was never
  *                                         vouched for by its anchor.
+ * @retval OCA_FAIL_SIGNATURE_COHORT_REQUIRED  No posture check vouched for
+ *                                         @p ctx.
  * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL  No class enforced in an engaged
  *                                         context, or PQC enforced on a
  *                                         variant with no PQC fields.
