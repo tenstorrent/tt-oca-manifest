@@ -52,7 +52,7 @@ Project documents: [CONTRIBUTING.md](CONTRIBUTING.md) ·
 
 For the Python packer:
 
-- **Python 3.10+**
+- **Python 3.11+**
 - **pip** (Python package installer)
 
 Additionally, for building and running the OCA C validator (and the test suite's
@@ -62,9 +62,9 @@ validator integration tests, which skip without it):
 - **OpenSSL 3.5 or later** development headers, discovered via **pkg-config**
   (macOS: `brew install openssl@3`; Debian/Ubuntu 26.04 or later:
   `apt install libssl-dev pkg-config`). The validator CLI verifies ML-DSA-87,
-  which OpenSSL provides from 3.5; an older OpenSSL fails its build with the
-  reason, so the integration tests fail rather than skip. Ubuntu 24.04's
-  `libssl-dev` is 3.0.
+  which OpenSSL provides from 3.5; with an older OpenSSL its build stops with the
+  reason, and the integration tests skip saying so. Ubuntu 24.04's `libssl-dev`
+  is 3.0.
 - **doxygen**, for the documentation gate test, which skips without it. Any
   current release works **except 1.9.8** — the version Ubuntu 24.04 LTS currently
   packages — which falsely reports documented functions as undocumented
@@ -330,8 +330,7 @@ context is the manifest's full 64-byte `encryption_kdf_input` field, and the
 entropy region is zero. The PRF stream is
 `HMAC-SHA-256(secret, be16(i) ‖ block ‖ be16(L))` truncated to `L/8` bytes, with
 the 16-bit counter `i` starting at 1 and `L` the derived-key length in bits (256
-for AES-256-CBC, 128 for AES-128-CBC). This reproduces the OCA Key Manager
-`PREPARE_BL_DECRYPT_KEY` flow byte-for-byte; a producer and consumer that do not
+for AES-256-CBC, 128 for AES-128-CBC). A producer and consumer that do not
 assemble these bytes identically cannot exchange an encrypted payload. The
 derivation binds no device state, so it is reproducible in every lifecycle state.
 Known-answer vectors are locked down in
@@ -577,7 +576,9 @@ Key properties:
   and no output file is written.
 - **Isolated assembly**: a bank built on its own is byte-identical to that same bank
   inside the combined image, so a single-bank build doubles as a field-update artifact.
-  Signed manifest bytes are never modified.
+  Signed manifest bytes are never modified. The one exception is a bank signed with a
+  hedged PQC algorithm (ML-DSA): each build signs afresh, so its PQC signature value
+  differs between the two, and comparisons mask it at that body's offset.
 - **The configuration is the map**: the image is a flat binary with no embedded index or
   header; this YAML describes how it is partitioned.
 
@@ -689,7 +690,9 @@ pytest -vvv --cov=tt_boot_manifest --cov-report=html
 ```
 
 A plain `pytest` run needs no host setup beyond the Python dependencies: the OCA
-C-validator tests skip cleanly when a C toolchain, `make`, or `pkg-config` is absent.
+C-validator tests skip, with the reason, when a C toolchain, `make` or `pkg-config` is
+absent, or when the OpenSSL `pkg-config` finds is older than 3.5. Set
+`TT_BOOT_MANIFEST_REQUIRE_VALIDATOR=1` to make those skips failures, as CI does.
 
 ### Test Organization
 

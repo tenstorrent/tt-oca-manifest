@@ -96,7 +96,7 @@ def test_prf_framing_matches_reference_pure_vectors():
 
 def test_classkey_frozen_vector_aes256():
     """The full AES-256 CLASS_BL derivation (fixed header/label/entropy + the
-    64-byte context) reproduces the reference PREPARE_BL_DECRYPT_KEY output."""
+    64-byte context) reproduces the reference known-answer output."""
     assert len(_CLASS_SECRET) == 32 and len(_CLASS_CONTEXT) == 64
     got = enc.derive_payload_key(_CLASS_SECRET, _CLASS_CONTEXT,
                                  OcaEncryptionType.AES_256_CBC.value)

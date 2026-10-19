@@ -43,7 +43,7 @@ repository follows it.
 ## Development setup
 
 The prerequisites are listed in the [README](README.md#prerequisites): Python
-3.10+ for the producer, and additionally a C99 toolchain, OpenSSL 3.5 or later
+3.11+ for the producer, and additionally a C99 toolchain, OpenSSL 3.5 or later
 development headers, and `pkg-config` to build and test the C validator. Install the package
 in editable mode with the test extras:
 
@@ -57,7 +57,7 @@ Without it they skip, and the rest of the suite runs normally.
 ## Checks your change must pass
 
 Run both suites locally before opening a PR. CI runs the same ones across Python
-3.10 and 3.12, against the lowest supported `cryptography`, and against both GCC
+3.11 and 3.12, against the lowest supported `cryptography`, and against both GCC
 and Clang.
 
 ```bash
@@ -94,7 +94,7 @@ installs all of them and asserts they are present, so the gates always run there
   two-line style of the surrounding files.
 - **C code** targets C99 and is compiled freestanding to prove it ports to a
   boot ROM. Do not introduce libc dependencies into `validators/oca/lib/`.
-- **Python code** supports 3.10 as its floor. Do not use syntax or standard
+- **Python code** supports 3.11 as its floor. Do not use syntax or standard
   library APIs newer than that.
 - Match the conventions of the file you are editing — the existing comment
   density and naming are deliberate, particularly in the validator library.

@@ -93,7 +93,7 @@ future variants slot in under `lib/` without a build-system fork.
 
 ### Python
 
-Python 3.10 or newer. Install the package **editable** into whichever Python environment you
+Python 3.11 or newer. Install the package **editable** into whichever Python environment you
 already use, with the `dev` extra:
 
 ```bash
@@ -121,9 +121,10 @@ rather than fail when it is absent:
 - A host C toolchain with `-std=c99` support (gcc 12+ or clang 16+)
 - OpenSSL **3.5 or later** development headers, discovered via `pkg-config` (macOS:
   `brew install openssl@3`; Debian/Ubuntu 26.04 or later: `apt install libssl-dev pkg-config`).
-  The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. An older OpenSSL fails the
-  build with the reason, so the integration tests **fail** rather than skip — Ubuntu 24.04's
-  `libssl-dev` is 3.0
+  The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. With an older OpenSSL the CLI
+  build stops with the reason and the integration tests skip saying so — Ubuntu 24.04's
+  `libssl-dev` is 3.0. `TT_BOOT_MANIFEST_REQUIRE_VALIDATOR=1` turns that skip, and the
+  missing-toolchain one, into a failure; CI sets it
 - `doxygen` for the documentation gate — any current release **except 1.9.8**, which falsely
   reports documented functions as undocumented. The test detects that defect and skips with an
   explanation; CI pins 1.18.0
@@ -269,9 +270,10 @@ crypto, no ad-hoc constant-time routines, no experimental algorithm choices.
 Supported signature algorithms are exactly RSA-3072 PKCS#1 v1.5 + SHA-256
 (`signature_type: 0x01`) and ECDSA P-256 + SHA-256 (`signature_type: 0x05`) for the classical
 class, and ML-DSA-87 (`signature_type_pqc: 0x33`) for the PQC class. ML-DSA-87 is pure FIPS 204
-ML-DSA signed over the raw signed region with the empty context. We do not pre-hash, and use
-neither HashML-DSA nor an external μ. Signing is through the `local` signing authority only (as
-of now). The specification defines more values; the packer rejects them at config-load time.
+ML-DSA signed over the raw signed region with the empty context. We do not pre-hash and do not
+use HashML-DSA. A signer or verifier that computes the message representative μ itself produces
+or accepts the same signature, so that is an implementation choice, not a different
+construction. Signing is through the `local` signing authority only (as of now). The specification defines more values; the packer rejects them at config-load time.
 Adding another requires both boot ROM support and a deliberate amendment to these rules.
 
 Encryption, when enabled, is AES-CBC with KBKDF-derived keys, either 128- or 256-bit per the
@@ -289,10 +291,10 @@ IVs, salts, non-deterministic signature schemes — either default to a stable v
 supplied explicitly by the caller. They must not silently vary between runs. ECDSA uses RFC
 6979 specifically to preserve this; the rest of the pipeline holds the same line.
 
-One exception: the ML-DSA-87 signature value. `cryptography` signs ML-DSA hedged and exposes
-no deterministic mode, so the 4627 bytes at the start of an OCA-PQC body's `signature_pqc`
-(offset 6495) — and that span wherever such a body sits in a combined image — may differ
-between runs. Every other byte stays byte-identical, including `manifest_hash`, the classical
+One exception: the PQC signature value. `cryptography` signs ML-DSA hedged and exposes no
+deterministic mode, so the first `signature_size_pqc` bytes of an OCA-PQC body's
+`signature_pqc` (offset 6495; 4627 bytes for ML-DSA-87) — and that span wherever such a body
+sits in a combined image — may differ between runs. Every other byte stays byte-identical, including `manifest_hash`, the classical
 signature, and the zero padding of `signature_pqc`. Tests that pin or compare packed bytes mask
 exactly that span (`oca_fixtures.manifest_reader.mask_pqc_signature`) and verify the signature
 instead of comparing it; release diffs do the same.
@@ -483,8 +485,10 @@ the `aws-sso` console script.
   `test/unit_test.c`, zero fixtures. Each prints a notice and succeeds. `skipping archive`,
   `skipping link` and `no fixtures yet` in the output are failures wearing a green exit code.
 - **A skip is a signal, not a pass.** The validator integration tests skip without `make` or
-  `pkg-config`; the doxygen gate skips without doxygen or against 1.9.8. A broken toolchain
-  therefore reads as a green run with a quietly smaller suite. Confirm the gates actually ran.
+  `pkg-config`, or with an OpenSSL older than 3.5; the doxygen gate skips without doxygen or
+  against 1.9.8. A broken toolchain therefore reads as a green run with a quietly smaller suite.
+  Confirm the gates actually ran, or set `TT_BOOT_MANIFEST_REQUIRE_VALIDATOR=1` so the
+  validator skips fail instead.
 - **Judge a suite by diffing against your last known-good run**, not against an absolute pass
   count — counts drift as tests are added.
 
@@ -585,8 +589,8 @@ Keep pull requests focused; unrelated changes belong in separate ones. Branch na
 | `make check` cannot import the packer | The Makefile's interpreter search found a Python without the editable install. Pass `PYTHON=<path>` explicitly |
 | A new manifest field passes Python tests but the validator ignores it | The completeness gate was satisfied with an allowlist entry instead of a decoder, or the check was composed into `oca_validate()` where the staged flow skips it |
 | `oca-combined` treated as a third manifest variant | It is a packaging mode that places already-built bundles; only `oca-classic` and `oca-pqc` are formats |
-| Two builds of the same PQC-signed config differ | Expected. ML-DSA signing is hedged, so the 4627-byte signature value at OCA-PQC offset 6495 varies between builds. Compare with `oca_fixtures.manifest_reader.mask_pqc_signature` and verify the signature instead — see "Deterministic and reproducible output" |
+| Two builds of the same PQC-signed config differ | Expected. ML-DSA signing is hedged, so the PQC signature value — `signature_size_pqc` bytes from OCA-PQC offset 6495, 4627 for ML-DSA-87 — varies between builds. Compare with `oca_fixtures.manifest_reader.mask_pqc_signature` and verify the signature instead — see "Deterministic and reproducible output" |
 | A config is rejected over a signing field after setting `secure_boot_classic: 0` | A signing field of a class that is off describes a signature the manifest will not carry, so the packer rejects it by name. Remove it, or turn the class on. The two ROOT-key revocation bitmaps are not signing fields and may ride on any secure manifest |
 | Loading the ML-DSA-87 key fails with "this cryptography build cannot sign with ML-DSA-87" | The installed `cryptography` has no ML-DSA. Install 48.0.0 or later from its wheels, which bundle a new enough OpenSSL |
 | `oca-validate` refuses a hybrid or PQC-signed bundle with `ROOT_KEY_UNAUTHORIZED` despite `--root-key-digest` | Each signature class is authorized by its own anchor only. Pass `--root-key-digest-pqc` for the PQC key as well; a digest never authorizes the other family's key |
-| The validator integration tests fail at the build step with "needs OpenSSL 3.5 or later" | The OpenSSL `pkg-config` found is older than 3.5 — Ubuntu 24.04's `libssl-dev` is 3.0. The CLI verifies ML-DSA-87, which needs 3.5; install a newer OpenSSL and point `pkg-config` at it |
+| The validator integration tests skip, or fail under `TT_BOOT_MANIFEST_REQUIRE_VALIDATOR`, with "needs OpenSSL 3.5 or later" | The OpenSSL `pkg-config` found is older than 3.5 — Ubuntu 24.04's `libssl-dev` is 3.0. The CLI verifies ML-DSA-87, which needs 3.5; install a newer OpenSSL and point `pkg-config` at it |

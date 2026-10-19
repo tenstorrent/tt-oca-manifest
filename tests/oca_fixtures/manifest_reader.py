@@ -198,16 +198,18 @@ def pqc_signature_valid(body: bytes, public_key_raw: bytes = None,
     return True
 
 
-def mask_pqc_signature(bundle: bytes) -> bytes:
-    """Zero exactly the ML-DSA-87 signature value of an OCA-PQC bundle.
+def mask_pqc_signature(bundle: bytes, body_offset: int = 0) -> bytes:
+    """Zero exactly the PQC signature value of the OCA-PQC body at `body_offset`.
 
-    ML-DSA signing is hedged, so that span is the one part of a bundle that
-    differs between two packs of the same config; everything else, the rest of
-    signature_pqc included, must stay byte-identical. The rest of the field is
+    A hedged PQC signature (ML-DSA) is the one part of a bundle that differs
+    between two packs of the same config; everything else, the rest of
+    signature_pqc included, must stay byte-identical. The span is the
+    manifest's own signature_size_pqc, so the mask follows the algorithm, and
+    `body_offset` places it inside a combined image. The rest of the field is
     asserted zero so the mask cannot hide anything else there.
     """
-    start = oca_consts.OFF_SIGNATURE_PQC
-    span = oca_consts.ML_DSA_87_SIGNATURE_BYTES
+    span = struct.unpack_from("<H", bundle, body_offset + oca_consts.OFF_SIGNATURE_SIZE_PQC)[0]
+    start = body_offset + oca_consts.OFF_SIGNATURE_PQC
     rest = bundle[start + span:start + oca_consts.LEN_SIGNATURE_PQC]
     assert rest == b"\x00" * len(rest), "signature_pqc beyond the signature must be 0x00"
     return bundle[:start] + b"\x00" * span + bundle[start + span:]

@@ -122,8 +122,8 @@ AES_BLOCK_SIZE = 16                  # PKCS#7 padding boundary (AES block, key-s
 # Expanded SP 800-108r1 counter-mode KDF input block (192 bytes) — the fixed
 # "input data" the PRF consumes. Layout: 32-byte header || 32-byte label ||
 # 64-byte context || 64-byte entropy. The label and entropy, and all header
-# fields EXCEPT out_bits, are fixed constants from the reference
-# PREPARE_BL_DECRYPT_KEY flow; out_bits (u16 LE at header offset 10) is the
+# fields EXCEPT out_bits, are fixed constants of the payload-key derivation
+# contract; out_bits (u16 LE at header offset 10) is the
 # derived-key bit length (128 or 256) and is set per cipher by the block builder.
 # The manifest's encryption_kdf_input field supplies the 64-byte context. PRF
 # stream: HMAC-SHA-256(key, be16(i) || block || be16(L))[:L/8] with i from 1 and

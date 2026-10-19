@@ -31,10 +31,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.10 is the floor declared by requires-python; 3.12 is the newest
+        # 3.11 is the floor declared by requires-python; 3.12 is the newest
         # version the classifiers claim. Local development runs 3.14, which is
         # deliberately not tested here until the classifiers say so.
-        python-version: ['3.10', '3.12']
+        python-version: ['3.11', '3.12']
         cryptography: ['latest']
         # The dependency floor. pyproject.toml promises cryptography 48.0.0 is
         # enough -- the first release whose wheels provide ML-DSA -- but every
@@ -42,7 +42,7 @@ jobs:
         # is never exercised. Paired with the Python floor: the oldest
         # combination a user can install.
         include:
-          - python-version: '3.10'
+          - python-version: '3.11'
             cryptography: '48.0.0'
     steps:
       - uses: actions/checkout@v5
@@ -127,7 +127,13 @@ jobs:
       # Deselected rather than skipped: the AWS KMS tests need live credentials,
       # and `-m "not aws"` makes their absence an explicit exclusion instead of
       # nine skips that look like a partial failure. Expect 0 skipped.
+      #
+      # TT_BOOT_MANIFEST_REQUIRE_VALIDATOR turns the validator integration
+      # tests' skip on a missing toolchain or an old OpenSSL into a failure, so
+      # the suite cannot shrink here unnoticed.
       - name: Run the producer and consumer test suites
+        env:
+          TT_BOOT_MANIFEST_REQUIRE_VALIDATOR: "1"
         run: python -m pytest -m "not aws"
 
   c-validator:

@@ -17,9 +17,10 @@ binary diff in the pull request description.
 Every config must be pinned or listed in `_UNBUILDABLE`, so a newly added
 config cannot go unpinned.
 
-ML-DSA signing is hedged, so a bundle carrying an ML-DSA-87 signature is pinned
-with that signature value masked: it is the one span allowed to differ between
-builds, and the mask asserts the rest of signature_pqc is zero.
+ML-DSA signing is hedged, so a bundle carrying a PQC signature is pinned with
+that signature value masked: it is the one span allowed to differ between
+builds. The signature is verified before it is masked, so a pin never stands
+in for a signature, and the mask asserts the rest of signature_pqc is zero.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ import os
 
 import pytest
 
-from oca_fixtures.manifest_reader import mask_pqc_signature
+from oca_fixtures.manifest_reader import mask_pqc_signature, pqc_signature_valid
 from tt_boot_manifest.oca import constants as oca_consts
 from tt_boot_manifest.pack_images import generate_images
 from tt_boot_manifest.utils import load_config
@@ -128,9 +129,12 @@ def _pack(config_relpath):
 
 
 def _reproducible_bytes(packed: bytes) -> bytes:
-    """The bundle with its ML-DSA-87 signature value masked, when it carries one."""
+    """The bundle with its PQC signature value masked, when it carries one —
+    after checking that the signature verifies, since the pin cannot."""
     is_pqc = packed[:4] == oca_consts.OCAP_MAGIC
     if is_pqc and packed[oca_consts.OFF_SECURE_BOOT_CONTROL] & 0x04:
+        assert pqc_signature_valid(packed[:oca_consts.OCA_PQC_BODY_SIZE]), \
+            "the PQC signature does not verify"
         return mask_pqc_signature(packed)
     return packed
 

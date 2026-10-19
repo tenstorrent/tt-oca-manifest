@@ -37,15 +37,40 @@ FIXTURE_BUILD = os.path.join(VALIDATOR_DIR, "build", "fixtures")
 PASS_RE = re.compile(rb"^PASS: \w+ v\d+\.\d+\.\d+\n$")
 
 
-def _make_available() -> bool:
-    return shutil.which("make") is not None and shutil.which("pkg-config") is not None
+# Set in CI, where a missing prerequisite must fail the run rather than shrink
+# the suite.
+REQUIRE_VALIDATOR_ENV = "TT_BOOT_MANIFEST_REQUIRE_VALIDATOR"
+
+
+def _openssl_min_version() -> str:
+    """OPENSSL_MIN_VERSION from the validator Makefile, where it is set."""
+    with open(os.path.join(VALIDATOR_DIR, "Makefile")) as f:
+        return re.search(r"^OPENSSL_MIN_VERSION \?= (\S+)$", f.read(), re.M).group(1)
+
+
+def _validator_unavailable_reason():
+    """Why this host cannot build the CLI, or None when it can."""
+    if shutil.which("make") is None or shutil.which("pkg-config") is None:
+        return "make + pkg-config required to build the OCA validator CLI"
+    minimum = _openssl_min_version()
+    if (subprocess.run(["pkg-config", "--exists", "openssl"]).returncode == 0
+            and subprocess.run(["pkg-config", f"--atleast-version={minimum}",
+                                "openssl"]).returncode != 0):
+        found = subprocess.run(["pkg-config", "--modversion", "openssl"],
+                               capture_output=True, text=True).stdout.strip()
+        return (f"the OCA validator CLI needs OpenSSL {minimum} or later for "
+                f"ML-DSA; pkg-config reports {found}")
+    return None
 
 
 @pytest.fixture(scope="module", autouse=True)
 def build_cli():
     """Build the CLI once per test module."""
-    if not _make_available():
-        pytest.skip("make + pkg-config required to build the OCA validator CLI")
+    reason = _validator_unavailable_reason()
+    if reason is not None:
+        if os.environ.get(REQUIRE_VALIDATOR_ENV):
+            pytest.fail(f"{reason} ({REQUIRE_VALIDATOR_ENV} is set)")
+        pytest.skip(reason)
     result = subprocess.run(
         ["make", "-C", VALIDATOR_DIR, "test"],
         cwd=PROJECT_ROOT,
@@ -2413,3 +2438,13 @@ def test_make_refuses_an_openssl_older_than_the_minimum():
     )
     assert result.returncode != 0
     assert "99.0.0" in result.stdout + result.stderr
+
+
+def test_an_openssl_below_the_minimum_is_a_reason_naming_both_versions(monkeypatch):
+    """On a host whose OpenSSL is too old the suite skips — or, with
+    TT_BOOT_MANIFEST_REQUIRE_VALIDATOR set, fails — saying what it needs and
+    what it found."""
+    monkeypatch.setitem(globals(), "_openssl_min_version", lambda: "99.0.0")
+    reason = _validator_unavailable_reason()
+    assert reason is not None
+    assert "99.0.0" in reason and "pkg-config reports" in reason

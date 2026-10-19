@@ -6,10 +6,10 @@ A small, freestanding C library that parses an OCA boot manifest and decides
 PASS or FAIL against caller-supplied hardware-identity and cryptographic
 callbacks. The same library and binary handle every OCA format variant —
 the magic bytes at offset 0 select the parser path. Both the Classic (`OCAC`)
-and PQC (`OCAP`) framings are parsed today; PQC *signature verification* is
-the one piece still outstanding (see "Not supported" below). Future variants
-land here without a fork in the build system, the CLI surface, or the symbol
-set.
+and PQC (`OCAP`) variants are parsed and verified, including PQC-only and
+hybrid signatures; the cryptography itself stays in the integrator's callbacks.
+Future variants land here without a fork in the build system, the CLI surface,
+or the symbol set.
 
 A companion host CLI (`oca-validate`) wires the library against OpenSSL and
 command-line-driven hardware values, so the same library code that runs on

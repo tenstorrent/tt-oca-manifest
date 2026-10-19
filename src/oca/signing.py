@@ -10,8 +10,7 @@ for `signature_type_classic`, 0x33 for `signature_type_pqc` — and the internal
 
 For the PQC class the packer signs with ML-DSA-87, in the raw encoding only:
 FIPS 204 defines no bare ASN.1 structure for its key or signature, and both
-lengths are fixed. The
-classical class is described below.
+lengths are fixed. The classical class is described below.
 
 The OCA spec permits two on-disk encodings, but not symmetrically:
 
