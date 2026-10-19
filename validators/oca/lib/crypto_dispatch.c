@@ -60,9 +60,10 @@ oca_result_t oca_manifest_hash_check(const uint8_t *body,
  *                  and the signed-region extent. Every PQC field exists in
  *                  exactly one variant, so those offsets are the fixed
  *                  OCA_PQC_* constants.
- * @param[in] cb    Callback table. cb->verify_signature is non-NULL — the
- *                  caller fail-closes on an unwired verifier before any class
- *                  is verified.
+ * @param[in] cb    Callback table. cb->verify_signature is checked here as well
+ *                  as by the caller, so a path that skipped the caller's check
+ *                  fails closed instead of calling through NULL — on a part
+ *                  with code mapped at address zero, a jump into it.
  * @param[in] algo  Which class's signature to verify.
  * @retval OCA_OK                          The signature verified.
  * @retval OCA_FAIL_SIGNATURE              It did not — or the callback answered
@@ -70,7 +71,8 @@ oca_result_t oca_manifest_hash_check(const uint8_t *body,
  *                                         returning, which is treated as a
  *                                         failure rather than silently passing
  *                                         the manifest.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The verifier could not run.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The verifier is not wired, or could
+ *                                         not run.
  * @return cb->verify_signature's verdict, normalized to the three codes above.
  */
 static oca_result_t verify_signature_by_class(const uint8_t *body,
@@ -78,6 +80,9 @@ static oca_result_t verify_signature_by_class(const uint8_t *body,
                                      const oca_callbacks_t *cb,
                                      oca_key_algorithm_t algo)
 {
+    if (cb == 0 || cb->verify_signature == 0) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
     const int is_pqc   = algo == OCA_KEY_ALGO_PQC;
     size_t off_type    = is_pqc ? (size_t)OCA_PQC_OFF_SIGNATURE_TYPE
                                 : (size_t)OCA_OFF_SIGNATURE_TYPE;

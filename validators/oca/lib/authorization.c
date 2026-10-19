@@ -43,9 +43,10 @@
  * both arms of each selection are compile-time constants.
  *
  * @param[in] body  Whole variant body.
- * @param[in] cb    Callback table. cb->is_key_authorized is non-NULL — the
- *                  caller fail-closes on an unwired anchor before any class
- *                  is presented.
+ * @param[in] cb    Callback table. cb->is_key_authorized is checked here as
+ *                  well as by the caller, so a path that skipped the caller's
+ *                  check fails closed instead of calling through NULL — on a
+ *                  part with code mapped at address zero, a jump into it.
  * @param[in] algo  Which class's key to present.
  * @retval OCA_OK                          The device authorizes this key.
  * @retval OCA_FAIL_ROOT_KEY_UNAUTHORIZED  It does not — or the callback
@@ -53,13 +54,17 @@
  *                                         business returning, which is treated
  *                                         as a refusal rather than passed
  *                                         through as some unrelated verdict.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The anchor could not be read.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The anchor is not wired, or could
+ *                                         not be read.
  * @return cb->is_key_authorized's verdict, normalized to the three codes above.
  */
 static oca_result_t authorize_key_by_class(const uint8_t *body,
                                         const oca_callbacks_t *cb,
                                         oca_key_algorithm_t algo)
 {
+    if (cb == 0 || cb->is_key_authorized == 0) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
     const int is_pqc  = algo == OCA_KEY_ALGO_PQC;
     size_t off_type   = is_pqc ? (size_t)OCA_PQC_OFF_SIGNATURE_TYPE
                                : (size_t)OCA_OFF_SIGNATURE_TYPE;

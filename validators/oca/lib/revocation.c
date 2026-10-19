@@ -29,17 +29,25 @@
  *
  * @param[in] body  Whole variant body; a PQC body when @p algo is
  *                  OCA_KEY_ALGO_PQC.
- * @param[in] cb    Callback table; cb->get_root_key_revocation is non-NULL.
+ * @param[in] cb    Callback table. cb->get_root_key_revocation is checked here
+ *                  as well as by the caller, so a path that skipped the
+ *                  caller's check fails closed instead of calling through
+ *                  NULL — on a part with code mapped at address zero, a jump
+ *                  into it.
  * @param[in] algo  Which class's key, and which family's state, to check.
  * @retval OCA_OK                         The selected key is not revoked.
  * @retval OCA_FAIL_ROOT_KEY_REVOKED      A selected key bit is revoked.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE  The family's device state could not
- *                                        be read.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE  The reader is not wired, or the
+ *                                        family's device state could not be
+ *                                        read.
  */
 static oca_result_t check_revocation_by_class(const uint8_t *body,
                                               const oca_callbacks_t *cb,
                                               oca_key_algorithm_t algo)
 {
+    if (cb == 0 || cb->get_root_key_revocation == 0) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
     const int is_pqc  = algo == OCA_KEY_ALGO_PQC;
     size_t off_select = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SELECT
                                : (size_t)OCA_OFF_PUBLIC_KEY_SELECT;

@@ -78,7 +78,11 @@ not need a callback never touch it, and a check that *does* need one fails with
 Nothing here is discovered by inspection — every unmet requirement is a distinct
 result code, and none of them is a pass:
 
-- a needed callback is NULL → `OCA_FAIL_CALLBACK_UNAVAILABLE`;
+- a needed callback is NULL → `OCA_FAIL_CALLBACK_UNAVAILABLE`. Checked in the
+  function that makes the call, not only at the entry point. NULL is the only
+  thing the library can test a function pointer for: a corrupted non-NULL
+  entry is called. Keep the table in read-only memory, so nothing at run time
+  can overwrite an entry;
 - a hardware reader returns `OCA_HW_UNAVAILABLE` → the check hard-fails rather
   than skipping;
 - secure boot cannot be determined from the reporters → treated as **active**, so

@@ -248,7 +248,11 @@ static oca_result_t compare_digest(const uint8_t *field,
  * @param[in] image_count  Validated entry count.
  * @param[in] toc_bytes    Validated TOC span in bytes.
  * @param[in] body         Manifest body holding the expected chain value.
- * @param[in] cb           Callback table; cb->sha256 is required.
+ * @param[in] cb           Callback table. cb->sha256 is checked here as well
+ *                         as at the public entry point, so a path that skipped
+ *                         that check fails closed instead of calling through
+ *                         NULL — on a part with code mapped at address zero, a
+ *                         jump into it.
  * @retval OCA_OK                          Chain and every entry hash match.
  * @retval OCA_FAIL_PAYLOAD_HASH_CHAIN     Chain mismatch.
  * @retval OCA_FAIL_PAYLOAD_ENTRY_HASH     The chain matches, but an entry's
@@ -262,6 +266,9 @@ static oca_result_t check_payload_hash_chain_and_entries(
     const uint8_t *pt, uint64_t image_count, size_t toc_bytes,
     const uint8_t *body, const oca_callbacks_t *cb)
 {
+    if (cb == 0 || cb->sha256 == 0) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
     uint8_t chain[OCA_MANIFEST_HASH_DIGEST_SIZE];
     if (cb->sha256(pt, toc_bytes, chain) != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
@@ -354,7 +361,10 @@ static oca_result_t check_plaintext_payload(
  * @param[in] payload      Stored payload region, which is already plaintext.
  * @param[in] payload_len  Length of @p payload.
  * @param[in] body         Manifest body holding the expected digests.
- * @param[in] cb           Callback table; cb->sha256 is required.
+ * @param[in] cb           Callback table. cb->sha256 is checked here as well
+ *                         as at the public entry point, so a path that skipped
+ *                         that check fails closed instead of calling through
+ *                         NULL.
  * @param[out] out_plaintext  Receives the plaintext location and length, only
  *                            when every plaintext check passed. NULL declines.
  * @retval OCA_OK                          Payload validated.
@@ -369,6 +379,9 @@ static oca_result_t check_cleartext_payload(const uint8_t *payload, size_t paylo
                                             const uint8_t *body, const oca_callbacks_t *cb,
                                             oca_payload_plaintext_t *out_plaintext)
 {
+    if (cb == 0 || cb->sha256 == 0) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
     uint64_t hashed_len = oca_le_u64(body + OCA_OFF_PAYLOAD_HASHED_LENGTH);
     if (hashed_len == 0u || hashed_len > payload_len) {
         return OCA_FAIL_PAYLOAD_TOC;
@@ -423,8 +436,10 @@ static oca_result_t check_cleartext_payload(const uint8_t *payload, size_t paylo
  * @param[in] ciphertext  Stored ciphertext region.
  * @param[in] available   Bytes readable at @p ciphertext.
  * @param[in] body        Manifest body holding the digests, IV, and KDF input.
- * @param[in] cb          Callback table; cb->sha256 and cb->decrypt_payload are
- *                        both required.
+ * @param[in] cb          Callback table. cb->sha256 and cb->decrypt_payload are
+ *                        both checked here, so a path that skipped the public
+ *                        entry point's check fails closed instead of calling
+ *                        through NULL.
  * @param[out] out_plaintext  Receives the RECOVERED plaintext location and
  *                            length — the address the callback chose, which is
  *                            not recomputable afterwards, so this is the only
@@ -443,6 +458,9 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
                                             const uint8_t *body, const oca_callbacks_t *cb,
                                             oca_payload_plaintext_t *out_plaintext)
 {
+    if (cb == 0 || cb->sha256 == 0) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
     uint64_t cipher_len = oca_le_u64(body + OCA_OFF_PAYLOAD_HASHED_LENGTH);
     if (cipher_len == 0u || cipher_len > available) {
         return OCA_FAIL_TRUNCATED;

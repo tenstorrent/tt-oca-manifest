@@ -1706,6 +1706,27 @@ TEST(test_payload_null_decrypt_callback_unavailable)
                   OCA_FAIL_CALLBACK_UNAVAILABLE);
 }
 
+/* A declared payload with no digest to check it by fails closed, whether the
+ * hash is unwired or the whole table is missing, and nothing is decrypted. */
+TEST(test_payload_without_sha256_is_unavailable)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN];
+    uint8_t ph[32]; memset(ph, 0x5A, 32);
+    uint8_t chain[32]; memset(chain, 0, 32);
+    build_encrypted_bundle(buf, ph, chain);
+    payload_sha_ctx_init(buf + OCA_CLASSIC_BODY_SIZE, true, 0x5A);
+
+    oca_callbacks_t cb;
+    payload_cb(&cb, decrypt_ok);
+    cb.sha256 = 0;
+    g_fx.decrypt_calls = 0;
+    ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, NULL, &g_authenticated, NULL),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
+}
+
 TEST(test_payload_decrypt_failure)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN];
@@ -4759,6 +4780,51 @@ TEST(test_commit_without_posture_callbacks_is_unavailable)
                   OCA_FAIL_CALLBACK_UNAVAILABLE);
 }
 
+/* The callbacks oca_commit_security_state() calls, in the order it calls them,
+ * and the index COMMIT_CALLBACK_COUNT that stands for a missing table. */
+#define COMMIT_CALLBACK_COUNT 8u
+
+/* Unwire one commit callback, by its index in the list above. */
+static void unwire_commit_callback(oca_callbacks_t *cb, unsigned which)
+{
+    switch (which) {
+        case 0u: cb->get_root_key_revocation      = 0; break;
+        case 1u: cb->set_root_key_revocation      = 0; break;
+        case 2u: cb->get_security_version         = 0; break;
+        case 3u: cb->set_security_version         = 0; break;
+        case 4u: cb->get_signature_cohort_enforce = 0; break;
+        case 5u: cb->set_signature_cohort_enforce = 0; break;
+        case 6u: cb->get_signature_class_revoke   = 0; break;
+        case 7u: cb->set_signature_class_revoke   = 0; break;
+        default: break;
+    }
+}
+
+/* Every callback the commit calls fails closed when unwired — unwired after a
+ * validation that needed the readers, so the commit is the code under test —
+ * and so does a missing table. A writer missing from the first register's pair
+ * stops the commit before anything is written. */
+TEST(test_commit_without_any_one_callback_is_unavailable)
+{
+    for (unsigned which = 0u; which <= COMMIT_CALLBACK_COUNT; ++which) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_secure_manifest(buf);
+        test_fixture_reset();
+        oca_callbacks_t cb;
+        build_devstate_cb(&cb, buf);
+        oca_validation_context_t ctx = verified_for(buf, &cb);
+        unwire_commit_callback(&cb, which);
+        g_fx.set_calls = 0;
+
+        const oca_callbacks_t *table = (which == COMMIT_CALLBACK_COUNT) ? 0 : &cb;
+        ASSERT_EQ_INT(oca_commit_security_state(buf, table, &ctx),
+                      OCA_FAIL_CALLBACK_UNAVAILABLE);
+        if (which <= 1u || which == COMMIT_CALLBACK_COUNT) {
+            ASSERT_EQ_INT(g_fx.set_calls, 0);
+        }
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* signature_class_revoke group codes                                  */
 /* ------------------------------------------------------------------ */
@@ -7419,6 +7485,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_payload_no_payload_declared_is_noop);
     RUN_TEST(test_payload_hash_mismatch_before_decrypt);
     RUN_TEST(test_payload_null_decrypt_callback_unavailable);
+    RUN_TEST(test_payload_without_sha256_is_unavailable);
     RUN_TEST(test_payload_decrypt_failure);
     RUN_TEST(test_payload_chain_mismatch);
     RUN_TEST(test_payload_happy_path);
@@ -7550,6 +7617,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_commit_disable_class_revoke_only);
     RUN_TEST(test_manifest_security_control_is_read_as_a_u16);
     RUN_TEST(test_commit_without_posture_callbacks_is_unavailable);
+    RUN_TEST(test_commit_without_any_one_callback_is_unavailable);
     RUN_TEST(test_intact_group_codes_are_accepted);
     RUN_TEST(test_a_fragment_of_a_group_code_is_rejected);
     RUN_TEST(test_a_bad_group_code_is_caught_before_any_device_read);

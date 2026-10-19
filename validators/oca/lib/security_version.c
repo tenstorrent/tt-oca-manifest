@@ -74,17 +74,25 @@ oca_result_t oca_check_security_version(const uint8_t *body,
  *
  * @param[in] body  Whole variant body; a PQC body when @p algo is
  *                  OCA_KEY_ALGO_PQC.
- * @param[in] cb    Callback table; cb->get_root_key_revocation and
- *                  cb->set_root_key_revocation are non-NULL.
+ * @param[in] cb    Callback table. cb->get_root_key_revocation and
+ *                  cb->set_root_key_revocation are checked here as well as by
+ *                  the caller, so a path that skipped the caller's check fails
+ *                  closed instead of calling through NULL — on a part with code
+ *                  mapped at address zero, a jump into it.
  * @param[in] algo  Which family's manifest bitmap and device state to commit.
  * @retval OCA_OK                          The family's state was written.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The family's state could not be read.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   Either callback is not wired, or the
+ *                                         family's state could not be read.
  * @retval OCA_FAIL_SECURITY_STATE_UPDATE  The write-back failed.
  */
 static oca_result_t commit_revocation_for_family(const uint8_t *body,
                                                const oca_callbacks_t *cb,
                                                oca_key_algorithm_t algo)
 {
+    if (cb == 0 || cb->get_root_key_revocation == 0
+        || cb->set_root_key_revocation == 0) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
     size_t off_revoke = (algo == OCA_KEY_ALGO_PQC)
                             ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_REVOKE
                             : (size_t)OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE;
