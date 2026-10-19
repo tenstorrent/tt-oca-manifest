@@ -46,7 +46,13 @@ static oca_result_t check_revocation_by_class(const uint8_t *body,
     size_t off_revoke = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_REVOKE
                                : (size_t)OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE;
 
+    /* Pre-filled with every key revoked, so a reader that reports success
+     * without writing fails closed instead of leaving stack contents to
+     * decide. */
     uint8_t device_revoke[OCA_LEN_ROOT_KEY_BITMAP];
+    for (unsigned i = 0u; i < OCA_LEN_ROOT_KEY_BITMAP; ++i) {
+        device_revoke[i] = 0xFFu;
+    }
     if (cb->get_root_key_revocation(algo, device_revoke) != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }

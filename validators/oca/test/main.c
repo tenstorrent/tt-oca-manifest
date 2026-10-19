@@ -135,7 +135,9 @@ static const char *reason_for(oca_result_t r)
         case OCA_FAIL_SIGNATURE:
             return "signature verification failed";
         case OCA_FAIL_CALLBACK_UNAVAILABLE:
-            return "required hardware/crypto value not supplied on CLI";
+            return "a required callback or crypto backend is unavailable (a device "
+                   "value not supplied on the CLI, or an OpenSSL without the "
+                   "manifest's algorithm)";
         case OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT:
             return "encrypted payload declared, but secure boot is not in force "
                    "for this manifest";
@@ -149,8 +151,8 @@ static const char *reason_for(oca_result_t r)
             return "a signature_class_revoke group code is neither 0x00 nor its "
                    "group's constant";
         case OCA_FAIL_CRYPTO_FIELD_SIZE:
-            return "signing fields do not describe a key and signature the "
-                   "declared algorithm and encoding can produce";
+            return "signing fields name an algorithm, encoding or size this "
+                   "library does not accept";
         case OCA_FAIL_INVALID_ARG:
             return "internal: invalid argument";
         case OCA_OK:

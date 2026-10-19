@@ -2061,29 +2061,32 @@ def test_cli_help_documents_every_exit_code():
 #
 # Every secure fixture runs with --trust-any-root-key, which leaves the anchor
 # check untested end to end. These drive --root-key-digest, the CLI's stand-in
-# for a key digest held by a device. Digests are computed here from the
-# committed development keys rather than committed as literals.
+# for a key digest held by a device: a SHA-256 over the whole raw key, bound to
+# one select slot (slot 0 unless the flag says otherwise). Digests are computed
+# here from the committed development keys rather than committed as literals.
 # ---------------------------------------------------------------------------
 
 RSA_F4_KEY = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.f4.pem")
 RSA_E3_KEY = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.e3.pem")
 
 
-def _rsa_modulus_digest(key_path: str) -> str:
-    """SHA-256 of the key's 384-byte big-endian modulus, as --root-key-digest takes it."""
+def _rsa_raw_key_digest(key_path: str) -> str:
+    """SHA-256 of the key's 388-byte raw encoding — big-endian modulus, then a
+    4-byte big-endian exponent — as --root-key-digest takes it."""
     import hashlib
 
     from cryptography.hazmat.primitives import serialization
 
     with open(key_path, "rb") as f:
         key = serialization.load_pem_private_key(f.read(), password=None)
-    modulus = key.public_key().public_numbers().n.to_bytes(384, "big")
-    return hashlib.sha256(modulus).hexdigest()
+    numbers = key.public_key().public_numbers()
+    raw = numbers.n.to_bytes(384, "big") + numbers.e.to_bytes(4, "big")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def test_cli_root_key_digest_authorizes_the_matching_key():
     result = _run_cli(["--manifest", _pack_fixture("secure_rsa"),
-                       "--root-key-digest", _rsa_modulus_digest(RSA_F4_KEY)])
+                       "--root-key-digest", _rsa_raw_key_digest(RSA_F4_KEY)])
     assert result.returncode == 0, result.stderr
     assert PASS_RE.match(result.stdout), result.stdout
 
@@ -2094,7 +2097,7 @@ def test_cli_root_key_digest_authorizes_the_matching_key():
 ])
 def test_cli_root_key_digest_refuses_every_other_key(fixture, anchor_key):
     result = _run_cli(["--manifest", _pack_fixture(fixture),
-                       "--root-key-digest", _rsa_modulus_digest(anchor_key)])
+                       "--root-key-digest", _rsa_raw_key_digest(anchor_key)])
     assert result.returncode == 1
     assert re.match(rb"^FAIL: ROOT_KEY_UNAUTHORIZED: ", result.stderr), result.stderr
 
@@ -2325,7 +2328,7 @@ def test_cli_root_key_digest_pqc_refuses_another_key():
 def test_cli_hybrid_needs_an_anchor_for_each_family(classic_anchor, pqc_anchor):
     args = ["--manifest", _pack_fixture("pqc_hybrid_rsa")]
     if classic_anchor:
-        args += ["--root-key-digest", _rsa_modulus_digest(RSA_F4_KEY)]
+        args += ["--root-key-digest", _rsa_raw_key_digest(RSA_F4_KEY)]
     if pqc_anchor:
         args += ["--root-key-digest-pqc", _mldsa_dev_key_digest()]
     result = _run_cli(args)
@@ -2341,7 +2344,7 @@ def test_cli_hybrid_needs_an_anchor_for_each_family(classic_anchor, pqc_anchor):
 ])
 def test_cli_root_key_anchors_do_not_cross_families(fixture, flag, digest):
     """Each family is authorized by its own anchor only, even one that matches."""
-    value = _mldsa_dev_key_digest() if digest == "mldsa" else _rsa_modulus_digest(RSA_F4_KEY)
+    value = _mldsa_dev_key_digest() if digest == "mldsa" else _rsa_raw_key_digest(RSA_F4_KEY)
     _assert_refused(_run_cli(["--manifest", _pack_fixture(fixture), flag, value]),
                     "ROOT_KEY_UNAUTHORIZED")
 
@@ -2438,6 +2441,109 @@ def test_make_refuses_an_openssl_older_than_the_minimum():
     )
     assert result.returncode != 0
     assert "99.0.0" in result.stdout + result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Anchors bind the whole key and its selected slot
+#
+# The anchor stands in for a digest a device holds per key slot. It must cover
+# every byte the verifier uses, and it vouches only for a key whose own slot the
+# manifest selects: revocation is decided from that select bitmap, so an anchor
+# that ignored it would let a revoked key claim another slot and boot.
+# ---------------------------------------------------------------------------
+
+_RSA_KEY_FIELD = oca_constants.OFF_PUBLIC_KEY_CLASSIC
+_RSA_EXPONENT_LAST_BYTE = _RSA_KEY_FIELD + oca_constants.RSA_3072_MODULUS_BYTES + 3
+
+
+@pytest.mark.parametrize("offset", [_RSA_KEY_FIELD, _RSA_EXPONENT_LAST_BYTE],
+                         ids=["modulus", "exponent"])
+def test_cli_root_key_digest_covers_the_whole_raw_key(tmp_path, offset):
+    """Any byte of the raw key — exponent included — changes what the anchor
+    sees, so the genuine digest no longer authorizes it."""
+    data = _fixture_bytes("secure_rsa")
+    data[offset] ^= 0x02
+    _reseal_manifest_hash(data)
+    result = _run_bundle(tmp_path, data, f"altered_key_{offset}",
+                         flags=("--root-key-digest", _rsa_raw_key_digest(RSA_F4_KEY)))
+    _assert_refused(result, "ROOT_KEY_UNAUTHORIZED")
+
+
+def _pack_with(tmp_path, fixture: str, **overrides) -> str:
+    """Pack a fixture config with some fields overridden, in process."""
+    cfg = load_config(os.path.join(FIXTURE_DIR, f"{fixture}.yaml"))
+    cfg.update(overrides)
+    prev = os.getcwd()
+    os.chdir(PROJECT_ROOT)
+    try:
+        bundle = pack_oca_bundle(cfg)
+    finally:
+        os.chdir(prev)
+    path = tmp_path / f"{fixture}_override.bin"
+    path.write_bytes(bundle)
+    return str(path)
+
+
+@pytest.mark.parametrize("anchor_slot,passes", [("", True), ("0:", True), ("1:", False)])
+def test_cli_pqc_anchor_vouches_only_for_its_own_slot(anchor_slot, passes):
+    """pqc_secure_mldsa selects slot 0, so only a slot-0 anchor authorizes it."""
+    result = _run_cli(["--manifest", _pack_fixture("pqc_secure_mldsa"),
+                       "--root-key-digest-pqc", anchor_slot + _mldsa_dev_key_digest()])
+    if passes:
+        _assert_passed(result)
+    else:
+        _assert_refused(result, "ROOT_KEY_UNAUTHORIZED")
+
+
+@pytest.mark.parametrize("fixture,flag,select_field,digest", [
+    ("pqc_secure_mldsa", "--root-key-digest-pqc", "public_key_select_pqc", "mldsa"),
+    ("secure_rsa", "--root-key-digest", "public_key_select_classic", "rsa"),
+])
+def test_cli_a_key_claiming_another_slot_is_unauthorized(tmp_path, fixture, flag,
+                                                         select_field, digest):
+    """The slot-0 key, re-packed claiming slot 1, matches the slot-0 digest but
+    not the slot it claims."""
+    value = _mldsa_dev_key_digest() if digest == "mldsa" else _rsa_raw_key_digest(RSA_F4_KEY)
+    bundle = _pack_with(tmp_path, fixture, **{select_field: 0x02})
+    _assert_refused(_run_cli(["--manifest", bundle, flag, value]), "ROOT_KEY_UNAUTHORIZED")
+    _assert_passed(_run_cli(["--manifest", bundle, flag, "1:" + value]))
+
+
+def test_cli_a_revoked_key_cannot_escape_by_claiming_another_slot(tmp_path):
+    """The device has revoked slot 0. Its key, re-signed claiming slot 1, is
+    refused: the anchor holds that key at slot 0, which the manifest no longer
+    selects, and slot 1's revocation bit is clear."""
+    bundle = _pack_with(tmp_path, "pqc_secure_mldsa", public_key_select_pqc=0x02)
+    result = _run_cli(["--manifest", bundle,
+                       "--root-key-digest-pqc", _mldsa_dev_key_digest(),
+                       "--revoked-root-keys-pqc", "0x1"])
+    _assert_refused(result, "ROOT_KEY_UNAUTHORIZED")
+
+
+def _resign_pqc(data: bytearray) -> None:
+    """Re-seal manifest_hash and re-sign the PQC class with the development key,
+    so an edit to the signed region survives integrity and signature checks."""
+    _reseal_manifest_hash(data)
+    region = bytes(data[:oca_constants.PQC_SIGNED_REGION_END])
+    data[_SIGNATURE_PQC_SPAN] = _mldsa_dev_key().sign(region)
+
+
+def test_cli_an_enforced_class_that_selects_no_key_is_unauthorized(tmp_path):
+    """Refused by the library before any anchor is asked, so even
+    --trust-any-root-key cannot authorize a class that selects nothing."""
+    data = _fixture_bytes("pqc_secure_mldsa")
+    off = oca_constants.OFF_PUBLIC_KEY_SELECT_PQC
+    data[off:off + 16] = bytes(16)
+    _resign_pqc(data)
+    _assert_refused(_run_bundle(tmp_path, data, "select_none"), "ROOT_KEY_UNAUTHORIZED")
+
+
+@pytest.mark.parametrize("bad", ["112:" + "ab" * 32, "99999:" + "ab" * 32, "1:" + "ab" * 31])
+@pytest.mark.parametrize("flag", ["--root-key-digest", "--root-key-digest-pqc"])
+def test_cli_rejects_a_malformed_anchor_slot(flag, bad):
+    result = _run_cli(["--manifest", _pack_fixture("basic"), flag, bad])
+    assert result.returncode == 2, result.stderr
+    assert flag.encode() in result.stderr
 
 
 def test_an_openssl_below_the_minimum_is_a_reason_naming_both_versions(monkeypatch):

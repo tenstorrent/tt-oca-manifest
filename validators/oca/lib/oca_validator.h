@@ -739,6 +739,14 @@ typedef struct oca_crypto_blob {
     /** Size of the manifest FIELD holding the blob, which for a DER-encoded
      *  value is generally larger than the encoded content. */
     size_t               field_length;
+    /** Valid bytes at the start of @c bytes: the manifest's own size field for
+     *  this blob (signature_size_* or public_key_size_*), which
+     *  oca_check_crypto_field_sizes() has held to the declared algorithm and
+     *  encoding ahead of both callbacks in the composed pipeline. Exact for
+     *  every raw value and for a DER public key; for a DER ECDSA signature it is
+     *  the algorithm's maximum DER length, and the DER framing gives the encoded
+     *  length within it. The rest of the field is padding. */
+    size_t               length;
     oca_blob_kind_t      kind;            /**< Whether this is the key or the signature. */
     oca_encoding_t       encoding;        /**< How @c bytes is encoded. */
     oca_primitive_type_t primitive_type;  /**< Which signature primitive applies. */
@@ -1133,9 +1141,19 @@ struct oca_callbacks {
      * The library deliberately holds no opinion on how the answer is reached,
      * because the anchor is not something the format can describe: it may be a
      * key embedded in mask ROM, a digest burned into OTP, an on-die table, or a
-     * chain this build does not walk. @p select is passed alongside the key so
-     * an implementation with per-slot anchors can tell which one the manifest
-     * is claiming, rather than having to search every anchor it holds.
+     * chain this build does not walk. Whatever its shape, two things are the
+     * implementation's to get right:
+     *
+     *   - **Bind the key to its selected slot.** Return OCA_OK only when the
+     *     key matches the anchor of a slot whose bit is set in @p select.
+     *     Revocation is decided from that bitmap, so an anchor that ignores it
+     *     lets the holder of a revoked key select a different slot and boot.
+     *     The library refuses an enforced class that selects no key before
+     *     calling this.
+     *   - **Bind the whole key.** Compare every byte the verifier will use —
+     *     for a raw RSA key the exponent as well as the modulus. An anchor over
+     *     the modulus alone accepts the same modulus with exponent 1, under
+     *     which an RSA "signature" needs no private key.
      *
      * REQUIRED under secure boot. NULL fails closed with
      * OCA_FAIL_CALLBACK_UNAVAILABLE rather than passing, because a build that
@@ -1190,6 +1208,11 @@ struct oca_callbacks {
      * the commit once per bitmap it writes. The two families' bitmaps are
      * separate device state, and an implementation that ignores @p algo would
      * apply classic revocations to PQC keys.
+     *
+     * Write all of @p out before returning OCA_OK. The revocation check
+     * pre-fills it with every key revoked, so a reader that reports success
+     * without writing fails closed there; the commit pre-fills zeros, so it
+     * then writes back only the manifest's own bits.
      *
      * @param[in]  algo      Which algorithm family's state to read.
      * @param[out] out       Receives the 16-byte little-endian bitmap.
@@ -1892,8 +1915,12 @@ oca_result_t oca_check_signature(
  * @retval OCA_OK                          The device authorizes every enforced
  *                                         class's key, or secure boot is not
  *                                         in force.
- * @retval OCA_FAIL_ROOT_KEY_UNAUTHORIZED  It does not, or the callback answered
- *                                         with a code of its own invention.
+ * @retval OCA_FAIL_ROOT_KEY_UNAUTHORIZED  An enforced class's key was refused:
+ *                                         its public_key_select bitmap selects
+ *                                         no key, the device does not
+ *                                         authorize the key, or the callback
+ *                                         returned a result code it is not
+ *                                         allowed to return.
  * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL  No class is enforced in an engaged
  *                                         context, or PQC is enforced on a
  *                                         variant with no PQC fields — both
@@ -2557,6 +2584,11 @@ oca_result_t oca_toc_image_at(
  * revoke: a PQC-only manifest commits its public_key_classic_revoke, and a
  * classic-only PQC manifest its public_key_pqc_revoke.
  *
+ * Writes nothing unless @p ctx records that a signature check ran and passed
+ * (secure_boot_authenticated): the format allows these updates only after the
+ * manifest is authenticated with every required signature, and a context whose
+ * check failed or never ran must not be able to burn fuses.
+ *
  * The library never calls this itself: validation is read-only and mutates no
  * device state, which is what lets a caller validate speculatively.
  *
@@ -2572,7 +2604,11 @@ oca_result_t oca_toc_image_at(
  *                  and guessing is not available to it.
  * @retval OCA_OK                            Committed, or secure boot not in
  *                                           force.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE     A needed callback is NULL.
+ * @retval OCA_FAIL_SIGNATURE                @p ctx records no signature check
+ *                                           that ran and passed. Nothing was
+ *                                           written.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE     A needed callback is NULL, or a
+ *                                           device state could not be read.
  * @retval OCA_FAIL_SECURITY_STATE_UPDATE    A write-back failed.
  * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED  @p ctx holds no determination.
  * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination, or the

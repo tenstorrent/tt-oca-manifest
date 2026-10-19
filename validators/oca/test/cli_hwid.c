@@ -15,7 +15,6 @@
 
 #include "cli_hwid.h"
 
-#include "oca_layout_pqc.h"
 #include "openssl_crypto.h"
 
 #include <string.h>
@@ -85,24 +84,30 @@ oca_hw_result_t cli_get_version(oca_version_level_t level,
     return OCA_HW_ERROR;
 }
 
-/* The bytes of a raw RSA-3072 key that the classical anchor digests. */
-#define RSA_3072_MODULUS_BYTES 384u
-
-/* Whether `public_key` is a raw key of `primitive` whose first `len` bytes
- * hash to `anchor`, compared in constant time. Only that shape can be matched
- * against a digest anchor; any other key is unauthorized. */
+/* Whether `public_key` is a raw key of `primitive`, selected in `select` at
+ * the anchor's `slot`, whose whole encoding hashes to `anchor`, compared in
+ * constant time.
+ *
+ * Both bindings matter. The digest covers the blob's validated length, every
+ * byte the verifier uses: for a raw RSA key the exponent as well as the
+ * modulus. And the anchor vouches only for its own slot: revocation is decided
+ * from the select bitmap, so an anchor that ignored it would let a revoked key
+ * claim another slot. Any other shape is unauthorized. */
 static oca_result_t key_matches_anchor(const oca_crypto_blob_t *public_key,
-                                       oca_primitive_type_t primitive, size_t len,
+                                       const uint8_t select[16], unsigned slot,
+                                       oca_primitive_type_t primitive,
                                        const uint8_t anchor[32])
 {
     if (public_key->encoding != OCA_ENCODING_RAW
         || public_key->primitive_type != primitive
-        || public_key->field_length < len) {
+        || public_key->length == 0u
+        || public_key->length > public_key->field_length
+        || ((select[slot / 8u] >> (slot % 8u)) & 1u) == 0u) {
         return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
     }
 
     uint8_t digest[32];
-    if (openssl_sha256(public_key->bytes, len, digest) != OCA_OK) {
+    if (openssl_sha256(public_key->bytes, public_key->length, digest) != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     unsigned diff = 0u;
@@ -124,28 +129,26 @@ static oca_result_t key_matches_anchor(const oca_crypto_blob_t *public_key,
 oca_result_t cli_is_key_authorized(const oca_crypto_blob_t *public_key,
                                    const uint8_t select[16])
 {
-    (void)select;
-
     if (g_opt == NULL) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     if (g_opt->trust_any_root_key) {
         return OCA_OK;
     }
-    if (public_key == NULL || public_key->bytes == NULL) {
+    if (public_key == NULL || public_key->bytes == NULL || select == NULL) {
         return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
     }
     if (public_key->key_algorithm == OCA_KEY_ALGO_PQC) {
         if (!g_opt->root_key_digest_pqc_present) {
             return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
         }
-        return key_matches_anchor(public_key, OCA_PRIMITIVE_ML_DSA_87,
-                                  OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES,
-                                  g_opt->root_key_digest_pqc);
+        return key_matches_anchor(public_key, select, g_opt->root_key_slot_pqc,
+                                  OCA_PRIMITIVE_ML_DSA_87, g_opt->root_key_digest_pqc);
     }
     if (!g_opt->root_key_digest_present) {
         return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
     }
-    return key_matches_anchor(public_key, OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256,
-                              RSA_3072_MODULUS_BYTES, g_opt->root_key_digest);
+    return key_matches_anchor(public_key, select, g_opt->root_key_slot,
+                              OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256,
+                              g_opt->root_key_digest);
 }

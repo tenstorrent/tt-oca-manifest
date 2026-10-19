@@ -43,17 +43,20 @@ typedef struct cli_options {
      * per-check confirm that guards it, have no end-to-end expression.
      * Outranked by --secure-boot-disabled, exactly as on a real part. */
     bool secure_boot_active;
-    /* Root-key trust anchors, one per algorithm family. --root-key-digest
-     * supplies a SHA-256 of a classical RSA-3072 key's modulus and
-     * --root-key-digest-pqc one of a raw ML-DSA-87 key; each family is
-     * authorized by its own anchor only. --trust-any-root-key authorizes
+    /* Root-key trust anchors, one per algorithm family, each a SHA-256 over a
+     * whole raw key held for one select slot: --root-key-digest for a raw
+     * RSA-3072 key (modulus and exponent), --root-key-digest-pqc for a raw PQC
+     * key. Each family is authorized by its own anchor only, and only for a
+     * manifest that selects the anchor's slot. --trust-any-root-key authorizes
      * whatever the manifest carries, which is only ever right for structural
      * checks on a fixture whose key is not the point. */
     bool     trust_any_root_key;
     bool     root_key_digest_present;
     uint8_t  root_key_digest[32];
+    unsigned root_key_slot;
     bool     root_key_digest_pqc_present;
     uint8_t  root_key_digest_pqc[32];
+    unsigned root_key_slot_pqc;
 
     /* Device-stored ROOT-key revocation state, per family, from
      * --revoked-root-keys and --revoked-root-keys-pqc: 128-bit bitmaps held

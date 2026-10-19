@@ -9,8 +9,14 @@
  *   ML-DSA-87                       (signature_type_pqc = 0x33)
  *
  * ML-DSA-87 is pure FIPS 204 ML-DSA.Verify over the signed region itself with
- * the empty context: no pre-hash, no HashML-DSA, no external mu. Its key and
- * signature are raw only — pkEncode (2592 bytes) and sigEncode (4627 bytes).
+ * the empty context: no pre-hash and no HashML-DSA. Its key and signature are
+ * raw only — pkEncode (2592 bytes) and sigEncode (4627 bytes) — and are read to
+ * the lengths the blobs carry, which the library has already held to those
+ * values. Each PQC algorithm is one row of the table in verify_pqc().
+ *
+ * A raw or DER RSA key's public exponent must be odd and at least 3. That is a
+ * sanity bound, not the trust decision: the anchor in cli_hwid.c binds the
+ * whole key, exponent included.
  *
  * The classical types come in both encodings the format defines. The library
  * hands us the full field width as an upper bound and the blob's `encoding` /
@@ -31,7 +37,6 @@
 
 #include "openssl_crypto.h"
 #include "oca_layout.h"
-#include "oca_layout_pqc.h"
 #include "cli_args.h"
 
 #include <stdlib.h>
@@ -293,15 +298,17 @@ static int ecdsa_raw_to_der(const uint8_t *raw, unsigned char **out, size_t *out
 }
 
 /**
- * @brief Build an EVP_PKEY from a raw ML-DSA-87 public key.
+ * @brief Build an EVP_PKEY from a raw PQC public key.
  *
- * The raw form is FIPS 204 pkEncode, which OpenSSL imports as the key's public
- * octet string.
+ * The raw form is the algorithm's own encoding (FIPS 204 pkEncode for
+ * ML-DSA), which OpenSSL imports as the key's public octet string.
  *
- * @param[in] raw  OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES of key material.
+ * @param[in] name  OpenSSL's name for the key type.
+ * @param[in] raw   Key material.
+ * @param[in] len   Bytes of @p raw.
  * @return A caller-owned EVP_PKEY, or NULL if any OpenSSL step failed.
  */
-static EVP_PKEY *ml_dsa_87_key_from_raw(const uint8_t *raw)
+static EVP_PKEY *pqc_key_from_raw(const char *name, const uint8_t *raw, size_t len)
 {
     OSSL_PARAM_BLD *bld = OSSL_PARAM_BLD_new();
     OSSL_PARAM *params = NULL;
@@ -309,12 +316,11 @@ static EVP_PKEY *ml_dsa_87_key_from_raw(const uint8_t *raw)
     EVP_PKEY *pkey = NULL;
 
     if (bld == NULL
-        || OSSL_PARAM_BLD_push_octet_string(bld, OSSL_PKEY_PARAM_PUB_KEY, raw,
-                                            OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES) != 1) {
+        || OSSL_PARAM_BLD_push_octet_string(bld, OSSL_PKEY_PARAM_PUB_KEY, raw, len) != 1) {
         goto done;
     }
     params = OSSL_PARAM_BLD_to_param(bld);
-    ctx = EVP_PKEY_CTX_new_from_name(NULL, "ML-DSA-87", NULL);
+    ctx = EVP_PKEY_CTX_new_from_name(NULL, name, NULL);
     if (params == NULL || ctx == NULL || EVP_PKEY_fromdata_init(ctx) != 1) {
         goto done;
     }
@@ -329,13 +335,23 @@ done:
     return pkey;
 }
 
+/* PQC primitives this backend verifies, by the name OpenSSL knows each as.
+ * Adding an algorithm the library accepts is one row here. */
+static const struct {
+    oca_primitive_type_t primitive;
+    const char          *openssl_name;
+} PQC_ALGORITHMS[] = {
+    { OCA_PRIMITIVE_ML_DSA_87, "ML-DSA-87" },
+};
+
 /**
- * @brief Verify a PQC-family signature: ML-DSA-87, the only one this backend
- *        implements.
+ * @brief Verify a PQC-family signature with the algorithm its primitive names.
  *
- * Message encoding 1 is pure ML-DSA, M' = 0 || len(ctx) || ctx || M, and the
- * context string is left at its default, which is empty. The message is the
- * signed region as given.
+ * Message encoding 1 is pure ML-DSA, M' = 0 || len(ctx) || ctx || M; the
+ * context string is set explicitly empty and external-mu off, so a change in
+ * OpenSSL's defaults cannot change the construction. The message is the signed
+ * region as given, and the key and signature are read to the lengths the blobs
+ * carry.
  *
  * @param[in] signature          Signature blob.
  * @param[in] public_key         Public-key blob.
@@ -343,39 +359,60 @@ done:
  * @param[in] signed_region_len  Length of @p signed_region.
  * @retval OCA_OK                        Signature verified.
  * @retval OCA_FAIL_SIGNATURE            Verification mismatch, or a blob this
- *                                       backend cannot read as ML-DSA-87.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE Another PQC primitive, or an OpenSSL
- *                                       without ML-DSA-87.
+ *                                       backend cannot read as its algorithm.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE A primitive this backend does not
+ *                                       implement, an OpenSSL without it, or
+ *                                       an OpenSSL allocation failure.
  */
 static oca_result_t verify_pqc(const oca_crypto_blob_t *signature,
                                const oca_crypto_blob_t *public_key,
                                const uint8_t *signed_region, size_t signed_region_len)
 {
-    if (signature->primitive_type != OCA_PRIMITIVE_ML_DSA_87) {
+    const char *name = NULL;
+    for (size_t i = 0u; i < sizeof PQC_ALGORITHMS / sizeof PQC_ALGORITHMS[0]; ++i) {
+        if (PQC_ALGORITHMS[i].primitive == signature->primitive_type) {
+            name = PQC_ALGORITHMS[i].openssl_name;
+        }
+    }
+    if (name == NULL) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     if (signature->encoding != OCA_ENCODING_RAW || public_key->encoding != OCA_ENCODING_RAW
-        || signature->field_length < OCA_PQC_ML_DSA_87_SIGNATURE_BYTES
-        || public_key->field_length < OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES) {
+        || signature->length == 0u || signature->length > signature->field_length
+        || public_key->length == 0u || public_key->length > public_key->field_length) {
         return OCA_FAIL_SIGNATURE;
     }
 
-    EVP_SIGNATURE *algorithm = EVP_SIGNATURE_fetch(NULL, "ML-DSA-87", NULL);
+    EVP_SIGNATURE *algorithm = EVP_SIGNATURE_fetch(NULL, name, NULL);
     if (algorithm == NULL) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    EVP_PKEY *pkey = ml_dsa_87_key_from_raw(public_key->bytes);
-    EVP_PKEY_CTX *ctx = (pkey != NULL) ? EVP_PKEY_CTX_new_from_pkey(NULL, pkey, NULL) : NULL;
+    EVP_PKEY *pkey = pqc_key_from_raw(name, public_key->bytes, public_key->length);
+    if (pkey == NULL) {
+        EVP_SIGNATURE_free(algorithm);
+        return OCA_FAIL_SIGNATURE;
+    }
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_pkey(NULL, pkey, NULL);
+    if (ctx == NULL) {
+        EVP_PKEY_free(pkey);
+        EVP_SIGNATURE_free(algorithm);
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
 
     int message_encoding = 1;
+    unsigned char empty_context = 0u;
     OSSL_PARAM params[] = {
         OSSL_PARAM_construct_int(OSSL_SIGNATURE_PARAM_MESSAGE_ENCODING, &message_encoding),
+        OSSL_PARAM_construct_octet_string(OSSL_SIGNATURE_PARAM_CONTEXT_STRING,
+                                          &empty_context, 0u),
+#ifdef OSSL_SIGNATURE_PARAM_MU
+        OSSL_PARAM_construct_int(OSSL_SIGNATURE_PARAM_MU, &(int){0}),
+#endif
         OSSL_PARAM_construct_end(),
     };
     oca_result_t result = OCA_FAIL_SIGNATURE;
-    if (ctx != NULL
-        && EVP_PKEY_verify_message_init(ctx, algorithm, params) == 1
-        && EVP_PKEY_verify(ctx, signature->bytes, OCA_PQC_ML_DSA_87_SIGNATURE_BYTES,
+    if (EVP_PKEY_verify_message_init(ctx, algorithm, params) == 1
+        && EVP_PKEY_verify(ctx, signature->bytes, signature->length,
                            signed_region, signed_region_len) == 1) {
         result = OCA_OK;
     }
@@ -384,6 +421,19 @@ static oca_result_t verify_pqc(const oca_crypto_blob_t *signature,
     EVP_PKEY_free(pkey);
     EVP_SIGNATURE_free(algorithm);
     return result;
+}
+
+/* Whether an RSA key's public exponent is odd and at least 3. A sanity bound
+ * on what this backend will verify with; the anchor binds the key itself. */
+static int rsa_exponent_acceptable(const EVP_PKEY *pkey)
+{
+    BIGNUM *e = NULL;
+    if (EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_RSA_E, &e) != 1) {
+        return 0;
+    }
+    int ok = BN_is_odd(e) && BN_num_bits(e) >= 2;
+    BN_free(e);
+    return ok;
 }
 
 oca_result_t openssl_verify_signature(
@@ -405,6 +455,11 @@ oca_result_t openssl_verify_signature(
 
     EVP_PKEY *pkey = decode_public_key(public_key);
     if (pkey == NULL) {
+        return OCA_FAIL_SIGNATURE;
+    }
+    if (public_key->primitive_type == OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256
+        && !rsa_exponent_acceptable(pkey)) {
+        EVP_PKEY_free(pkey);
         return OCA_FAIL_SIGNATURE;
     }
 

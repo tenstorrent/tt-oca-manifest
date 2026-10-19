@@ -24,8 +24,10 @@
 
 #include "oca_validator.h"
 
+#include "oca_compare.h"
 #include "oca_layout.h"
 #include "oca_layout_pqc.h"
+#include "parser.h"
 #include "secure_boot.h"
 
 /**
@@ -69,15 +71,27 @@ static oca_result_t authorize_key_by_class(const uint8_t *body,
                                : (size_t)OCA_LEN_PUBLIC_KEY;
     size_t off_select = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SELECT
                                : (size_t)OCA_OFF_PUBLIC_KEY_SELECT;
+    size_t off_size   = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SIZE
+                               : (size_t)OCA_OFF_PUBLIC_KEY_SIZE;
 
     oca_crypto_blob_t public_key = {
         .bytes          = body + off_key,
         .field_length   = len_key,
+        .length         = oca_le_u16(body + off_size),
         .kind           = OCA_BLOB_PUBLIC_KEY,
         .encoding       = (oca_encoding_t)body[off_enc],
         .primitive_type = (oca_primitive_type_t)body[off_type],
         .key_algorithm  = algo,
     };
+
+    /* A class that selects no key authorizes nothing: with secure boot in
+     * force that fails (spec: no authorized key fails secure boot), and it
+     * would leave the revocation check nothing to test. Decided here rather
+     * than left to the anchor, so one that ignores the bitmap cannot pass it.
+     * Only the used bytes count; the reserved tail selects nothing. */
+    if (oca_ct_any_nonzero(body + off_select, OCA_ROOT_KEY_BITMAP_USED_BYTES) == 0) {
+        return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
+    }
 
     oca_result_t r = cb->is_key_authorized(&public_key, body + off_select);
     if (r == OCA_OK || r == OCA_FAIL_CALLBACK_UNAVAILABLE) {

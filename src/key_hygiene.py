@@ -34,8 +34,8 @@ Two ways to opt in, deliberately different in depending one what needs to be don
   once in `tests/conftest.py`.
 
 Note the fingerprint here is NOT a ROOT-key trust-anchor digest. The reference
-validator harness stands in for one per algorithm family -- SHA-256 over a raw
-RSA-3072 key's 384-byte modulus, or over a raw ML-DSA-87 key's 2592 bytes (see
+validator harness stands in for one per algorithm family and key slot -- SHA-256
+over a whole raw key, 388 bytes for RSA-3072 and 2592 for ML-DSA-87 (see
 `validators/oca/test/cli_hwid.c`) -- and that answers a different question:
 whether silicon trusts a particular public key. This one only answers whether a
 key came out of this repository.

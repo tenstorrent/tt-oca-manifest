@@ -6,6 +6,8 @@
 
 #include "cli_args.h"
 
+#include "oca_layout.h"
+
 #include <ctype.h>
 #include <getopt.h>
 #include <stdio.h>
@@ -41,19 +43,49 @@ static int parse_hex32(const char *s, uint8_t out[32])
     return 0;
 }
 
-/* Parse a 128-bit bitmap written as a hex number (optional 0x prefix, 1 to 32
- * digits) into its 16-byte little-endian form, the layout of a manifest revoke
- * field. Returns 0 on success, -1 on malformed input. */
-static int parse_bitmap128(const char *s, uint8_t out[16])
+/* Select slots an anchor can be held for: the used bits of the bitmap. */
+#define CLI_ROOT_KEY_SLOTS (OCA_ROOT_KEY_BITMAP_USED_BYTES * 8u)
+
+/* Split an optional decimal "<slot>:" prefix off an anchor argument. Sets
+ * *slot (default 0) and returns the digest that follows, or NULL when the
+ * prefix names no select slot (one of the 112 used bits). */
+static const char *split_anchor_slot(const char *arg, unsigned *slot)
+{
+    *slot = 0u;
+    const char *colon = strchr(arg, ':');
+    if (colon == NULL) {
+        return arg;
+    }
+    if (colon == arg) {
+        return NULL;
+    }
+    unsigned long v = 0u;
+    for (const char *p = arg; p < colon; ++p) {
+        if (*p < '0' || *p > '9') {
+            return NULL;
+        }
+        v = v * 10u + (unsigned long)(*p - '0');
+        if (v >= CLI_ROOT_KEY_SLOTS) {
+            return NULL;
+        }
+    }
+    *slot = (unsigned)v;
+    return colon + 1;
+}
+
+/* Parse a bitmap written as a hex number (optional 0x prefix, 1 to 2 * len
+ * digits) into its len-byte little-endian form, the layout of the manifest
+ * field it stands in for. Returns 0 on success, -1 on malformed input. */
+static int parse_bitmap(const char *s, uint8_t *out, size_t len)
 {
     if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
         s += 2;
     }
     size_t n = strlen(s);
-    if (n == 0u || n > 32u) {
+    if (n == 0u || n > 2u * len) {
         return -1;
     }
-    memset(out, 0, 16u);
+    memset(out, 0, len);
     for (size_t i = 0u; i < n; ++i) {
         int nibble = hex_nibble((unsigned char)s[n - 1u - i]);  /* least significant first */
         if (nibble < 0) {
@@ -211,10 +243,13 @@ void cli_print_help(void)
         "                              memory; what a constrained ROM does)\n"
         "  --trust-any-root-key        authorize whatever ROOT key the manifest\n"
         "                              carries (structural checks only)\n"
-        "  --root-key-digest HEX64     authorize only a raw RSA-3072 key whose\n"
-        "                              384-byte modulus has this SHA-256\n"
-        "  --root-key-digest-pqc HEX64 authorize only a raw ML-DSA-87 key whose\n"
-        "                              2592 bytes have this SHA-256\n"
+        "  --root-key-digest [<slot>:]HEX64\n"
+        "                              authorize only a raw RSA-3072 key whose\n"
+        "                              388 bytes (modulus and exponent) have this\n"
+        "                              SHA-256, held for select slot <slot>\n"
+        "                              (default 0)\n"
+        "  --root-key-digest-pqc [<slot>:]HEX64\n"
+        "                              the same for a raw PQC key\n"
         "  --revoked-root-keys HEX     report this 128-bit bitmap as the device's\n"
         "                              classical ROOT-key revocation state\n"
         "  --revoked-root-keys-pqc HEX report this 128-bit bitmap as the device's\n"
@@ -228,7 +263,10 @@ void cli_print_help(void)
         "                              is still verified and still decrypts its\n"
         "                              payload; a manifest with the bit clear now\n"
         "                              boots unverified\n"
-        "\n"
+        "\n",
+        stdout);
+    /* Two literals: one would exceed the 4095 characters C99 guarantees. */
+    fputs(
         "Storage-image mode (the staged flow a boot ROM runs):\n"
         "  --manifest-addr <hex>       treat --manifest as a whole storage image and\n"
         "                              read the manifest from this address; the\n"
@@ -413,28 +451,34 @@ int cli_parse_args(int argc, char **argv, cli_options_t *opt)
             case LO_TRUST_ANY_ROOT_KEY:
                 opt->trust_any_root_key = true;
                 break;
-            case LO_ROOT_KEY_DIGEST:
-                if (parse_hex32(optarg, opt->root_key_digest) != 0) {
-                    fprintf(stderr, "usage: --root-key-digest wants 64 hex digits\n");
+            case LO_ROOT_KEY_DIGEST: {
+                const char *hex = split_anchor_slot(optarg, &opt->root_key_slot);
+                if (hex == NULL || parse_hex32(hex, opt->root_key_digest) != 0) {
+                    fprintf(stderr, "usage: --root-key-digest wants [<slot>:]<64 hex "
+                                    "digits>, slot 0..%u\n", CLI_ROOT_KEY_SLOTS - 1u);
                     return 2;
                 }
                 opt->root_key_digest_present = true;
                 break;
-            case LO_ROOT_KEY_DIGEST_PQC:
-                if (parse_hex32(optarg, opt->root_key_digest_pqc) != 0) {
-                    fprintf(stderr, "usage: --root-key-digest-pqc wants 64 hex digits\n");
+            }
+            case LO_ROOT_KEY_DIGEST_PQC: {
+                const char *hex = split_anchor_slot(optarg, &opt->root_key_slot_pqc);
+                if (hex == NULL || parse_hex32(hex, opt->root_key_digest_pqc) != 0) {
+                    fprintf(stderr, "usage: --root-key-digest-pqc wants [<slot>:]<64 "
+                                    "hex digits>, slot 0..%u\n", CLI_ROOT_KEY_SLOTS - 1u);
                     return 2;
                 }
                 opt->root_key_digest_pqc_present = true;
                 break;
+            }
             case LO_REVOKED_ROOT_KEYS:
-                if (parse_bitmap128(optarg, opt->revoked_root_keys) != 0) {
+                if (parse_bitmap(optarg, opt->revoked_root_keys, 16u) != 0) {
                     fprintf(stderr, "usage: --revoked-root-keys wants 1 to 32 hex digits\n");
                     return 2;
                 }
                 break;
             case LO_REVOKED_ROOT_KEYS_PQC:
-                if (parse_bitmap128(optarg, opt->revoked_root_keys_pqc) != 0) {
+                if (parse_bitmap(optarg, opt->revoked_root_keys_pqc, 16u) != 0) {
                     fprintf(stderr, "usage: --revoked-root-keys-pqc wants 1 to 32 hex digits\n");
                     return 2;
                 }

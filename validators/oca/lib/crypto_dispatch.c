@@ -11,6 +11,7 @@
 #include "oca_layout.h"
 #include "oca_layout_pqc.h"
 #include "oca_variant.h"
+#include "parser.h"
 #include "secure_boot.h"
 
 oca_result_t oca_manifest_hash_check(const uint8_t *body,
@@ -95,12 +96,17 @@ static oca_result_t verify_signature_by_class(const uint8_t *body,
                                 : (size_t)OCA_OFF_PUBLIC_KEY;
     size_t len_key     = is_pqc ? (size_t)OCA_PQC_LEN_PUBLIC_KEY
                                 : (size_t)OCA_LEN_PUBLIC_KEY;
+    size_t off_sig_sz  = is_pqc ? (size_t)OCA_PQC_OFF_SIGNATURE_SIZE
+                                : (size_t)OCA_OFF_SIGNATURE_SIZE;
+    size_t off_key_sz  = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SIZE
+                                : (size_t)OCA_OFF_PUBLIC_KEY_SIZE;
 
     oca_primitive_type_t prim = (oca_primitive_type_t)body[off_type];
 
     oca_crypto_blob_t signature = {
         .bytes          = body + off_sig,
         .field_length   = len_sig,
+        .length         = oca_le_u16(body + off_sig_sz),
         .kind           = OCA_BLOB_SIGNATURE,
         .encoding       = (oca_encoding_t)body[off_sig_enc],
         .primitive_type = prim,
@@ -109,6 +115,7 @@ static oca_result_t verify_signature_by_class(const uint8_t *body,
     oca_crypto_blob_t public_key = {
         .bytes          = body + off_key,
         .field_length   = len_key,
+        .length         = oca_le_u16(body + off_key_sz),
         .kind           = OCA_BLOB_PUBLIC_KEY,
         .encoding       = (oca_encoding_t)body[off_key_enc],
         .primitive_type = prim,
