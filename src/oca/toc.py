@@ -123,7 +123,7 @@ def build_toc_entry(image_meta: Dict[str, Any], image_bytes: bytes) -> bytes:
     Bytes not covered by a field above are the entry's two reserved regions
     (20..24 and 272..280), which the spec requires the Producer to zero.
     """
-    image_type = image_meta.get("type", "_VENDOR1 BLSTAGE1")
+    image_type = image_meta.get("type")
     if not isinstance(image_type, str):
         raise OcaConfigError("image.type must be a string", field_name="payload_images")
     if len(image_type) > oca_consts.LEN_TOC_ENTRY_TYPE:

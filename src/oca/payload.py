@@ -79,6 +79,11 @@ def assemble_multi_image_payload(
                 f"payload_images[{idx}]: missing required field 'path'",
                 field_name="payload_images",
             )
+        if not image.get("type"):
+            raise OcaConfigError(
+                f"payload_images[{idx}]: missing required field 'type'",
+                field_name="payload_images",
+            )
         with open(path, "rb") as fh:
             data = fh.read()
         explicit_offset = image.get("offset")
@@ -99,7 +104,7 @@ def assemble_multi_image_payload(
             {
                 "idx": idx,
                 "path": path,
-                "type": image.get("type", "_VENDOR1 BLSTAGE1"),
+                "type": image["type"],
                 "group": int(image.get("group", 0)),
                 "version": image.get("version") or {},
                 "bytes": data,
