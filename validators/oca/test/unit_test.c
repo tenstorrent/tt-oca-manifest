@@ -3893,6 +3893,60 @@ static void build_devstate_cb(oca_callbacks_t *cb,
 }
 
 /* ------------------------------------------------------------------ */
+/* manifest_length for each variant, and its place in the framing      */
+/* ------------------------------------------------------------------ */
+
+/* The PQC variant is held to its own size, exactly as Classic is to 4096. */
+TEST(test_manifest_length_holds_a_pqc_body_to_its_own_size)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    static const uint32_t bad[] = {
+        0u, OCA_CLASSIC_BODY_SIZE, OCA_PQC_BODY_SIZE - 1u, OCA_PQC_BODY_SIZE + 1u,
+        0xFFFFFFFFu,
+    };
+    build_minimal_pqc_manifest(buf);
+    ASSERT_EQ_INT(oca_check_manifest_length(buf), OCA_OK);
+    for (unsigned i = 0u; i < sizeof bad / sizeof bad[0]; ++i) {
+        build_minimal_pqc_manifest(buf);
+        toc_put_u32(buf + OCA_OFF_MANIFEST_LENGTH, bad[i]);
+        ASSERT_EQ_INT(oca_check_manifest_length(buf), OCA_FAIL_MANIFEST_LENGTH);
+    }
+}
+
+/* manifest_length is verified right after the magic and the major version,
+ * before any further field is parsed, the trailer included: a body wrong on both
+ * counts reports its length, in either variant. */
+TEST(test_manifest_length_is_checked_before_the_trailer)
+{
+    uint8_t classic[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(classic);
+    toc_put_u32(classic + OCA_OFF_MANIFEST_LENGTH, OCA_PQC_BODY_SIZE);
+    classic[OCA_CLASSIC_OFF_TRAILER + 2] = 0xFFu;
+    ASSERT_EQ_INT(oca_validate_manifest(classic, sizeof classic, NULL, NULL),
+                  OCA_FAIL_MANIFEST_LENGTH);
+
+    static uint8_t pqc[OCA_PQC_BODY_SIZE];
+    build_minimal_pqc_manifest(pqc);
+    toc_put_u32(pqc + OCA_OFF_MANIFEST_LENGTH, OCA_CLASSIC_BODY_SIZE);
+    pqc[OCA_PQC_OFF_TRAILER] ^= 0xFFu;
+    ASSERT_EQ_INT(oca_validate_manifest(pqc, sizeof pqc, NULL, NULL),
+                  OCA_FAIL_MANIFEST_LENGTH);
+}
+
+/* The major version comes first: a newer major may redefine every later field,
+ * manifest_length among them. */
+TEST(test_the_major_version_is_checked_before_manifest_length)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(buf);
+    buf[OCA_OFF_MANIFEST_VERSION_MAJOR + 0] = (uint8_t)(OCA_LIB_MANIFEST_MAJOR + 1);
+    toc_put_u32(buf + OCA_OFF_MANIFEST_LENGTH, OCA_PQC_BODY_SIZE);
+    buf[OCA_CLASSIC_OFF_TRAILER + 2] = 0xFFu;
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, NULL, NULL),
+                  OCA_FAIL_FORMAT_VERSION_MISMATCH);
+}
+
+/* ------------------------------------------------------------------ */
 /* Encryption requires CONFIRMED secure boot                          */
 /*                                                                    */
 /* The gate reads what oca_check_signature recorded. Every test here  */
@@ -7475,6 +7529,9 @@ int main(int argc, char **argv)
     RUN_TEST(test_validate_manifest_runs_the_length_check);
     RUN_TEST(test_both_entry_points_agree_on_a_manifest_level_failure);
     RUN_TEST(test_result_string_covers_the_manifest_length_code);
+    RUN_TEST(test_manifest_length_holds_a_pqc_body_to_its_own_size);
+    RUN_TEST(test_manifest_length_is_checked_before_the_trailer);
+    RUN_TEST(test_the_major_version_is_checked_before_manifest_length);
     RUN_TEST(test_check_magic_rejects_bad_bytes);
     RUN_TEST(test_check_trailer_rejects_bad_pattern);
     RUN_TEST(test_check_format_version_accepts_newer_minor);

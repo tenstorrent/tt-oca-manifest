@@ -1555,6 +1555,19 @@ def test_mislabelled_length_rejected_even_with_a_repaired_unkeyed_hash(tmp_path)
     assert re.match(rb"^FAIL: MANIFEST_LENGTH: ", result.stderr), result.stderr
 
 
+def test_a_pqc_manifest_is_held_to_its_own_length(tmp_path):
+    """A PQC body claiming the Classic size is refused just as a Classic body
+    claiming the PQC size is: each variant has exactly one valid length."""
+    bundle = open(_pack_fixture("pqc_basic"), "rb").read()
+    path = tmp_path / "pqc_badlen.bin"
+    path.write_bytes(_rewrite_manifest_length(
+        bundle, oca_constants.OCA_CLASSIC_BODY_SIZE, rehash=False))
+
+    result = _run_cli(["--manifest", str(path)])
+    assert result.returncode == 1
+    assert re.match(rb"^FAIL: MANIFEST_LENGTH: ", result.stderr), result.stderr
+
+
 def test_correct_manifest_length_is_unaffected(tmp_path):
     """Rewriting the field to its correct value and repairing the hash still
     passes — so the test above fails on the LENGTH, not on the rewrite itself."""

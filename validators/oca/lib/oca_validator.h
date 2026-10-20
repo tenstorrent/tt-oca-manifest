@@ -1867,9 +1867,9 @@ oca_result_t oca_check_demotion_control(const uint8_t *body);
 /**
  * @brief Verify the manifest's integrity digest over [0, signed_region_end).
  *
- * Intended to run early in the manifest handling process. oca_validate_manifest() 
- * runs it directly after oca_check_manifest_length() and before any field is decoded, so a damaged
- * manifest reports OCA_FAIL_MANIFEST_HASH instead of whichever field happens to
+ * Intended to run early in the manifest handling process. oca_validate_manifest()
+ * runs it directly after the framing checks and before any field is decoded, so
+ * a damaged manifest reports OCA_FAIL_MANIFEST_HASH instead of whichever field happens to
  * decode wrong out of the damaged bytes, and hardware-identity callbacks are
  * not spent on it.
  *
@@ -2791,8 +2791,12 @@ oca_result_t oca_commit_security_state(
  *
  * Cheapest first, so a manifest that cannot boot costs as little as possible to
  * reject. Ordering that matters and is easy to get wrong when composing by hand:
- *   - oca_check_manifest_hash() runs EARLY, right after
- *     oca_check_manifest_length() and before any field is decoded, so
+ *   - oca_check_format_version() and then oca_check_manifest_length() run
+ *     right after the magic, before any further field is parsed — the trailer
+ *     included — as the format requires, so a body of the wrong length is
+ *     reported as such whichever variant it claims to be;
+ *   - oca_check_manifest_hash() runs EARLY, right after the framing checks
+ *     and before any field is decoded, so
  *     corruption is reported as corruption rather than as whichever field
  *     decodes wrong out of the damaged bytes;
  *   - oca_determine_secure_boot() runs ONCE, after the integrity and structural

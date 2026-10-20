@@ -242,13 +242,15 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
     if (variant == 0) return variant_status;
     if (body_length < variant->body_size) return OCA_FAIL_TRUNCATED;
 
-    r = oca_check_trailer(body);
-    if (r != OCA_OK) return r;
+    /* The format requires manifest_length to be verified right after the magic
+     * and the major version, before any further field is parsed. The version
+     * comes first because a newer major could redefine field semantics, the
+     * length among them; the trailer follows. */
     r = oca_check_format_version(body);
     if (r != OCA_OK) return r;
-    /* After format_version: a newer major could redefine field semantics, so the
-     * version is settled before the manifest's self-description is trusted. */
     r = oca_check_manifest_length(body);
+    if (r != OCA_OK) return r;
+    r = oca_check_trailer(body);
     if (r != OCA_OK) return r;
 
     /* Integrity check , before anything utilizes the contents. manifest_hash covers
