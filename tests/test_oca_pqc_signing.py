@@ -293,6 +293,40 @@ def test_classic_signing_fields_need_the_classic_class(tmp_path, field):
     assert "secure_boot_classic" in error.reason
 
 
+_SIGNING_FIELD_VALUES = {
+    "signing_authority": "local", "signing_key_file": RSA_3072_KEY_PATH,
+    "signing_key_id": "key", "signing_authority_pqc": "local",
+    "signing_key_file_pqc": ML_DSA_87_KEY_PATH, "signing_key_id_pqc": "key",
+    "signature_type_pqc": ML_DSA_87,
+}
+
+
+def _signing_field_value(field):
+    """A plausible value for one signing field, so the field is present and set."""
+    if field in _SIGNING_FIELD_VALUES:
+        return _SIGNING_FIELD_VALUES[field]
+    return 0x02 if "encoding" in field else 0x01
+
+
+# Every signing field each format can name: a Classic manifest has no PQC class.
+_SIGNING_FIELDS_BY_FORMAT = (
+    [("oca-classic", field) for field in CLASSIC_SIGNING_FIELDS]
+    + [("oca-pqc", field) for field in CLASSIC_SIGNING_FIELDS + PQC_SIGNING_FIELDS]
+)
+
+
+@pytest.mark.parametrize("manifest_format,field", _SIGNING_FIELDS_BY_FORMAT)
+def test_signing_fields_need_secure_boot(tmp_path, manifest_format, field):
+    """With secure boot off no class is enforced, so a signing field of either
+    class describes a signature the manifest will not carry, and is refused by
+    name rather than zeroed."""
+    cfg = _base_config(tmp_path, manifest_format=manifest_format, secure_boot=0,
+                       **{field: _signing_field_value(field)})
+    error = _config_error(cfg)
+    assert error.field_name == field
+    assert "secure_boot: 1" in error.reason
+
+
 @pytest.mark.parametrize("field", ["signature_type", "signing_authority"])
 def test_the_classic_class_names_its_missing_fields(tmp_path, field):
     cfg = _classic_only_ocap_config(tmp_path)

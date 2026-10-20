@@ -262,7 +262,8 @@ public_key_select_pqc: 0x01         # authorize PQC key slot 0
 A consumer verifies a hybrid manifest as a logical AND: both signatures must
 verify against authorized, unrevoked keys. For a PQC-only manifest, set
 `secure_boot_classic: 0` and remove the classical fields; the packer rejects a
-signing field whose class is off.
+signing field whose class is off. With `secure_boot: 0` both classes are off, so an
+unsigned build names no signing field at all.
 
 ML-DSA signing is hedged, so the 4627-byte ML-DSA-87 signature value differs from
 one build to the next; every other byte of the bundle is reproducible. Other PQC

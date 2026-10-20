@@ -23,6 +23,7 @@ from tt_boot_manifest.oca import constants as oca_consts
 from tt_boot_manifest.oca import encryption as enc
 from tt_boot_manifest.oca.entry import pack_oca_bundle
 from tt_boot_manifest.oca.validators import OcaConfigError
+from oca_fixtures import unsigned_config
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RSA_KEY = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.f4.pem")
@@ -194,8 +195,7 @@ def _pack_expect_error(cfg, tmp_path) -> OcaConfigError:
 
 
 def test_reject_encryption_without_secure_boot(tmp_path):
-    cfg = _enc_config(tmp_path)
-    cfg["secure_boot"] = 0
+    cfg = unsigned_config(_enc_config(tmp_path))
     assert _pack_expect_error(cfg, tmp_path).field_name == "encrypted_payload"
 
 

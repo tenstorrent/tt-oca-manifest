@@ -344,9 +344,10 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
     sb_classic, sb_pqc = _normalize_signature_classes(config, sb, manifest_format)
     out["secure_boot_classic"] = sb_classic
     out["secure_boot_pqc"] = sb_pqc
-    if sb == 1 and not sb_classic:
+    if not sb_classic:
         _reject_fields_for_disabled_class(
-            config, CLASSIC_SIGNING_FIELDS, "secure_boot_classic: 1")
+            config, CLASSIC_SIGNING_FIELDS,
+            "secure_boot_classic: 1" if sb == 1 else "secure_boot: 1")
     if sb_classic:
         _require(config, "signature_type", "the classical signature class")
         _require(config, "signing_authority", "the classical signature class")
