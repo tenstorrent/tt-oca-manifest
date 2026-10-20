@@ -109,13 +109,15 @@ oca_result_t oca_check_root_key_revocation(const uint8_t *body,
         return classes;
     }
 
-    if (ctx->secure_boot_enforce_classic == OCA_SECURE_TRUE) {
+    /* Skipped only on an exact OCA_SECURE_FALSE, so a corrupted
+     * enforcement word runs a class's check rather than skipping it. */
+    if (ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE) {
         oca_result_t r = check_revocation_by_class(body, cb, OCA_KEY_ALGO_CLASSIC);
         if (r != OCA_OK) {
             return r;
         }
     }
-    if (ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE) {
+    if (ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE) {
         /* Never read PQC offsets out of a body that has none. The confirm
          * above already refused this; it is repeated at the point of use. */
         if (ctx->manifest_is_pqc != OCA_SECURE_TRUE) {

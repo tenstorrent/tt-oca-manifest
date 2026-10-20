@@ -156,7 +156,8 @@ typedef enum oca_result {
     OCA_FAIL_RESERVED_BITS              = 5,  /**< A reserved bit is set; the manifest uses a feature this build cannot honour. */
     /** Signing fields left non-zero on a manifest declaring secure_boot = 0.
      *  Not returned by this library, which ignores those fields while secure
-     *  boot is disabled; kept for a Consumer enforcing a stricter policy. */
+     *  boot is disabled; available to a Consumer that enforces a stricter
+     *  policy. */
     OCA_FAIL_SECURE_BOOT_INVARIANT      = 6,
     OCA_FAIL_CHIPLET_ID                 = 7,  /**< Hardware chiplet ID does not satisfy the manifest constraint. */
     OCA_FAIL_PACKAGE_ID                 = 8,  /**< Hardware package ID does not satisfy the manifest constraint. */
@@ -477,7 +478,7 @@ typedef struct oca_validation_context {
      *  manifest this does not vouch for — so a hand-composed sequence that
      *  skipped the posture check cannot verify one that relies on a disabled
      *  algorithm, or lacks a demanded cohort. */
-    oca_secure_bool_t secure_boot_posture_checked;
+    oca_secure_bool_t secure_boot_posture_met;
     /** A signature check actually ran and passed. Set only after the verify
      *  callback returned OCA_OK, never optimistically ahead of the call. */
     oca_secure_bool_t secure_boot_authenticated;
@@ -1225,13 +1226,12 @@ struct oca_callbacks {
      * enabled). The get_* callbacks are read by the read-only revocation,
      * anti-rollback and signature posture checks, and by the commit; the
      * set_* callbacks are used ONLY by oca_commit_security_state() after a
-     * successful validation. All are OPTIONAL (NULL when unused); a check whose
-     * required get_* callback is NULL under secure boot fails with
-     * OCA_FAIL_CALLBACK_UNAVAILABLE. Each
-     * value is the little-endian field mirroring the manifest layout, so the
-     * widths differ: 16 bytes for the ROOT-key revocation bitmap and the
-     * 128-bit security-version flags, 8 for the two signature posture
-     * registers. */
+     * successful validation. Each may be NULL where nothing calls it; a get_*
+     * reader a check needs under secure boot is required there, and NULL fails
+     * that check with OCA_FAIL_CALLBACK_UNAVAILABLE. Each value is the
+     * little-endian field mirroring the manifest layout, so the widths differ:
+     * 16 bytes for the ROOT-key revocation bitmap and the 128-bit
+     * security-version flags, 8 for the two signature posture registers. */
 
     /**
      * @brief Read the device-stored ROOT-key revocation bitmap.
@@ -1890,9 +1890,8 @@ oca_result_t oca_check_manifest_hash(
  * manifest meets the device's signature posture, and each class only if
  * oca_check_root_key_authorized() recorded that class's OWN anchor vouching for
  * its key; a classical vouching never unlocks a PQC verify. The recorded
- * enforcement is confirmed against the manifest's
- * class bits before it is acted on, the same time-of-use rule the secure-boot
- * determination gets.
+ * enforcement is confirmed against the manifest's class bits before it is
+ * acted on, the same time-of-use rule the secure-boot determination gets.
  *
  * @param[in]     body  Whole variant body. See the length contract above.
  * @param[in]     cb    Callback table; cb->verify_signature is required under
@@ -1972,7 +1971,7 @@ oca_result_t oca_check_signature(
  * @param[in,out] ctx   Read for the determination and the recorded class
  *                      enforcement, which is confirmed against the manifest's
  *                      class bits before it is acted on, and written for the
- *                      outcome: secure_boot_posture_checked is cleared on entry
+ *                      outcome: secure_boot_posture_met is cleared on entry
  *                      and set to OCA_SECURE_TRUE only once the posture is met.
  *                      Must be a context oca_determine_secure_boot() has
  *                      settled; NULL, or one it has not, is refused.
@@ -1996,6 +1995,7 @@ oca_result_t oca_check_signature(
  * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED  The live determination, or the
  *                                             recorded class enforcement, no
  *                                             longer matches the manifest.
+ * @retval OCA_FAIL_INVALID_ARG                @p body was NULL.
  * @return Otherwise the magic or variant failure from resolving @p body.
  */
 oca_result_t oca_check_signature_posture(
@@ -2056,6 +2056,7 @@ oca_result_t oca_check_signature_posture(
  * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination — or the
  *                                         recorded enforcement — no longer
  *                                         matches the manifest.
+ * @retval OCA_FAIL_INVALID_ARG            @p body was NULL.
  * @return Otherwise the magic or variant failure from resolving @p body.
  */
 oca_result_t oca_check_root_key_authorized(
@@ -2103,6 +2104,7 @@ oca_result_t oca_check_root_key_authorized(
  *                                         PQC class on a body with no PQC
  *                                         fields — states only a hand-composed
  *                                         context can hold.
+ * @retval OCA_FAIL_INVALID_ARG            @p body was NULL.
  * @return Otherwise the magic or variant failure from resolving @p body.
  */
 oca_result_t oca_check_root_key_revocation(
@@ -2830,8 +2832,11 @@ oca_result_t oca_commit_security_state(
  *                                 agreeing with the determination made for this
  *                                 validation.
  * @return Otherwise the result of the first failing check, in the order listed
- *         above — the manifest-level codes from OCA_FAIL_MAGIC through
- *         OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT.
+ *         above — any manifest-level code, from OCA_FAIL_MAGIC through
+ *         OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED. Never a payload-stage code
+ *         (OCA_FAIL_PAYLOAD_*, OCA_FAIL_DECRYPT, OCA_FAIL_NO_PROVISIONED_SECRET)
+ *         or OCA_FAIL_SECURITY_STATE_UPDATE, which only the payload check and
+ *         the commit return.
  */
 oca_result_t oca_validate_manifest(
     const uint8_t *body,

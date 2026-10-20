@@ -174,7 +174,7 @@ oca_result_t oca_signature_check(const uint8_t *body,
      * check did not vouch for is refused, so a hand-composed sequence cannot
      * verify a manifest that relies on a disabled algorithm or lacks a cohort
      * the device demands. */
-    if (ctx->secure_boot_posture_checked != OCA_SECURE_TRUE) {
+    if (ctx->secure_boot_posture_met != OCA_SECURE_TRUE) {
         return OCA_FAIL_SIGNATURE_COHORT_REQUIRED;
     }
 
@@ -199,8 +199,10 @@ oca_result_t oca_signature_check(const uint8_t *body,
 
     /* --- CLASSICAL signature verification (when secure_boot_classic) ---
      * Gated on the classical key's own authorization flag: a key nothing
-     * vouched for is never exercised. */
-    if (ctx->secure_boot_enforce_classic == OCA_SECURE_TRUE) {
+     * vouched for is never exercised. Skipped only on an exact
+     * OCA_SECURE_FALSE, so a corrupted enforcement word runs a class's check
+     * rather than skipping it. */
+    if (ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE) {
         if (ctx->secure_boot_key_authorized_classic != OCA_SECURE_TRUE) {
             return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
         }
@@ -217,7 +219,7 @@ oca_result_t oca_signature_check(const uint8_t *body,
      * Same gate, on the PQC flag: a classical vouching never unlocks a PQC
      * verify. A variant with no PQC crypto region fails closed — the
      * structural invariant already rejects that manifest outright. */
-    if (ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE) {
+    if (ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE) {
         if (ctx->manifest_is_pqc != OCA_SECURE_TRUE) {
             return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
         }

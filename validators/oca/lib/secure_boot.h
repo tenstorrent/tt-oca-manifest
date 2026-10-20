@@ -86,7 +86,7 @@ oca_result_t oca_secure_boot_confirm(const uint8_t *body,
  * It does not itself check that @p ctx holds a determination, nor re-check the
  * variant record it reads for the PQC test; the confirm has done both.
  *
- * @param[in] body  Whole variant body; non-NULL.
+ * @param[in] body  Whole variant body.
  * @param[in] ctx   The determination being acted on.
  * @retval OCA_OK                             The record matches the manifest's
  *                                            class bits, enforces at least one

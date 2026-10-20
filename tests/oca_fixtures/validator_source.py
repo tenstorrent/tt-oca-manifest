@@ -36,8 +36,8 @@ def size_check_class_blocks() -> dict[str, str]:
         f"it moved or changed shape, update this parser rather than deleting the "
         f"gates that use it")
     body = match.group("body")
-    classic_at = body.find("ctx->secure_boot_enforce_classic == OCA_SECURE_TRUE")
-    pqc_at = body.find("ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE")
+    classic_at = body.find("ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE")
+    pqc_at = body.find("ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE")
     assert 0 <= classic_at < pqc_at, (
         "expected a classical class block followed by a PQC class block in "
         "oca_check_crypto_field_sizes()")

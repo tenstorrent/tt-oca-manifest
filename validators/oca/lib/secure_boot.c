@@ -331,8 +331,8 @@ oca_result_t oca_secure_boot_confirm_classes(const uint8_t *body,
         return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
     }
     /* Reads the variant record oca_secure_boot_confirm() has already held to
-     * this body. */
-    if (ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE
+     * this body. Any enforcement word but an exact FALSE demands PQC fields. */
+    if (ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE
         && ctx->manifest_is_pqc != OCA_SECURE_TRUE) {
         return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
     }

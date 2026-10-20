@@ -79,8 +79,10 @@ static int pqc_revoke_bit(uint8_t type)
  * @retval OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED Its class or group is disabled.
  * @retval OCA_FAIL_CRYPTO_FIELD_SIZE           The type names no class.
  */
-static oca_result_t check_class_algorithm(int bit, oca_secure_bool_t group_disabled,
-                                          const uint8_t revoke[OCA_LEN_SIGNATURE_CLASS_REVOKE])
+static oca_result_t check_class_algorithm(
+    int bit,
+    oca_secure_bool_t group_disabled,
+    const uint8_t revoke[OCA_LEN_SIGNATURE_CLASS_REVOKE])
 {
     if (bit < 0) {
         return OCA_FAIL_CRYPTO_FIELD_SIZE;
@@ -130,14 +132,17 @@ oca_result_t oca_check_signature_posture(const uint8_t *body,
                                          const oca_callbacks_t *cb,
                                          oca_validation_context_t *ctx)
 {
+    /* Decided afresh by every call, and withdrawn before anything can refuse:
+     * a vouching an earlier check left in the context must not outlive a
+     * refusal here. */
+    if (ctx != 0) {
+        ctx->secure_boot_posture_met = OCA_SECURE_FALSE;
+    }
     oca_secure_bool_t engaged;
     oca_result_t confirmed = oca_secure_boot_confirm(body, cb, ctx, &engaged);
     if (confirmed != OCA_OK) {
         return confirmed;
     }
-    /* Decided afresh by every call: a vouching an earlier check left in the
-     * context must not outlive a refusal here. */
-    ctx->secure_boot_posture_checked = OCA_SECURE_FALSE;
     if (engaged == OCA_SECURE_FALSE) {
         return OCA_OK;
     }
@@ -170,22 +175,27 @@ oca_result_t oca_check_signature_posture(const uint8_t *body,
      * consumed in both directions — FALSE lets an algorithm be used, TRUE
      * withdraws a cohort demand — and each consumer matches only the pattern
      * that permits, so a corrupted word permits neither. */
+    const uint8_t classic_code = revoke[OCA_CLASS_REVOKE_OFF_CLASSIC_GROUP_CODE];
+    const uint8_t pqc_code     = revoke[OCA_CLASS_REVOKE_OFF_PQC_GROUP_CODE];
     const oca_secure_bool_t classical_disabled =
-        (revoke[OCA_CLASS_REVOKE_OFF_CLASSIC_GROUP_CODE] == OCA_CLASS_REVOKE_CLASSIC_GROUP_CODE)
+        (classic_code == OCA_CLASS_REVOKE_CLASSIC_GROUP_CODE)
         ? OCA_SECURE_TRUE : OCA_SECURE_FALSE;
     const oca_secure_bool_t pqc_disabled =
-        (revoke[OCA_CLASS_REVOKE_OFF_PQC_GROUP_CODE] == OCA_CLASS_REVOKE_PQC_GROUP_CODE)
+        (pqc_code == OCA_CLASS_REVOKE_PQC_GROUP_CODE)
         ? OCA_SECURE_TRUE : OCA_SECURE_FALSE;
 
-    /* Algorithm revocation, for each class the manifest is verified by. */
-    if (ctx->secure_boot_enforce_classic == OCA_SECURE_TRUE) {
+    /* Algorithm revocation, for each class the manifest is verified by.
+     * Skipped only on an exact OCA_SECURE_FALSE, so a corrupted
+     * enforcement word runs a class's check rather than skipping it. */
+    if (ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE) {
         oca_result_t r = check_class_algorithm(
-            classical_revoke_bit(body[OCA_OFF_SIGNATURE_TYPE]), classical_disabled, revoke);
+            classical_revoke_bit(body[OCA_OFF_SIGNATURE_TYPE]),
+            classical_disabled, revoke);
         if (r != OCA_OK) {
             return r;
         }
     }
-    if (ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE) {
+    if (ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE) {
         /* Reads the confirmed variant record, so no PQC offset is read from a
          * body without PQC fields. */
         if (ctx->manifest_is_pqc != OCA_SECURE_TRUE) {
@@ -214,6 +224,6 @@ oca_result_t oca_check_signature_posture(const uint8_t *body,
         return met;
     }
 
-    ctx->secure_boot_posture_checked = OCA_SECURE_TRUE;
+    ctx->secure_boot_posture_met = OCA_SECURE_TRUE;
     return OCA_OK;
 }

@@ -117,10 +117,9 @@ Add `verify_signature`, `is_key_authorized`, `get_root_key_revocation`,
 `get_signature_class_revoke` for secure boot; `decrypt_payload` for encrypted
 payloads; the `get_*` identity, lifecycle and version readers for whichever
 `selector_bits` your manifests set. If you commit device state, add the four
-`set_*` writers. PQC secure boot
-uses the same callbacks, called once per signature family; see
-[Enabling PQC secure boot](#enabling-pqc-secure-boot) for what each must do
-for the PQC family.
+`set_*` writers. PQC secure boot uses the same callbacks, called once per
+signature family; see [Enabling PQC secure boot](#enabling-pqc-secure-boot) for
+what each must do for the PQC family.
 `test/main.c` wires all of them against OpenSSL and CLI flags, and is the
 reference for the shapes.
 
@@ -602,13 +601,12 @@ does the whole-bundle resolution including the encrypted substitution, and
 When secure boot is in force, five checks run ahead of signature verification:
 `oca_check_crypto_field_sizes()`, `oca_check_signature_posture()`,
 `oca_check_root_key_authorized()`, `oca_check_root_key_revocation()` and
-`oca_check_security_version()`. All are
-composed into `oca_validate_manifest()`,
-so both entry points run them, and all are callable directly if you are
-composing checks by hand — but composing them by hand now requires the
-validation context `oca_determine_secure_boot()` produced. A fresh one is
-refused, not treated as "not in force". See "Determined once, confirmed at every
-use" below.
+`oca_check_security_version()`. All are composed into
+`oca_validate_manifest()`, so both entry points run them, and all are callable
+directly if you are composing checks by hand — but composing them by hand
+requires the validation context `oca_determine_secure_boot()` produced. A fresh
+one is refused, not treated as "not in force". See "Determined once, confirmed
+at every use" below.
 
 - **Signing description** (`oca_check_crypto_field_sizes()`) — each enforced
   class's signature type, encodings and size fields must describe a key and
@@ -736,11 +734,12 @@ secure boot to run unverified.
 integrator provides it through callbacks on `oca_callbacks_t`:
 `is_secure_boot_active`, `is_secure_boot_disabled`, `is_key_authorized`,
 `get_root_key_revocation(algo, …)`, `get_security_version(…)`,
-`get_signature_cohort_enforce(…)` and `get_signature_class_revoke(…)`. Classic and PQC ROOT-key revocation state are
-kept separately (`oca_key_algorithm_t`): the revocation check reads the state of
-each family whose signature class the manifest enforces, and the commit writes the
-state of each family whose bitmap the manifest carries, so an implementation that
-ignores `algo` applies one family's revocations to the other's keys.
+`get_signature_cohort_enforce(…)` and `get_signature_class_revoke(…)`. Classic
+and PQC ROOT-key revocation state are kept separately (`oca_key_algorithm_t`):
+the revocation check reads the state of each family whose signature class the
+manifest enforces, and the commit writes the state of each family whose bitmap
+the manifest carries, so an implementation that ignores `algo` applies one
+family's revocations to the other's keys.
 
 **Which input decided.** `oca_validate_manifest()` calls
 `oca_determine_secure_boot()` once, early, and the determination records what it
@@ -773,8 +772,8 @@ Two consequences for your code:
 
 The reporters are consulted once for the determination and once per gated
 check — eight times per validation, nine when the manifest declares
-encryption — which is the price of the above. They are fuse or OTP reads; if that cost is
-material on your part, it is worth measuring rather than assuming.
+encryption — which is the price of the above. They are fuse or OTP reads; if
+that cost is material on your part, it is worth measuring rather than assuming.
 
 **A context no determination has settled is refused.** `secure_boot_determined`
 distinguishes "secure boot is not in force" from "nobody has asked yet", which
@@ -944,12 +943,11 @@ the 4627 signature bytes and nowhere else. `verify_pqc()` in
 reference shapes, and `oca-validate --root-key-digest-pqc`,
 `--revoked-root-keys-pqc`, `--signature-cohort-enforce` and
 `--signature-class-revoke` exercise the anchor, the revocation state and the
-signature posture from the command line. Before trusting a new backend, confirm
-that it refuses what
-`tests/test_oca_c_validator_integration.py` builds to be refused: a signature
-made with a non-empty context, and one made over a SHA-256 or SHA-512 digest of
-the region. A backend that accepts either is verifying a different
-construction from the one the packer signs.
+signature posture from the command line. Before trusting a new backend,
+confirm that it refuses what `tests/test_oca_c_validator_integration.py` builds
+to be refused: a signature made with a non-empty context, and one made over a
+SHA-256 or SHA-512 digest of the region. A backend that accepts either is
+verifying a different construction from the one the packer signs.
 
 ## Upgrading to 0.7
 
@@ -959,7 +957,7 @@ Changes an existing integration should check. Most show only at run time.
   `set_root_key_revocation` are now called with `OCA_KEY_ALGO_PQC` as well as
   `OCA_KEY_ALGO_CLASSIC`, and the commit does so for every OCA-PQC manifest. An
   implementation that ignored `algo`, as the earlier reference harness did,
-  would OR PQC revocations into its classical state, irreversibly. Honour
+  would OR PQC revocations into its classical state, irreversibly. Honor
   `algo`; step 4 of [Enabling PQC secure boot](#enabling-pqc-secure-boot)
   covers a part with no PQC store.
 - **The commit requires authentication.** `oca_commit_security_state()` returns

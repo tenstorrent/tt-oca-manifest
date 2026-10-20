@@ -227,7 +227,9 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body,
         return classes;
     }
 
-    if (ctx->secure_boot_enforce_classic == OCA_SECURE_TRUE) {
+    /* Skipped only on an exact OCA_SECURE_FALSE, so a corrupted
+     * enforcement word runs a class's check rather than skipping it. */
+    if (ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE) {
         uint16_t sig_size = oca_le_u16(body + OCA_OFF_SIGNATURE_SIZE);
         uint16_t key_size = oca_le_u16(body + OCA_OFF_PUBLIC_KEY_SIZE);
         oca_encoding_t sig_enc = (oca_encoding_t)body[OCA_OFF_SIGNATURE_ENCODING];
@@ -274,7 +276,7 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body,
     /* FIPS 204 defines no bare ASN.1 structure for an ML-DSA key or signature,
      * so DER is undefined for PQC and both encodings must be raw, whose sizes
      * the parameter set fixes exactly. */
-    if (ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE) {
+    if (ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE) {
         /* Never read PQC offsets out of a body that has none. The confirm
          * above already refused this; it is repeated at the point of use. */
         if (ctx->manifest_is_pqc != OCA_SECURE_TRUE) {

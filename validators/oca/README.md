@@ -120,7 +120,7 @@ Expected `make check` output (tail) — every unit test + every fixture
 round-trip passes:
 
 ```
-307/307 passed
+310/310 passed
 PASS: all_constraints
 PASS: basic
 PASS: control_plane
@@ -151,7 +151,7 @@ unit test and every fixture round-trip passes.)
 - GNU Make. 3.81 (what macOS bundles) works for ordinary use; **4.x is preferred
   if you script builds** — see "Compile-time overrides" for why.
 - OpenSSL 3.5 or later development headers, discovered via `pkg-config` (macOS:
-  `brew install openssl@3`; Debian/Ubuntu 26.04 or later: `apt install libssl-dev`).
+  `brew install openssl@3`; Debian 13+ or Ubuntu 26.04+: `apt install libssl-dev`).
   The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. When `pkg-config`
   finds OpenSSL, `make` checks its version before linking the CLI
   (`OPENSSL_MIN_VERSION`); with `OPENSSL_CFLAGS` supplied by hand, the same

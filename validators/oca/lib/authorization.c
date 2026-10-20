@@ -49,14 +49,18 @@
  *                  part with code mapped at address zero, a jump into it.
  * @param[in] algo  Which class's key to present.
  * @retval OCA_OK                          The device authorizes this key.
- * @retval OCA_FAIL_ROOT_KEY_UNAUTHORIZED  It does not — or the callback
- *                                         answered with a code it has no
- *                                         business returning, which is treated
- *                                         as a refusal rather than passed
- *                                         through as some unrelated verdict.
+ * @retval OCA_FAIL_ROOT_KEY_UNAUTHORIZED  The class selects no key, which is
+ *                                         refused without asking the anchor;
+ *                                         the device does not authorize the
+ *                                         key; or the callback answered with a
+ *                                         code it has no business returning,
+ *                                         which is treated as a refusal rather
+ *                                         than passed through as some
+ *                                         unrelated verdict.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The anchor is not wired, or could
  *                                         not be read.
- * @return cb->is_key_authorized's verdict, normalized to the three codes above.
+ * @return Otherwise cb->is_key_authorized's verdict, normalized to the three
+ *         codes above.
  */
 static oca_result_t authorize_key_by_class(const uint8_t *body,
                                         const oca_callbacks_t *cb,
@@ -139,15 +143,18 @@ oca_result_t oca_check_root_key_authorized(const uint8_t *body,
      * its OWN flag, only after the callback returned success — never
      * optimistically ahead of the call. oca_check_signature() refuses to
      * exercise a key the matching flag does not vouch for, which is what makes
-     * the ordering enforced rather than merely documented. */
-    if (ctx->secure_boot_enforce_classic == OCA_SECURE_TRUE) {
+     * the ordering enforced rather than merely documented.
+     *
+     * Skipped only on an exact OCA_SECURE_FALSE, so a corrupted
+     * enforcement word runs a class's check rather than skipping it. */
+    if (ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE) {
         oca_result_t r = authorize_key_by_class(body, cb, OCA_KEY_ALGO_CLASSIC);
         if (r != OCA_OK) {
             return r;
         }
         ctx->secure_boot_key_authorized_classic = OCA_SECURE_TRUE;
     }
-    if (ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE) {
+    if (ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE) {
         /* A non-PQC body has no PQC key to authorize. The determination never
          * settles a context in this state and the invariant rejects the
          * manifest outright; reaching here means both were composed around,

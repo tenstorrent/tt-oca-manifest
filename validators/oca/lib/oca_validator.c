@@ -182,7 +182,7 @@ void oca_validation_context_init(oca_validation_context_t *ctx)
     ctx->secure_boot_enforce_pqc             = OCA_SECURE_FALSE;
     ctx->secure_boot_key_authorized_classic  = OCA_SECURE_FALSE;
     ctx->secure_boot_key_authorized_pqc      = OCA_SECURE_FALSE;
-    ctx->secure_boot_posture_checked         = OCA_SECURE_FALSE;
+    ctx->secure_boot_posture_met             = OCA_SECURE_FALSE;
     ctx->secure_boot_authenticated           = OCA_SECURE_FALSE;
     ctx->secure_boot_device_disabled         = OCA_SECURE_FALSE;
 }

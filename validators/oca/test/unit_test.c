@@ -283,11 +283,12 @@ static const oca_validation_context_t g_determined_secure = {
     .secure_boot_device_disabled         = OCA_SECURE_FALSE
 };
 
-/* A determination in force with the device posture met and the ROOT key already
- * authorized, and nothing yet authenticated. This is what oca_check_signature() is handed in the composed
- * pipeline, and the minimum it will act on: authorization is recorded precisely
- * so a context lacking it cannot reach the verifier. Distinct from
- * g_determined_secure, which stops one check earlier. */
+/* A determination in force with the device posture met and the ROOT key
+ * already authorized, and nothing yet authenticated. This is what
+ * oca_check_signature() is handed in the composed pipeline, and the minimum it
+ * will act on: authorization is recorded precisely so a context lacking it
+ * cannot reach the verifier. Distinct from g_determined_secure, which stops one
+ * check earlier. */
 static const oca_validation_context_t g_authorized_secure = {
     .secure_boot_determined              = OCA_SECURE_TRUE,
     .secure_boot_enabled                 = OCA_SECURE_TRUE,
@@ -297,7 +298,7 @@ static const oca_validation_context_t g_authorized_secure = {
     .secure_boot_enforce_pqc             = OCA_SECURE_FALSE,
     .secure_boot_key_authorized_classic  = OCA_SECURE_TRUE,
     .secure_boot_key_authorized_pqc      = OCA_SECURE_FALSE,
-    .secure_boot_posture_checked         = OCA_SECURE_TRUE,
+    .secure_boot_posture_met             = OCA_SECURE_TRUE,
     .secure_boot_authenticated           = OCA_SECURE_FALSE,
     .secure_boot_device_disabled         = OCA_SECURE_FALSE
 };
@@ -3865,7 +3866,7 @@ static void build_secure_pqc_manifest(uint8_t buf[OCA_PQC_BODY_SIZE],
 /* Full callback table for device-state pipeline tests: passing sha + counting
  * signature + the device-state stub get/set callbacks. */
 /* Wire the fixture's signature posture readers into a hand-built table, which
- * every secure-boot signature check now needs: the posture check runs first and
+ * every secure-boot signature check needs: the posture check runs first and
  * fails closed without them. */
 static void wire_posture(oca_callbacks_t *cb)
 {
@@ -7231,7 +7232,7 @@ static oca_result_t posture_with_readers(oca_result_t (*class_revoke)(uint8_t[8]
     (void)oca_determine_secure_boot(buf, &cb, &ctx);
     oca_result_t r = oca_check_signature_posture(buf, &cb, &ctx);
     if (r != OCA_OK) {
-        ASSERT_TRUE(ctx.secure_boot_posture_checked != OCA_SECURE_TRUE);
+        ASSERT_TRUE(ctx.secure_boot_posture_met != OCA_SECURE_TRUE);
     }
     return r;
 }
@@ -7296,11 +7297,31 @@ TEST(test_a_refused_posture_check_withdraws_an_earlier_vouching)
     oca_validation_context_init(&ctx);
     ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
-    ASSERT_EQ_INT(ctx.secure_boot_posture_checked, OCA_SECURE_TRUE);
+    ASSERT_EQ_INT(ctx.secure_boot_posture_met, OCA_SECURE_TRUE);
     set_posture_register(g_fx.class_revoke, REVOKE_ML_DSA_87);
     ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
-    ASSERT_TRUE(ctx.secure_boot_posture_checked != OCA_SECURE_TRUE);
+    ASSERT_TRUE(ctx.secure_boot_posture_met != OCA_SECURE_TRUE);
+}
+
+/* A call refused before it reads the posture — here because the recorded
+ * determination no longer matches the manifest — withdraws an earlier vouching
+ * too: the flag is cleared on entry, not only once the posture is reached. */
+TEST(test_a_posture_check_refused_at_the_confirm_withdraws_an_earlier_vouching)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(ctx.secure_boot_posture_met, OCA_SECURE_TRUE);
+    ctx.secure_boot_enabled = OCA_SECURE_FALSE;
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx),
+                  OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
+    ASSERT_TRUE(ctx.secure_boot_posture_met != OCA_SECURE_TRUE);
 }
 
 /* The signature check refuses a context the posture check never vouched for,
@@ -7720,6 +7741,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_the_posture_is_inert_when_secure_boot_is_off);
     RUN_TEST(test_the_posture_check_needs_a_settled_context);
     RUN_TEST(test_a_refused_posture_check_withdraws_an_earlier_vouching);
+    RUN_TEST(test_a_posture_check_refused_at_the_confirm_withdraws_an_earlier_vouching);
     RUN_TEST(test_the_signature_check_needs_the_posture_vouching);
     RUN_TEST(test_validation_applies_the_posture_before_any_key_is_used);
 
