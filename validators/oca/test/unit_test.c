@@ -4866,6 +4866,51 @@ TEST(test_a_fragment_of_a_group_code_is_rejected)
     ASSERT_EQ_INT(oca_check_signature_class_group_codes(buf), OCA_FAIL_GROUP_CODE);
 }
 
+/* One signature_class_revoke shape, and the verdict on it. */
+typedef struct {
+    uint8_t      classic_classes;
+    uint8_t      classic_code;
+    uint8_t      pqc_classes;
+    uint8_t      pqc_code;
+    oca_result_t want;
+} class_revoke_case_t;
+
+/* Write a case's four bytes into a minimal manifest's signature_class_revoke. */
+static void set_class_revoke(uint8_t *buf, const class_revoke_case_t *c)
+{
+    uint8_t *field = buf + OCA_OFF_SIGNATURE_CLASS_REVOKE;
+    field[OCA_CLASS_REVOKE_OFF_CLASSIC_CLASSES]    = c->classic_classes;
+    field[OCA_CLASS_REVOKE_OFF_CLASSIC_GROUP_CODE] = c->classic_code;
+    field[OCA_CLASS_REVOKE_OFF_PQC_CLASSES]        = c->pqc_classes;
+    field[OCA_CLASS_REVOKE_OFF_PQC_GROUP_CODE]     = c->pqc_code;
+}
+
+/* A group whose every defined class bit is set disables the whole group, so it
+ * needs that group's code. b27, reserved for FN-DSA, is not a PQC class: it
+ * neither completes a group nor keeps one from being complete. */
+TEST(test_a_group_disabled_by_its_class_bits_alone_is_rejected)
+{
+    static const class_revoke_case_t cases[] = {
+        { 0xFFu, 0x00u, 0x00u, 0x00u, OCA_FAIL_GROUP_CODE },
+        { 0xFFu, 0xCAu, 0x00u, 0x00u, OCA_OK },
+        { 0x7Fu, 0x00u, 0x00u, 0x00u, OCA_OK },
+        { 0xFEu, 0x00u, 0x00u, 0x00u, OCA_OK },
+        { 0xFFu, 0x00u, 0x00u, 0xACu, OCA_FAIL_GROUP_CODE },  /* other group's code */
+        { 0x00u, 0x00u, 0xF7u, 0x00u, OCA_FAIL_GROUP_CODE },
+        { 0x00u, 0x00u, 0xFFu, 0x00u, OCA_FAIL_GROUP_CODE },  /* with b27 */
+        { 0x00u, 0x00u, 0xF7u, 0xACu, OCA_OK },
+        { 0x00u, 0x00u, 0x77u, 0x00u, OCA_OK },               /* no b31 */
+        { 0x00u, 0x00u, 0xF3u, 0x00u, OCA_OK },               /* no b26 */
+        { 0x00u, 0x00u, 0x08u, 0x00u, OCA_OK },               /* b27 alone */
+    };
+    for (unsigned i = 0u; i < sizeof cases / sizeof cases[0]; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_minimal_manifest(buf);
+        set_class_revoke(buf, &cases[i]);
+        ASSERT_EQ_INT(oca_check_signature_class_group_codes(buf), cases[i].want);
+    }
+}
+
 /* The check is ungated and cheap, so it must run before anything consults the
  * device. Observing that no identity callback fired pins the ordering. */
 TEST(test_a_bad_group_code_is_caught_before_any_device_read)
@@ -4898,6 +4943,21 @@ TEST(test_commit_refuses_a_fragmented_group_code)
     oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_FAIL_GROUP_CODE);
     ASSERT_EQ_INT(g_fx.class_revoke[0], 0x00u);   /* nothing written */
+}
+
+/* The same for a group disabled by its class bits alone. */
+TEST(test_commit_refuses_a_group_disabled_by_its_class_bits_alone)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    buf[OCA_OFF_SIGNATURE_CLASS_REVOKE + OCA_CLASS_REVOKE_OFF_PQC_CLASSES] =
+        OCA_CLASS_REVOKE_PQC_DEFINED_CLASSES;
+    test_fixture_reset();
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_FAIL_GROUP_CODE);
+    ASSERT_EQ_INT(g_fx.class_revoke[3], 0x00u);   /* nothing written */
 }
 
 /* ------------------------------------------------------------------ */
@@ -7641,8 +7701,10 @@ int main(int argc, char **argv)
     RUN_TEST(test_commit_without_any_one_callback_is_unavailable);
     RUN_TEST(test_intact_group_codes_are_accepted);
     RUN_TEST(test_a_fragment_of_a_group_code_is_rejected);
+    RUN_TEST(test_a_group_disabled_by_its_class_bits_alone_is_rejected);
     RUN_TEST(test_a_bad_group_code_is_caught_before_any_device_read);
     RUN_TEST(test_commit_refuses_a_fragmented_group_code);
+    RUN_TEST(test_commit_refuses_a_group_disabled_by_its_class_bits_alone);
     RUN_TEST(test_consistent_crypto_field_sizes_are_accepted);
     RUN_TEST(test_inconsistent_crypto_field_sizes_are_rejected);
     RUN_TEST(test_crypto_field_sizes_ignored_on_a_non_secure_manifest);

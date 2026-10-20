@@ -318,5 +318,18 @@ oca_result_t oca_check_signature_class_group_codes(const uint8_t *body)
         || (pqc != 0u && pqc != OCA_CLASS_REVOKE_PQC_GROUP_CODE)) {
         return OCA_FAIL_GROUP_CODE;
     }
+
+    /* Every defined class of a group set while its code byte is 0x00 disables
+     * the group without the code, which only the intact code may do. */
+    uint8_t classic_classes = field[OCA_CLASS_REVOKE_OFF_CLASSIC_CLASSES];
+    uint8_t pqc_classes     = field[OCA_CLASS_REVOKE_OFF_PQC_CLASSES];
+    if ((classic == 0u
+         && (classic_classes & OCA_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES)
+            == OCA_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES)
+        || (pqc == 0u
+            && (pqc_classes & OCA_CLASS_REVOKE_PQC_DEFINED_CLASSES)
+               == OCA_CLASS_REVOKE_PQC_DEFINED_CLASSES)) {
+        return OCA_FAIL_GROUP_CODE;
+    }
     return OCA_OK;
 }

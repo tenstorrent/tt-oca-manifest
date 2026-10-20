@@ -2051,6 +2051,19 @@ def test_cli_names_the_reason_for_a_malformed_signing_description(tmp_path, code
         f"no reason text for this code: {result.stderr!r}")
 
 
+@pytest.mark.parametrize("byte,classes", [
+    (oca_constants.SIGNATURE_CLASS_REVOKE_CLASSIC_CLASSES_SHIFT // 8,
+     oca_constants.SIGNATURE_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES),
+    (oca_constants.SIGNATURE_CLASS_REVOKE_PQC_CLASSES_SHIFT // 8,
+     oca_constants.SIGNATURE_CLASS_REVOKE_PQC_DEFINED_CLASSES),
+], ids=["classical", "pqc"])
+def test_cli_refuses_a_group_disabled_by_its_class_bits_alone(tmp_path, byte, classes):
+    data = _fixture_bytes("secure_rsa")
+    data[oca_constants.OFF_SIGNATURE_CLASS_REVOKE + byte] = classes
+    _reseal_manifest_hash(data)
+    _assert_refused(_run_bundle(tmp_path, data, f"class_bits_{byte}"), "GROUP_CODE")
+
+
 def test_cli_help_documents_every_exit_code():
     """main() exits 3 for a variant this build does not support; --help says so."""
     result = _run_cli(["--help"])

@@ -403,7 +403,10 @@ signature_class_revoke: 0x00        # no algorithm class revoked
   and each half carries a group code — `0xCA` classical, `0xAC` PQC — that must be
   written **exactly** or left `0x00`; a fragment is rejected, because these updates
   accumulate by OR and fragments from separate manifests would otherwise add up to
-  a group-wide revocation no single manifest declared. Neither register affects the
+  a group-wide revocation no single manifest declared. Setting every algorithm
+  bit of a group without its group code is rejected too — b[7:0] for classical;
+  b[26:24], b[30:28] and b31 for PQC — since disabling a whole group takes the
+  code itself. Neither register affects the
   boot that carries it: both take effect from the next boot onward, when the
   validator refuses a manifest verified by a disabled algorithm class, or one whose
   `secure_boot_control` does not enforce a cohort the device demands of the ROOT

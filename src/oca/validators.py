@@ -252,6 +252,25 @@ def _check_group_code(value: int, *, shift: int, code: int, label: str, bits: st
         )
 
 
+def _check_group_not_disabled_by_classes(value: int, *, classes_shift: int, defined: int,
+                                         group_shift: int, label: str, bits: str) -> None:
+    """Refuse a `signature_class_revoke` group whose every defined class bit is
+    set while its group code byte is 0x00.
+
+    Setting every class disables the whole group, which only the intact group
+    code may do: disabling a group is meant to be the explicit act the code
+    records.
+    """
+    classes = (value >> classes_shift) & 0xFF
+    if classes & defined == defined and (value >> group_shift) & 0xFF == 0x00:
+        raise OcaConfigError(
+            f"signature_class_revoke sets every defined {label} class bit ({bits}) "
+            f"without the {label} group code; disabling the whole group takes the "
+            f"group code itself",
+            field_name="signature_class_revoke",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -451,6 +470,20 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
         shift=oca_consts.SIGNATURE_CLASS_REVOKE_PQC_GROUP_SHIFT,
         code=oca_consts.SIGNATURE_CLASS_REVOKE_PQC_GROUP_CODE,
         label="PQC", bits="b[39:32]",
+    )
+    _check_group_not_disabled_by_classes(
+        revoke,
+        classes_shift=oca_consts.SIGNATURE_CLASS_REVOKE_CLASSIC_CLASSES_SHIFT,
+        defined=oca_consts.SIGNATURE_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES,
+        group_shift=oca_consts.SIGNATURE_CLASS_REVOKE_CLASSIC_GROUP_SHIFT,
+        label="classical", bits="b[7:0]",
+    )
+    _check_group_not_disabled_by_classes(
+        revoke,
+        classes_shift=oca_consts.SIGNATURE_CLASS_REVOKE_PQC_CLASSES_SHIFT,
+        defined=oca_consts.SIGNATURE_CLASS_REVOKE_PQC_DEFINED_CLASSES,
+        group_shift=oca_consts.SIGNATURE_CLASS_REVOKE_PQC_GROUP_SHIFT,
+        label="PQC", bits="b[26:24], b[30:28] and b31",
     )
     out["signature_class_revoke"] = revoke if sb == 1 else 0
 

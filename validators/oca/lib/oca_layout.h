@@ -167,6 +167,14 @@
 #define OCA_CLASS_REVOKE_CLASSIC_GROUP_CODE   0xCAu
 #define OCA_CLASS_REVOKE_PQC_GROUP_CODE       0xACu
 
+/* Each group's per-algorithm class bits, and which of them the format defines.
+ * Every classical bit is a class; in the PQC byte b27 is reserved for FN-DSA
+ * and is not. */
+#define OCA_CLASS_REVOKE_OFF_CLASSIC_CLASSES     0u    /* b[7:0]   = byte 0 */
+#define OCA_CLASS_REVOKE_OFF_PQC_CLASSES         3u    /* b[31:24] = byte 3 */
+#define OCA_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES 0xFFu /* b[7:0] */
+#define OCA_CLASS_REVOKE_PQC_DEFINED_CLASSES     0xF7u /* b[26:24], b[30:28], b31 */
+
 /* signature_cohort_enforce carries a 4-bit nibble per signed entity; the ROOT
  * key's signatures are b[3:0]. Within a nibble, bit 0 demands a classical
  * signature and bit 1 a PQC one; bits 3:2 are reserved. */

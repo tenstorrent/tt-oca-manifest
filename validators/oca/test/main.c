@@ -155,8 +155,9 @@ static const char *reason_for(oca_result_t r)
             return "internal: a gated check ran before the secure-boot "
                    "determination";
         case OCA_FAIL_GROUP_CODE:
-            return "a signature_class_revoke group code is neither 0x00 nor its "
-                   "group's constant";
+            return "signature_class_revoke is malformed: a group code is neither "
+                   "0x00 nor its group's constant, or a group sets every class "
+                   "bit without its group code";
         case OCA_FAIL_CRYPTO_FIELD_SIZE:
             return "signing fields name an algorithm, encoding or size this "
                    "library does not accept";

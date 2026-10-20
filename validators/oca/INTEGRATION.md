@@ -809,9 +809,10 @@ which this library does not implement — see "Not supported" in the README. The
 are accepted and ignored.
 
 Before folding in the class revocation the commit re-checks the
-`signature_class_revoke` group-code bytes, even though `oca_validate_manifest()`
-already did. This function is public and burns fuses, so it does not assume the
-caller composed the check; a fragment of a group code reaching OTP is
+`signature_class_revoke` group-code rules, even though `oca_validate_manifest()`
+already did: each code byte is 0x00 or intact, and no group sets every class bit
+without its code. This function is public and burns fuses, so it does not
+assume the caller composed the check; a fragment of a group code reaching OTP is
 irreversible. That re-check surfaces as `GROUP_CODE`.
 
 The commit returns a distinct status; a write-back failure surfaces

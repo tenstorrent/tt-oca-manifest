@@ -257,15 +257,18 @@ typedef enum oca_result {
      *  the first answer was wrong. */
     OCA_FAIL_SECURE_BOOT_STATE_CHANGED  = 32,
     /** A signature_class_revoke group-code byte holds neither 0x00 nor its
-     *  group's constant.
+     *  group's constant, or a group sets every class bit the format defines
+     *  for it while its code byte is 0x00.
      *
      *  This reports a MALFORMED FIELD, not a revocation verdict — it does not
-     *  mean an algorithm class is revoked, and it is not the code a future
-     *  boot-time revocation check would return. A group code is a single
+     *  mean an algorithm class is revoked; a disabled algorithm is
+     *  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED. A group code is a single
      *  constant rather than a bitmask, and the device-side register accumulates
      *  by OR, so a manifest carrying a fragment of one would let a group-wide
      *  revocation be assembled across several updates that no single manifest
-     *  ever declared. Rejecting fragments is what keeps that from happening. */
+     *  ever declared. Rejecting fragments is what keeps that from happening,
+     *  and refusing a group disabled class by class keeps a whole-group
+     *  disable the explicit act the code records. */
     OCA_FAIL_GROUP_CODE                 = 33,
     /** An enforced signature class's description — its primitive, encodings,
      *  and size fields — does not describe a key and signature this library
@@ -1621,8 +1624,9 @@ oca_result_t oca_check_crypto_field_sizes(
     const oca_validation_context_t *ctx);
 
 /**
- * @brief Reject a signature_class_revoke group-code byte that is neither 0x00
- * nor its group's constant.
+ * @brief Reject a malformed signature_class_revoke: a group-code byte that is
+ * neither 0x00 nor its group's constant, or a group disabled by its class bits
+ * alone.
  *
  * Each half of signature_class_revoke carries a group code alongside its
  * per-algorithm bits: 0xCA for the classical group, 0xAC for the post-quantum
@@ -1633,6 +1637,12 @@ oca_result_t oca_check_crypto_field_sizes(
  * so a manifest carrying a FRAGMENT of a code would let fragments from separate
  * manifests add up to an intact constant that no single manifest declared.
  *
+ * A group that sets every class bit the format defines for it — b[7:0] for the
+ * classical group; b[26:24], b[30:28] and b31 for the PQC group, b27 being
+ * reserved for FN-DSA — while its code byte is 0x00 is refused too: that
+ * disables the whole group without the code, which only the intact code may
+ * do.
+ *
  * Un-gated by secure boot on purpose. It reads only manifest bytes, needs no
  * callback and no device state, and the requirement carries no secure-boot
  * qualifier. Gating it on the determination would also mean a single glitched
@@ -1641,9 +1651,13 @@ oca_result_t oca_check_crypto_field_sizes(
  * is zero, so the check passes trivially and only ever rejects a producer defect.
  *
  * @param[in] body  Whole variant body. See the length contract above.
- * @retval OCA_OK                Both group-code bytes are 0x00 or intact.
+ * @retval OCA_OK                Both group-code bytes are 0x00 or intact, and
+ *                               neither group is disabled by its class bits
+ *                               alone.
  * @retval OCA_FAIL_INVALID_ARG  @p body was NULL.
- * @retval OCA_FAIL_GROUP_CODE   A group-code byte held some other value.
+ * @retval OCA_FAIL_GROUP_CODE   A group-code byte held some other value, or a
+ *                               group set every defined class bit with a 0x00
+ *                               code byte.
  */
 oca_result_t oca_check_signature_class_group_codes(const uint8_t *body);
 
