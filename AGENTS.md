@@ -38,7 +38,7 @@ them for keywords — a partial read costs far more time than a full one.
 |---|---|
 | `README.md` | The manifest variants, installation, packing, YAML config field reference, signing authorities, secure boot, test organization |
 | `validators/oca/README.md` | Validator layout, build targets, compile-time gates, the producer/consumer lock-step gates and what to do when you add a field |
-| `validators/oca/INTEGRATION.md` | Building a consumer on the library: vendoring, the callback table, entry points, the staged boot flow, reaching the plaintext payload, walking the TOC, secure-boot device state |
+| `validators/oca/INTEGRATION.md` | Building a consumer on the library: vendoring, the callback table, entry points, the staged boot flow, reaching the plaintext payload, walking the TOC, secure-boot device state, enabling PQC secure boot, upgrading to 0.7 |
 | [OCA boot manifest specification](https://www.openchipletatlas.org/specifications/oca/latest) | The format specification itself — the authority the producer and validator both implement. Owned and published by the Open Chiplet Atlas project, not maintained in this repository |
 | `validators/oca/lib/oca_validator.h` | The sole public C header; the API contract and every result code |
 | `src/oca/constants.py` | OCA offsets, lengths and enums — the **source of truth** the C layout headers mirror |
@@ -120,7 +120,7 @@ rather than fail when it is absent:
 
 - A host C toolchain with `-std=c99` support (gcc 12+ or clang 16+)
 - OpenSSL **3.5 or later** development headers, discovered via `pkg-config` (macOS:
-  `brew install openssl@3`; Debian/Ubuntu 26.04 or later: `apt install libssl-dev pkg-config`).
+  `brew install openssl@3`; Debian 13+ or Ubuntu 26.04+: `apt install libssl-dev pkg-config`).
   The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. With an older OpenSSL the CLI
   build stops with the reason and the integration tests skip saying so — Ubuntu 24.04's
   `libssl-dev` is 3.0. `TT_BOOT_MANIFEST_REQUIRE_VALIDATOR=1` turns that skip, and the
@@ -273,8 +273,10 @@ class, and ML-DSA-87 (`signature_type_pqc: 0x33`) for the PQC class. ML-DSA-87 i
 ML-DSA signed over the raw signed region with the empty context. We do not pre-hash and do not
 use HashML-DSA. A signer or verifier that computes the message representative μ itself produces
 or accepts the same signature, so that is an implementation choice, not a different
-construction. Signing is through the `local` signing authority only (as of now). The specification defines more values; the packer rejects them at config-load time.
-Adding another requires both boot ROM support and a deliberate amendment to these rules.
+construction. ML-DSA-87 signs through the `local` authority only; the classical class signs
+through `local` or `aws`. The specification defines more values; the packer rejects them at
+config-load time. Adding another requires both boot ROM support and a deliberate amendment to
+these rules.
 
 Encryption, when enabled, is AES-CBC with KBKDF-derived keys, either 128- or 256-bit per the
 manifest's `encryption_type`; mode, key length and KDF parameters including the input-block
@@ -294,10 +296,11 @@ supplied explicitly by the caller. They must not silently vary between runs. ECD
 One exception: the PQC signature value. `cryptography` signs ML-DSA hedged and exposes no
 deterministic mode, so the first `signature_size_pqc` bytes of an OCA-PQC body's
 `signature_pqc` (offset 6495; 4627 bytes for ML-DSA-87) — and that span wherever such a body
-sits in a combined image — may differ between runs. Every other byte stays byte-identical, including `manifest_hash`, the classical
-signature, and the zero padding of `signature_pqc`. Tests that pin or compare packed bytes mask
-exactly that span (`oca_fixtures.manifest_reader.mask_pqc_signature`) and verify the signature
-instead of comparing it; release diffs do the same.
+sits in a combined image — may differ between runs. Every other byte stays byte-identical,
+including `manifest_hash`, the classical signature, and the zero padding of `signature_pqc`.
+Tests that pin or compare packed bytes mask exactly that span
+(`oca_fixtures.manifest_reader.mask_pqc_signature`) and verify the signature instead of
+comparing it; release diffs do the same.
 
 Release artifacts are audited, re-signed and diffed against rebuilds. A field that varies run
 to run destroys that.

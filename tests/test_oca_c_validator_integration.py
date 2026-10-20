@@ -25,6 +25,7 @@ import pytest
 
 from tt_boot_manifest.oca import constants as oca_constants
 from tt_boot_manifest.oca.entry import pack_oca_bundle
+from tt_boot_manifest.oca.signing import build_pqc_signing_key, sign_signed_region_pqc
 from tt_boot_manifest.utils import load_config
 
 
@@ -420,7 +421,8 @@ _WRONG_SECRET = "11" * 32
 _ENC_BODY_SIZE = {"encrypted_aes": 4096, "encrypted_aes_pqc": 36864}
 
 
-@pytest.mark.parametrize("fixture", ["encrypted_aes", "encrypted_aes_pqc", "encrypted_aes_pqc_mldsa"])
+@pytest.mark.parametrize("fixture",
+                         ["encrypted_aes", "encrypted_aes_pqc", "encrypted_aes_pqc_mldsa"])
 def test_cli_encrypted_payload_roundtrips(fixture, tmp_path):
     """Correct secret → PASS, and the emitted plaintext is the decrypted
     payload (PTOC-prefixed). Covers both variants and both signature classes."""
@@ -2013,9 +2015,11 @@ def _reseal_manifest_hash(data: bytearray) -> None:
     from tt_boot_manifest.oca import constants as oca_consts
 
     if bytes(data[:4]) == oca_consts.OCAP_MAGIC:
-        region_end, hash_off = oca_consts.PQC_SIGNED_REGION_END, oca_consts.OFF_PQC_MANIFEST_HASH
+        region_end = oca_consts.PQC_SIGNED_REGION_END
+        hash_off = oca_consts.OFF_PQC_MANIFEST_HASH
     else:
-        region_end, hash_off = oca_consts.OCA_CLASSIC_SIGNED_REGION_END, oca_consts.OFF_MANIFEST_HASH
+        region_end = oca_consts.OCA_CLASSIC_SIGNED_REGION_END
+        hash_off = oca_consts.OFF_MANIFEST_HASH
     digest = hashlib.sha256(bytes(data[:region_end])).digest()
     data[hash_off:hash_off + len(digest)] = digest
 
@@ -2033,7 +2037,7 @@ def _set_le(data: bytearray, offset: int, width: int, value: int) -> None:
         _set_le, offset=oca_constants.OFF_SIGNATURE_CLASS_REVOKE + 1, width=1, value=0x01)),
 ])
 def test_cli_names_the_reason_for_a_malformed_signing_description(tmp_path, code, mutate):
-    """These refusals once printed `FAIL: CODE: ok` for want of a reason_for case."""
+    """Each refusal prints its own reason after the code, never a bare `ok`."""
     data = bytearray(open(_pack_fixture("secure_rsa"), "rb").read())
     mutate(data)
     _reseal_manifest_hash(data)
@@ -2283,7 +2287,12 @@ def _signed_region_message(data: bytearray, construction: str) -> bytes:
 
 def _harness_accepts_resigned(tmp_path, construction: str, context=None) -> bool:
     """Re-sign pqc_secure_mldsa with the development key under `construction`
-    and report whether the CLI accepts it."""
+    and report whether the CLI accepts it.
+
+    Signs with the raw key rather than through the signing layer, which cannot
+    produce a pre-hashed or context-bound signature and must not: those are the
+    negative fixtures. The pure construction shares the path so the positive
+    case exercises the same code as the refusals."""
     data = _fixture_bytes("pqc_secure_mldsa")
     message = _signed_region_message(data, construction)
     signature = (_mldsa_dev_key().sign(message) if context is None
@@ -2520,12 +2529,22 @@ def test_cli_a_revoked_key_cannot_escape_by_claiming_another_slot(tmp_path):
     _assert_refused(result, "ROOT_KEY_UNAUTHORIZED")
 
 
-def _resign_pqc(data: bytearray) -> None:
-    """Re-seal manifest_hash and re-sign the PQC class with the development key,
-    so an edit to the signed region survives integrity and signature checks."""
+def _resign_pqc(data: bytearray, fixture: str) -> None:
+    """Re-seal manifest_hash and re-sign the PQC class through the signing layer,
+    with the key `fixture`'s config names, so an edit to the signed region
+    survives the integrity and signature checks."""
     _reseal_manifest_hash(data)
+    cfg = load_config(os.path.join(FIXTURE_DIR, f"{fixture}.yaml"))
+    prev = os.getcwd()
+    os.chdir(PROJECT_ROOT)
+    try:
+        signing_key = build_pqc_signing_key(cfg)
+    finally:
+        os.chdir(prev)
     region = bytes(data[:oca_constants.PQC_SIGNED_REGION_END])
-    data[_SIGNATURE_PQC_SPAN] = _mldsa_dev_key().sign(region)
+    start = oca_constants.OFF_SIGNATURE_PQC
+    data[start:start + oca_constants.LEN_SIGNATURE_PQC] = sign_signed_region_pqc(
+        region, signing_key, oca_constants.ML_DSA_87_SIGNATURE_BYTES)
 
 
 def test_cli_an_enforced_class_that_selects_no_key_is_unauthorized(tmp_path):
@@ -2534,7 +2553,7 @@ def test_cli_an_enforced_class_that_selects_no_key_is_unauthorized(tmp_path):
     data = _fixture_bytes("pqc_secure_mldsa")
     off = oca_constants.OFF_PUBLIC_KEY_SELECT_PQC
     data[off:off + 16] = bytes(16)
-    _resign_pqc(data)
+    _resign_pqc(data, "pqc_secure_mldsa")
     _assert_refused(_run_bundle(tmp_path, data, "select_none"), "ROOT_KEY_UNAUTHORIZED")
 
 
@@ -2546,11 +2565,17 @@ def test_cli_rejects_a_malformed_anchor_slot(flag, bad):
     assert flag.encode() in result.stderr
 
 
+def _unreachable_openssl_minimum() -> str:
+    """An OpenSSL minimum no host meets."""
+    return "99.0.0"
+
+
 def test_an_openssl_below_the_minimum_is_a_reason_naming_both_versions(monkeypatch):
     """On a host whose OpenSSL is too old the suite skips — or, with
     TT_BOOT_MANIFEST_REQUIRE_VALIDATOR set, fails — saying what it needs and
     what it found."""
-    monkeypatch.setitem(globals(), "_openssl_min_version", lambda: "99.0.0")
+    monkeypatch.setattr(sys.modules[__name__], "_openssl_min_version",
+                        _unreachable_openssl_minimum)
     reason = _validator_unavailable_reason()
     assert reason is not None
     assert "99.0.0" in reason and "pkg-config reports" in reason

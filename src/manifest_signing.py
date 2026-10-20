@@ -5,6 +5,7 @@
 import logging
 import os
 from abc import ABC, abstractmethod
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import ec, mldsa, rsa, padding, utils
 from cryptography.hazmat.backends import default_backend
@@ -540,6 +541,14 @@ def check_ec_private_key(key, expected_curve=ec.SECP256R1):
 def check_ml_dsa_87_private_key(key):
     """Raise unless `key` is an ML-DSA-87 private key."""
     check(isinstance(key, mldsa.MLDSA87PrivateKey), f"Key {key.__class__} is not an ML-DSA-87 private key")
+
+def ml_dsa_87_available() -> bool:
+    """Whether this cryptography build can produce ML-DSA-87 keys at all."""
+    try:
+        mldsa.MLDSA87PrivateKey.generate()
+    except UnsupportedAlgorithm:
+        return False
+    return True
 
 def check_rsa_public_key(key, expected_size=RSA_3072_KEY_SZ_BITS):
     """Raise unless `key` is an RSA public key of `expected_size` bits."""

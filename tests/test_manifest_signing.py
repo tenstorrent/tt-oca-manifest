@@ -9,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding
 
@@ -355,25 +356,25 @@ def test_ml_dsa_87_signature_size_is_exact(length, valid):
             signing_key.validate_signature_size()
 
 
+_UNSUPPORTED_ALGORITHM = UnsupportedAlgorithm("not supported by this backend.")
+
+
+def _raise_unsupported_algorithm(*args, **kwargs):
+    raise _UNSUPPORTED_ALGORITHM
+
+
 def test_unsupported_algorithm_from_key_loading_propagates_unchanged(monkeypatch):
     """UnsupportedAlgorithm has more than one cause — a backend without ML-DSA, a
     key of an algorithm cryptography does not support at all — and the signing
     layer cannot tell which. It passes the exception through untouched for the
     caller, which knows what was asked for, to interpret."""
-    from cryptography.exceptions import UnsupportedAlgorithm
-
     import tt_boot_manifest.manifest_signing as manifest_signing_module
 
-    raised = UnsupportedAlgorithm("not supported by this backend.")
-
-    def _unsupported(data, password):
-        raise raised
-
     monkeypatch.setattr(manifest_signing_module.serialization, "load_pem_private_key",
-                        _unsupported)
+                        _raise_unsupported_algorithm)
     with pytest.raises(UnsupportedAlgorithm) as excinfo:
         prepare_signing_key(_ml_dsa_manifest(), 1)
-    assert excinfo.value is raised
+    assert excinfo.value is _UNSUPPORTED_ALGORITHM
 
 
 def test_ml_dsa_87_sizes_agree_with_the_layout_constants():

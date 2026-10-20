@@ -24,8 +24,11 @@ from oca_fixtures import ECC_P256_KEY_PATH, ML_DSA_87_KEY_PATH, RSA_3072_KEY_PAT
 from oca_fixtures import manifest_reader
 from tt_boot_manifest.key_hygiene import ALLOW_CONFIG_FIELD, ALLOW_ENV_VAR, KeyHygieneError
 from tt_boot_manifest.oca import constants as oca_consts
+from tt_boot_manifest.oca import signing as oca_signing
 from tt_boot_manifest.oca.entry import pack_oca_bundle
-from tt_boot_manifest.oca.validators import OcaConfigError
+from tt_boot_manifest.oca.manifest import build_signed_region, build_unsigned_tail
+from tt_boot_manifest.oca.validators import (OcaConfigError, OcaLayoutError,
+                                             validate_and_normalize_oca_classic)
 
 ML_DSA_87 = oca_consts.OcaPqcSignatureType.ML_DSA_87.value
 RSA_3072 = oca_consts.OcaClassicSignatureType.RSA_3072_PKCS1V15_SHA256.value
@@ -348,6 +351,12 @@ def test_public_key_select_pqc_is_a_non_zero_128_bit_mask(tmp_path, value):
     assert error.field_name == "public_key_select_pqc"
 
 
+@pytest.mark.parametrize("value", [-1, 1 << 128])
+def test_public_key_pqc_revoke_is_a_128_bit_mask(tmp_path, value):
+    error = _config_error(_pqc_only_config(tmp_path, public_key_pqc_revoke=value))
+    assert error.field_name == "public_key_pqc_revoke"
+
+
 @pytest.mark.parametrize("field", ["public_key_pqc", "signature_pqc"])
 def test_pqc_key_and_signature_are_outputs_not_inputs(tmp_path, field):
     error = _config_error(_pqc_only_config(tmp_path, **{field: "00" * 4}))
@@ -442,3 +451,99 @@ def test_two_packs_differ_only_in_the_ml_dsa_signature(tmp_path, make_config):
         manifest_reader.mask_pqc_signature(second)
     assert manifest_reader.pqc_signature_valid(_body(first))
     assert manifest_reader.pqc_signature_valid(_body(second))
+
+
+# ---------------------------------------------------------------------------
+# The PQC builders refuse what does not fit the layout
+#
+# Each guard sits behind an earlier check that keeps a real config from
+# reaching it, so these drive the builders directly.
+# ---------------------------------------------------------------------------
+
+
+class _StubPqcKey:
+    """A signing key that reports whatever public key and signature it is given."""
+
+    def __init__(self, public_key_bytes=b"", signature_bytes=b""):
+        self.public_key_bytes = public_key_bytes
+        self.signature_bytes = signature_bytes
+
+    def generate_verified_signature(self, data):
+        return self.signature_bytes
+
+
+@pytest.mark.parametrize("length,accepted", [
+    (oca_consts.ML_DSA_87_PUBLIC_KEY_BYTES, True),
+    (oca_consts.ML_DSA_87_PUBLIC_KEY_BYTES - 1, False),
+    (oca_consts.ML_DSA_87_PUBLIC_KEY_BYTES + 1, False),
+])
+def test_the_pqc_public_key_must_have_its_algorithms_length(length, accepted):
+    key = _StubPqcKey(public_key_bytes=b"\x01" * length)
+    if accepted:
+        encoded = oca_signing.encode_public_key_pqc(key, ML_DSA_87)
+        assert encoded.size == length
+        assert len(encoded.field) == oca_consts.LEN_PUBLIC_KEY_PQC
+        return
+    with pytest.raises(OcaConfigError) as excinfo:
+        oca_signing.encode_public_key_pqc(key, ML_DSA_87)
+    assert excinfo.value.field_name == "signing_key_file_pqc"
+
+
+@pytest.mark.parametrize("length,accepted", [
+    (oca_consts.ML_DSA_87_SIGNATURE_BYTES, True),
+    (oca_consts.ML_DSA_87_SIGNATURE_BYTES - 1, False),
+])
+def test_the_pqc_signature_must_have_the_declared_size(length, accepted):
+    key = _StubPqcKey(signature_bytes=b"\x01" * length)
+    declared = oca_consts.ML_DSA_87_SIGNATURE_BYTES
+    if accepted:
+        field = oca_signing.sign_signed_region_pqc(b"region", key, declared)
+        assert len(field) == oca_consts.LEN_SIGNATURE_PQC
+        return
+    with pytest.raises(OcaConfigError) as excinfo:
+        oca_signing.sign_signed_region_pqc(b"region", key, declared)
+    assert excinfo.value.field_name == "signature_type_pqc"
+
+
+def test_an_unmapped_pqc_signature_type_is_named():
+    with pytest.raises(OcaConfigError) as excinfo:
+        oca_signing.build_pqc_signing_key({"signature_type_pqc": 0x32})
+    assert excinfo.value.field_name == "signature_type_pqc"
+
+
+def _pqc_signed_region(tmp_path, public_key_pqc_field):
+    """The signed region of a PQC-only manifest, built with this key field."""
+    normalized = validate_and_normalize_oca_classic(_pqc_only_config(tmp_path))
+    hash_field = b"\x00" * oca_consts.HASH_FIELD_SIZE
+    return build_signed_region(
+        normalized, hash_field, hash_field, 0, 0,
+        variant=oca_consts.PQC_VARIANT,
+        public_key_pqc_field=public_key_pqc_field,
+        public_key_size_pqc=oca_consts.ML_DSA_87_PUBLIC_KEY_BYTES,
+        signature_size_pqc=oca_consts.ML_DSA_87_SIGNATURE_BYTES)
+
+
+def test_the_signed_region_needs_the_pqc_public_key(tmp_path):
+    region = _pqc_signed_region(tmp_path, b"\x00" * oca_consts.LEN_PUBLIC_KEY_PQC)
+    assert len(region) == oca_consts.PQC_SIGNED_REGION_END
+    with pytest.raises(ValueError):
+        _pqc_signed_region(tmp_path, None)
+    with pytest.raises(OcaLayoutError):
+        _pqc_signed_region(tmp_path, b"\x00" * (oca_consts.LEN_PUBLIC_KEY_PQC - 1))
+
+
+@pytest.mark.parametrize("length,accepted", [
+    (oca_consts.LEN_SIGNATURE_PQC, True),
+    (oca_consts.LEN_SIGNATURE_PQC - 1, False),
+])
+def test_the_unsigned_tail_needs_a_whole_signature_pqc_field(tmp_path, length, accepted):
+    region = _pqc_signed_region(tmp_path, b"\x00" * oca_consts.LEN_PUBLIC_KEY_PQC)
+    hash_field = b"\x00" * oca_consts.HASH_FIELD_SIZE
+    args = (region, hash_field, oca_consts.OCA_PQC_BODY_SIZE)
+    kwargs = {"variant": oca_consts.PQC_VARIANT, "signature_pqc_field": b"\x00" * length}
+    if accepted:
+        tail = build_unsigned_tail(*args, **kwargs)
+        assert len(tail) == oca_consts.OCA_PQC_BODY_SIZE - oca_consts.PQC_SIGNED_REGION_END
+        return
+    with pytest.raises(OcaLayoutError):
+        build_unsigned_tail(*args, **kwargs)

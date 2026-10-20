@@ -141,7 +141,8 @@ def _row_id(row: SigningRow) -> str:
 
 def _row(classic: int, pqc: int) -> SigningRow:
     matches = [row for row in ROWS if (row.classic, row.pqc) == (classic, pqc)]
-    assert len(matches) == 1, f"the signature-class table has no single {ROW_NAMES[(classic, pqc)]} row"
+    assert len(matches) == 1, (
+        f"the signature-class table has no single {ROW_NAMES[(classic, pqc)]} row")
     return matches[0]
 
 

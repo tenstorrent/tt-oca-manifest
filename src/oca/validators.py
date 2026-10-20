@@ -93,8 +93,8 @@ def _normalize_signature_classes(config: Dict[str, Any], secure_boot: int,
     """Resolve secure_boot_classic and secure_boot_pqc, the signature classes
     secure_boot_control names.
 
-    The classical class defaults on under secure boot, so a config written
-    before the PQC class existed keeps the bytes it always had. A PQC manifest
+    The classical class defaults on under secure boot, so a config that names
+    neither class enforces the classical one. A PQC manifest
     may enforce either class or both, a classic manifest the classical class
     only, and secure boot must name at least one.
     """
@@ -557,8 +557,9 @@ def reject_deferred_features(config: Dict[str, Any]) -> None:
         )
 
     # PQC signature algorithm and authority. Of the PQC algorithms the packer
-    # supports ML-DSA-87 alone, and it signs through `local` only. Checked whatever secure_boot
-    # says, so an unsupported request is named before any class rule fires.
+    # supports ML-DSA-87 alone, and it signs through `local` only. Checked
+    # whatever secure_boot says, so an unsupported request is named before any
+    # class rule fires.
     if _truthy(config, "signature_type_pqc") and \
             int(config["signature_type_pqc"]) != oca_consts.OcaPqcSignatureType.ML_DSA_87.value:
         raise OcaConfigError(

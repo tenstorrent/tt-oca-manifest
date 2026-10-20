@@ -32,6 +32,7 @@ import os
 import pytest
 
 from oca_fixtures.manifest_reader import mask_pqc_signature, pqc_signature_valid
+from tt_boot_manifest.key_hygiene import ALLOW_ENV_VAR
 from tt_boot_manifest.oca import constants as oca_consts
 from tt_boot_manifest.pack_images import generate_images
 from tt_boot_manifest.utils import load_config
@@ -43,6 +44,13 @@ CONFIG_GLOBS = (
     "examples/*/config.yaml",
     "validators/oca/test/fixtures/configs/*.yaml",
 )
+
+
+@pytest.fixture(autouse=True)
+def _without_the_suite_test_key_override(monkeypatch):
+    """These are configs a reader packs, so each must declare the development-key
+    opt-in itself; the suite-wide override would hide one that lost it."""
+    monkeypatch.delenv(ALLOW_ENV_VAR, raising=False)
 
 # repo-relative config path -> (packed length, SHA-256 of the packed bytes)
 _PINNED = {

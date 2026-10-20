@@ -52,6 +52,13 @@ CLASSIC_EXAMPLES = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _without_the_suite_test_key_override(monkeypatch):
+    """These are configs a reader packs, so each must declare the development-key
+    opt-in itself; the suite-wide override would hide one that lost it."""
+    monkeypatch.delenv(ALLOW_ENV_VAR, raising=False)
+
+
 def _pack(cfg_rel, tmp_path):
     """Load a repo-relative example config and pack it in-process.
 

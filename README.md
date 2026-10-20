@@ -60,7 +60,7 @@ validator integration tests, which skip without it):
 
 - A host **C toolchain** with `-std=c99` support (gcc 12+ or clang 16+)
 - **OpenSSL 3.5 or later** development headers, discovered via **pkg-config**
-  (macOS: `brew install openssl@3`; Debian/Ubuntu 26.04 or later:
+  (macOS: `brew install openssl@3`; Debian 13+ or Ubuntu 26.04+:
   `apt install libssl-dev pkg-config`). The validator CLI verifies ML-DSA-87,
   which OpenSSL provides from 3.5; with an older OpenSSL its build stops with the
   reason, and the integration tests skip saying so. Ubuntu 24.04's `libssl-dev`
@@ -79,7 +79,8 @@ validator integration tests, which skip without it):
 The package is configured via `pyproject.toml` with the following dependencies:
 
 **Core dependencies:**
-- `cryptography>=48.0.0` - Cryptographic operations (RSA, ECDSA, ML-DSA, AES, hashing); 48.0.0 is the first release whose wheels provide ML-DSA
+- `cryptography>=48.0.0` - Cryptographic operations (RSA, ECDSA, ML-DSA, AES, hashing);
+  48.0.0 is the first release whose wheels provide ML-DSA
 - `ruamel.yaml>=0.17.0` - YAML configuration parsing (preserves comments and formatting)
 
 **Optional dependencies:**
@@ -406,8 +407,7 @@ signature_class_revoke: 0x00        # no algorithm class revoked
   boot that carries it: both take effect from the next boot onward, when the
   validator refuses a manifest verified by a disabled algorithm class, or one whose
   `secure_boot_control` does not enforce a cohort the device demands of the ROOT
-  key. Setting
-  both group codes under enforced secure boot bricks the device.
+  key. Setting both group codes under enforced secure boot bricks the device.
 - **Device-state updates** — after a successful verification the consumer OR-s the
   manifest's revocations, security-version flags, and signature posture into its
   stored state (bits only ever turn on). The six disable bits in
@@ -712,7 +712,7 @@ Tests are grouped by the side they exercise:
 - **`tests/test_oca_readme_signing_snippets.py`** — packs the signing snippets and the signature-class table in this README's [OCA manifest variants](#oca-manifest-variants) section as written, so the documentation fails a test when it stops matching the packer
 
 **C consumer/validator:**
-- **`tests/test_oca_c_validator_integration.py`** — packs fixtures and round-trips them through the compiled `oca-validate` CLI (skips if `make`/`pkg-config` are unavailable)
+- **`tests/test_oca_c_validator_integration.py`** — packs fixtures and round-trips them through the compiled `oca-validate` CLI (skips, with the reason, if `make` or `pkg-config` is unavailable or OpenSSL is older than 3.5)
 - **`tests/test_oca_c_validator_layout_sync.py`** — fails on any producer↔consumer layout drift
 - `make -C validators/oca check` — the validator's own C unit tests + fixture round-trips (see [validators/oca/README.md](validators/oca/README.md))
 

@@ -44,8 +44,8 @@ repository follows it.
 
 The prerequisites are listed in the [README](README.md#prerequisites): Python
 3.11+ for the producer, and additionally a C99 toolchain, OpenSSL 3.5 or later
-development headers, and `pkg-config` to build and test the C validator. Install the package
-in editable mode with the test extras:
+development headers, and `pkg-config` to build and test the C validator. Install
+the package in editable mode with the test extras:
 
 ```bash
 pip install -e ".[dev]"

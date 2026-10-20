@@ -33,7 +33,7 @@ from collections import namedtuple
 
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, mldsa, rsa, utils as ec_utils
+from cryptography.hazmat.primitives.asymmetric import ec, rsa, utils as ec_utils
 
 from .. import key_hygiene
 from .. import manifest_signing
@@ -96,6 +96,12 @@ def build_pqc_signing_key(config: dict):
     """Construct the PQC class's `manifest_signing.SigningKey` from an OCA-PQC
     config. Only invoked when that class is enforced."""
     sig_type_oca = int(config["signature_type_pqc"])
+    if sig_type_oca not in _OCA_PQC_TO_INTERNAL_SIG_TYPE:
+        # Should be unreachable — the config validator refuses the type first.
+        raise OcaConfigError(
+            f"signature_type_pqc {sig_type_oca:#x} cannot be mapped to a supported signing key type",
+            field_name="signature_type_pqc",
+        )
     adapter = _signing_adapter(config, "_pqc", _OCA_PQC_TO_INTERNAL_SIG_TYPE[sig_type_oca],
                                "oca-key-pqc")
     return _prepare_key(adapter, "signing_key_file_pqc")
@@ -157,19 +163,10 @@ def _unloadable_key_reason(adapter: dict, key_file_field: str, error: Exception)
     from a key file this build cannot load.
     """
     if adapter["signature_type"] == ManifestSignatureType.ML_DSA_87.value \
-            and not _ml_dsa_supported():
+            and not manifest_signing.ml_dsa_87_available():
         return (f"{key_file_field}: this cryptography build cannot sign with ML-DSA-87; "
                 f"it needs cryptography built against OpenSSL 3.5 or later ({error})")
     return f"{key_file_field} holds a key this cryptography build cannot load ({error})"
-
-
-def _ml_dsa_supported() -> bool:
-    """Whether this cryptography build can produce ML-DSA-87 keys at all."""
-    try:
-        mldsa.MLDSA87PrivateKey.generate()
-    except UnsupportedAlgorithm:
-        return False
-    return True
 
 
 # ---------------------------------------------------------------------------
