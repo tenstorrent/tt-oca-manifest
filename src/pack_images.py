@@ -16,8 +16,6 @@ from .oca import entry as oca_entry
 from .oca.validators import OcaConfigError
 from .utils import load_config
 
-logger = logging.getLogger(__name__.strip('_'))
-
 ALLOWED_FORMATS = ('oca-classic', 'oca-pqc', 'oca-combined')
 
 
@@ -49,8 +47,6 @@ def _print_oca_config_error(e) -> None:
 
 
 def generate_images(config_data) -> list:
-    logger.debug(f"Input config data:\n{config_data}")
-
     manifest_format = config_data.get('manifest_format')
     if manifest_format in ('oca-classic', 'oca-pqc'):
         bundle_bytes = oca_entry.pack_oca_bundle(config_data)

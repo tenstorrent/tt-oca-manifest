@@ -53,10 +53,10 @@
  *                                         refused without asking the anchor;
  *                                         the device does not authorize the
  *                                         key; or the callback answered with a
- *                                         code it has no business returning,
- *                                         which is treated as a refusal rather
- *                                         than passed through as some
- *                                         unrelated verdict.
+ *                                         code it should not return, which is
+ *                                         treated as a refusal rather than 
+ *                                         passed through as some unrelated 
+ *                                         verdict.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The anchor is not wired, or could
  *                                         not be read.
  * @return Otherwise cb->is_key_authorized's verdict, normalized to the three
