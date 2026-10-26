@@ -2826,6 +2826,23 @@ def test_cli_refuses_a_der_key_longer_than_its_declared_size(tmp_path, fixture):
                     "CRYPTO_FIELD_SIZE")
 
 
+@pytest.mark.parametrize("fixture,offset,value", [
+    ("secure_rsa", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC, 0x00),
+    ("secure_rsa_der", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC, 0xF0),
+    ("secure_ecdsa", oca_constants.OFF_SIGNATURE_ENCODING_CLASSIC, 0x03),
+], ids=["rsa-key-unset", "rsa-key-integrator", "ecdsa-signature-reserved"])
+def test_cli_refuses_a_classical_encoding_its_primitive_does_not_define(tmp_path, fixture,
+                                                                       offset, value):
+    """An encoding outside the ones the primitive defines is refused by the
+    library, before any callback, rather than read under another encoding's
+    rule and left for the crypto backend to reject."""
+    data = _fixture_bytes(fixture)
+    data[offset] = value
+    _reseal_manifest_hash(data)
+    _assert_refused(_run_bundle(tmp_path, data, f"{fixture}_encoding_{value:#04x}"),
+                    "CRYPTO_FIELD_SIZE")
+
+
 # (fixture, field offset, declared valid bytes, field width). The signature
 # fields are unsigned, so these need no re-seal; the key fields are signed.
 _SIGNATURE_FIELDS = [
@@ -2909,6 +2926,89 @@ def test_cli_refuses_a_der_ecdsa_signature_with_bytes_past_its_maximum(tmp_path)
     bundle[_SIGNATURE_OFFSET + _DER_ECDSA_MAXIMUM] = 0x01
     result = _validate_bundle(bytes(bundle), tmp_path, "ecdsa_past_maximum")
     _assert_refused(result, "CRYPTO_FIELD_SIZE")
+
+
+# ---------------------------------------------------------------------------
+# Declared algorithms the library cannot compute
+#
+# manifest_hash_type and payload_hash_type name the digests, and an encrypted
+# payload names its key derivation and input-key source. This build computes
+# SHA2-256 and derives from the pre-shared secret through SP 800-108r1 with
+# HMAC-SHA-256; anything else is refused by name rather than hashed or
+# decrypted as if it were.
+# ---------------------------------------------------------------------------
+
+_SHA2_384 = 0x02
+_SHAKE256_512 = 0x08
+
+
+def test_cli_refuses_digests_it_does_not_compute_even_when_resealed_as_sha256(tmp_path):
+    """A manifest declaring SHA2-384 and SHAKE256-512, with manifest_hash
+    recomputed as SHA-256: a Consumer that honours the declared types rejects
+    it, so this one must too."""
+    data = _fixture_bytes("basic")
+    data[oca_constants.OFF_MANIFEST_HASH_TYPE] = _SHA2_384
+    data[oca_constants.OFF_PAYLOAD_HASH_TYPE] = _SHAKE256_512
+    _reseal_manifest_hash(data)
+    _assert_refused(_run_bundle(tmp_path, data, "declared_sha384", flags=()),
+                    "UNSUPPORTED_ALGORITHM")
+
+
+@pytest.mark.parametrize("fixture,offset,value", [
+    ("basic", oca_constants.OFF_MANIFEST_HASH_TYPE, _SHA2_384),
+    ("pqc_basic", oca_constants.OFF_MANIFEST_HASH_TYPE, _SHA2_384),
+    ("basic", oca_constants.OFF_PAYLOAD_HASH_TYPE, _SHAKE256_512),
+    ("pqc_basic", oca_constants.OFF_PAYLOAD_HASH_TYPE, 0x00),
+], ids=["manifest-classic", "manifest-pqc", "payload-classic", "payload-pqc-unset"])
+def test_cli_refuses_an_unsupported_hash_type(tmp_path, fixture, offset, value):
+    data = _fixture_bytes(fixture)
+    data[offset] = value
+    _reseal_manifest_hash(data)
+    result = _run_bundle(tmp_path, data, f"{fixture}_hash_type_{offset}", flags=())
+    _assert_refused(result, "UNSUPPORTED_ALGORITHM")
+    assert not result.stderr.rstrip().endswith(b": ok"), result.stderr
+
+
+def _encrypted_with(field: str, value: int) -> bytearray:
+    """encrypted_aes with one encryption field changed, re-signed so the edit
+    survives the integrity and signature checks."""
+    data = _fixture_bytes("encrypted_aes")
+    if field == "kdf":
+        _set_le(data, oca_constants.OFF_ENCRYPTION_KDF, 2, value)
+    else:
+        control = struct.unpack_from("<H", data,
+                                     oca_constants.OFF_PAYLOAD_ENCRYPTION_CONTROL)[0]
+        shift = oca_constants.ENCRYPTION_INPUT_KEY_SOURCE_SHIFT
+        control = (control & ~(0x7 << shift)) | (value << shift)
+        _set_le(data, oca_constants.OFF_PAYLOAD_ENCRYPTION_CONTROL, 2, control)
+    _resign_classic(data, "encrypted_aes")
+    return data
+
+
+def test_cli_a_resigned_encrypted_bundle_still_decrypts(tmp_path):
+    """The control for the refusals below: re-signing with the supported KDF and
+    key source changes nothing."""
+    data = _encrypted_with("kdf", oca_constants.OcaEncryptionKdf.SP800_108_CTR_HMAC_SHA256.value)
+    _assert_passed(_run_bundle(tmp_path, data, "encrypted_resigned",
+                               flags=_read_flags("encrypted_aes")))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("kdf", 0x0000),     # NONE: the input key used directly
+    ("kdf", 0x0002),     # SP 800-108r1 with HMAC-SHA-512
+    ("kdf", 0xFF00),     # integrator defined
+    ("key_source", 0b010),   # a KEM-unwrapped DEK
+    ("key_source", 0b000),   # no source selected
+    ("key_source", 0b011),   # two sources at once
+])
+def test_cli_refuses_an_encrypted_payload_it_cannot_derive_a_key_for(tmp_path, field, value):
+    """The reference backend always derives through SP 800-108r1 HMAC-SHA-256
+    from the pre-shared secret, so without this refusal a manifest naming any
+    other derivation decrypts as if it named that one."""
+    data = _encrypted_with(field, value)
+    result = _run_bundle(tmp_path, data, f"encrypted_{field}_{value:#x}",
+                         flags=_read_flags("encrypted_aes"))
+    _assert_refused(result, "UNSUPPORTED_ALGORITHM")
 
 
 def _unreachable_openssl_minimum() -> str:

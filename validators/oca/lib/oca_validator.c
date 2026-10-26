@@ -12,8 +12,6 @@
 
 #include "oca_validator.h"
 
-#include "crypto_dispatch.h"
-#include "demotion.h"
 #include "identity.h"
 #include "lifecycle.h"
 #include "oca_layout.h"
@@ -67,6 +65,7 @@ const char *oca_result_str(oca_result_t r)
         case OCA_FAIL_SIGNATURE_COHORT_REQUIRED: return "SIGNATURE_COHORT_REQUIRED";
         case OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED:
                                                 return "SIGNATURE_ALGORITHM_REVOKED";
+        case OCA_FAIL_UNSUPPORTED_ALGORITHM:    return "UNSUPPORTED_ALGORITHM";
     }
     return "UNKNOWN";
 }
@@ -75,8 +74,9 @@ const char *oca_result_str(oca_result_t r)
 /* Public oca_check_* wrappers                                        */
 /* ------------------------------------------------------------------ */
 
-/* The structural checks live in parser.c with the same name and are
- * exported through that translation unit; nothing to add here. */
+/* The structural checks live in parser.c, demotion_control in demotion.c, and
+ * the manifest hash and signature in crypto_dispatch.c, each under its public
+ * name; nothing to add here. */
 
 oca_result_t oca_check_identity(const uint8_t *body,
                                 oca_id_kind_t kind,
@@ -149,24 +149,6 @@ oca_result_t oca_check_version_range(const uint8_t *body,
             return OCA_FAIL_INVALID_ARG;
     }
     return oca_version_range_check(body, level, min_specified, max_specified, cb);
-}
-
-oca_result_t oca_check_demotion_control(const uint8_t *body)
-{
-    return oca_demotion_check(body);
-}
-
-oca_result_t oca_check_manifest_hash(const uint8_t *body,
-                                     const oca_callbacks_t *cb)
-{
-    return oca_manifest_hash_check(body, cb);
-}
-
-oca_result_t oca_check_signature(const uint8_t *body,
-                                 const oca_callbacks_t *cb,
-                                 oca_validation_context_t *ctx)
-{
-    return oca_signature_check(body, cb, ctx);
 }
 
 void oca_validation_context_init(oca_validation_context_t *ctx)
@@ -270,10 +252,10 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
      * manifest alone and therefore ahead of the determination — neither asks
      * what secure boot resolved to. The signing fields are not among them: they
      * are Secure-Boot-only, ignored while secure boot is disabled, and validated
-     * by oca_check_crypto_field_sizes() once the determination is made. */
+     * by oca_check_signing_description() once the determination is made. */
     r = oca_check_reserved_bits(body);
     if (r != OCA_OK) return r;
-    r = oca_check_secure_boot_invariant(body);
+    r = oca_check_signature_class_variant(body);
     if (r != OCA_OK) return r;
     /* Confirm the consistency of the signature revocation group codes; if these
     values are mal-formed then the manifest is suspect. We don't care what
@@ -324,7 +306,7 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
      * enforces secure boot itself uses these fields whatever that bit says. A
      * manifest read, no device or key operation, and it must precede ROOT-key
      * authorization, which presents these fields to the trust anchor. */
-    r = oca_check_crypto_field_sizes(body, cb, vctx);
+    r = oca_check_signing_description(body, cb, vctx);
     if (r != OCA_OK) return r;
 
     /* The device's signature posture: an algorithm it has disabled, or a

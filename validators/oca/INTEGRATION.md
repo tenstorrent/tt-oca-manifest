@@ -599,7 +599,7 @@ does the whole-bundle resolution including the encrypted substitution, and
 ## Secure-boot device state
 
 When secure boot is in force, five checks run ahead of signature verification:
-`oca_check_crypto_field_sizes()`, `oca_check_signature_posture()`,
+`oca_check_signing_description()`, `oca_check_signature_posture()`,
 `oca_check_root_key_authorized()`, `oca_check_root_key_revocation()` and
 `oca_check_security_version()`. All are composed into
 `oca_validate_manifest()`, so both entry points run them, and all are callable
@@ -608,7 +608,7 @@ requires the validation context `oca_determine_secure_boot()` produced. A fresh
 one is refused, not treated as "not in force". See "Determined once, confirmed
 at every use" below.
 
-- **Signing description** (`oca_check_crypto_field_sizes()`) — each enforced
+- **Signing description** (`oca_check_signing_description()`) — each enforced
   class's signature type, encodings and size fields must describe a key and
   signature this library accepts, and every byte of its key and signature
   fields past the declared size must be zero (`CRYPTO_FIELD_SIZE` otherwise).
@@ -993,6 +993,14 @@ Changes an existing integration should check. Most show only at run time.
   no `default` needs both cases.
 - **The PQC description is pinned.** The PQC class accepts raw ML-DSA-87 at its
   exact sizes; anything else is `CRYPTO_FIELD_SIZE`.
+- **Declared algorithms are checked.** A `manifest_hash_type` or
+  `payload_hash_type` other than SHA2-256, and on an encrypted payload an
+  `encryption_key_derivation_function` other than SP 800-108r1 with
+  HMAC-SHA-256 or an `input_key_source` other than the pre-shared secret, is
+  refused with the new `OCA_FAIL_UNSUPPORTED_ALGORITHM` before anything is
+  hashed or decrypted. Such a manifest was previously hashed or decrypted as if
+  it named the supported algorithm. A `switch` over `oca_result_t` with no
+  `default` needs the new case.
 - **Padding past a declared size must be zero.** Under secure boot, a key or
   signature field of an enforced class that holds a non-zero byte past its
   declared size is `CRYPTO_FIELD_SIZE`. This packer has always written zeros
@@ -1003,8 +1011,11 @@ Changes an existing integration should check. Most show only at run time.
   non-secure manifest with populated signing fields now validates, and a device
   that enforces secure boot checks a manifest's signing description even when
   the manifest leaves its own secure-boot bit clear.
-- **Hand-composed sequences.** `oca_check_crypto_field_sizes()` now takes
-  `(body, cb, ctx)`, and the internal layout constant
+- **Hand-composed sequences.** Two checks are renamed for what they now
+  check: `oca_check_crypto_field_sizes()` is `oca_check_signing_description()`,
+  which now takes `(body, cb, ctx)`, and `oca_check_secure_boot_invariant()` is
+  `oca_check_signature_class_variant()`. The old names remain as deprecated
+  macros until 0.8. The internal layout constant
   `OCA_LEN_PUBLIC_KEY_CLASSIC_REVOKE` is now `OCA_LEN_ROOT_KEY_BITMAP`.
 - **The reference CLI** needs OpenSSL 3.5 or later. The library itself has no
   OpenSSL dependency.

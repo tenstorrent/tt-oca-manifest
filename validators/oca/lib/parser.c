@@ -163,7 +163,7 @@ oca_result_t oca_check_reserved_bits(const uint8_t *body)
     return OCA_OK;
 }
 
-oca_result_t oca_check_secure_boot_invariant(const uint8_t *body)
+oca_result_t oca_check_signature_class_variant(const uint8_t *body)
 {
     oca_result_t status;
     const oca_variant_t *v = oca_variant_for_body(body, &status);
@@ -177,7 +177,7 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body)
      *
      * The signing fields themselves are not judged here. They are
      * Secure-Boot-only, so a Consumer ignores them while secure boot is
-     * disabled and validates them, through oca_check_crypto_field_sizes(), once
+     * disabled and validates them, through oca_check_signing_description(), once
      * the determination puts secure boot in force. */
     if ((body[OCA_OFF_SECURE_BOOT_CONTROL] & OCA_SECURE_BOOT_PQC_BIT) != 0u
         && v->len_pqc_signature == 0u) {
@@ -219,7 +219,7 @@ static int padding_is_dirty(const uint8_t *field, size_t field_len, size_t valid
     return oca_ct_any_nonzero(field + valid_len, field_len - valid_len);
 }
 
-oca_result_t oca_check_crypto_field_sizes(const uint8_t *body,
+oca_result_t oca_check_signing_description(const uint8_t *body,
                                           const oca_callbacks_t *cb,
                                           const oca_validation_context_t *ctx)
 {
@@ -266,6 +266,9 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body,
             return OCA_FAIL_CRYPTO_FIELD_SIZE;
         }
 
+        /* Every encoding is matched against the ones its primitive defines, so
+         * an unset, reserved or integrator value never falls through to
+         * another encoding's size rule. */
         uint16_t want_sig;
         uint16_t want_key;
         if (prim == OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256) {
@@ -276,13 +279,21 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body,
             want_sig = RAW_RSA_3072_SIGNATURE_BYTES;
             /* A DER RSA key is PKCS#1, whose length varies with the public
              * exponent, so only the field bound above constrains it. */
-            want_key = (key_enc == OCA_ENCODING_RAW)
-                           ? RAW_RSA_3072_PUBLIC_KEY_BYTES
-                           : key_size;
+            if (key_enc == OCA_ENCODING_RAW) {
+                want_key = RAW_RSA_3072_PUBLIC_KEY_BYTES;
+            } else if (key_enc == OCA_ENCODING_DER) {
+                want_key = key_size;
+            } else {
+                return OCA_FAIL_CRYPTO_FIELD_SIZE;
+            }
         } else if (prim == OCA_PRIMITIVE_ECDSA_P256_SHA256) {
-            want_sig = (sig_enc == OCA_ENCODING_DER)
-                           ? DER_EC_P256_SIGNATURE_MAX_BYTES
-                           : RAW_EC_P256_SIGNATURE_BYTES;
+            if (sig_enc == OCA_ENCODING_RAW) {
+                want_sig = RAW_EC_P256_SIGNATURE_BYTES;
+            } else if (sig_enc == OCA_ENCODING_DER) {
+                want_sig = DER_EC_P256_SIGNATURE_MAX_BYTES;
+            } else {
+                return OCA_FAIL_CRYPTO_FIELD_SIZE;
+            }
             /* DER is not defined for an EC public key. */
             if (key_enc != OCA_ENCODING_RAW) {
                 return OCA_FAIL_CRYPTO_FIELD_SIZE;

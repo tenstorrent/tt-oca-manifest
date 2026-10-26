@@ -57,6 +57,45 @@ def test_oca_c_layout_in_sync_with_python_constants():
         )
 
 
+def _load_sync_layout():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("oca_sync_layout", SYNC_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sync_passes(monkeypatch, extra_mapping: dict) -> bool:
+    """Run the drift gate in process with `extra_mapping` added to MAPPING."""
+    sync_layout = _load_sync_layout()
+    monkeypatch.setattr(sync_layout, "MAPPING", {**sync_layout.MAPPING, **extra_mapping})
+    monkeypatch.setattr(sys, "argv", [SYNC_SCRIPT])
+    return sync_layout.main() == 0
+
+
+def test_sync_gate_pins_a_c_value_to_an_enum_member(monkeypatch):
+    """`EnumName.MEMBER` resolves to the member's value, so a C value whose
+    only Python form is an enum member is compared, not skipped."""
+    from tt_boot_manifest.oca import constants as oca_consts
+
+    sync_layout = _load_sync_layout()
+    assert sync_layout.python_value(oca_consts, "OcaClassicHashType.SHA2_256") == 0x01
+    assert sync_layout.python_value(oca_consts, "OFF_MANIFEST_HASH_TYPE") == 2067
+    assert _sync_passes(monkeypatch, {
+        "OCA_HASH_TYPE_SHA2_256": ("OcaClassicHashType.SHA2_256", "hex")})
+    assert not _sync_passes(monkeypatch, {
+        "OCA_HASH_TYPE_SHA2_256": ("OcaClassicSignatureType.ECDSA_P256_SHA256", "hex")})
+
+
+@pytest.mark.parametrize("py_name", ["NO_SUCH_CONSTANT", "OcaClassicHashType.NO_SUCH_MEMBER"])
+def test_sync_gate_fails_a_mapping_whose_python_side_names_nothing(monkeypatch, py_name):
+    """A misspelt counterpart would otherwise compare nothing and pass."""
+    sync_layout = _load_sync_layout()
+    assert sync_layout.python_value(sync_layout, py_name) is None
+    assert not _sync_passes(monkeypatch, {"OCA_OFF_MAGIC": (py_name, "dec")})
+
+
 # oca_layout_pqc.h define -> its counterpart in tt_boot_manifest.oca.constants.
 _PQC_FIELDS = (
     ("OCA_PQC_BODY_SIZE",                  "OCA_PQC_BODY_SIZE"),

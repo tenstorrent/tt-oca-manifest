@@ -163,6 +163,24 @@ static void fill_unused_identity(uint8_t *buf)
     memset(buf + OCA_OFF_SYSTEM_ID,  OCA_MANIFEST_UNUSED_BYTE, OCA_LEN_IDENTITY);
 }
 
+/* The algorithms every producer declares and this library computes: SHA2-256
+ * for both digests, and the SP 800-108r1 KDF an encrypted payload uses. */
+static void declare_supported_algorithms(uint8_t *buf)
+{
+    buf[OCA_OFF_MANIFEST_HASH_TYPE] = OCA_HASH_TYPE_SHA2_256;
+    buf[OCA_OFF_PAYLOAD_HASH_TYPE] = OCA_HASH_TYPE_SHA2_256;
+    buf[OCA_OFF_ENCRYPTION_KDF] =
+        (uint8_t)(OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256 & 0xFFu);
+    buf[OCA_OFF_ENCRYPTION_KDF + 1] =
+        (uint8_t)(OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256 >> 8);
+}
+
+/* payload_encryption_control for an encrypted payload keyed by the pre-shared
+ * secret, as the packer writes it. */
+#define ENCRYPTED_PRESHARED \
+    (OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT \
+     | (OCA_ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT))
+
 static void build_minimal_manifest(uint8_t buf[OCA_CLASSIC_BODY_SIZE])
 {
     memset(buf, 0, OCA_CLASSIC_BODY_SIZE);
@@ -177,6 +195,7 @@ static void build_minimal_manifest(uint8_t buf[OCA_CLASSIC_BODY_SIZE])
     /* manifest_length = 4096 */
     buf[OCA_OFF_MANIFEST_LENGTH + 1] = 0x10;
     fill_unused_identity(buf);
+    declare_supported_algorithms(buf);
     /* payload_offset = body_size: what every producer writes for a contiguous
      * bundle, and what oca_check_payload requires before it will assume the
      * payload follows the body. Leaving it zero models no real manifest. */
@@ -861,7 +880,7 @@ TEST(test_secure_boot_invariant_ignores_signing_fields)
     buf[OCA_OFF_SIGNATURE_TYPE] = 0xF0u;
     buf[OCA_OFF_SIGNATURE_ENCODING] = 0xF0u;
     buf[OCA_OFF_PUBLIC_KEY_ENCODING] = 0xF0u;
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf), OCA_OK);
 }
 
 /* Composite callback table for full-pipeline tests. Every stub reads the one
@@ -1103,7 +1122,7 @@ TEST(test_secure_boot_invariant_clean_zero_path)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf), OCA_OK);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1346,6 +1365,45 @@ TEST(test_manifest_hash_mismatch_fails)
                   OCA_FAIL_MANIFEST_HASH);
 }
 
+/* Digests requested of counting_sha256(), for checks refused before hashing. */
+static int g_sha_calls;
+
+static oca_result_t counting_sha256(const uint8_t *msg, size_t msg_len, uint8_t out[32])
+{
+    (void)msg; (void)msg_len;
+    g_sha_calls++;
+    memset(out, 0, 32);
+    return OCA_OK;
+}
+
+/* Hash-type values other than SHA2-256: unset, the other digests the format
+ * defines, and a reserved value. */
+static const uint8_t UNSUPPORTED_HASH_TYPES[] = { 0x00u, 0x02u, 0x04u, 0x08u, 0x09u, 0xFFu };
+
+TEST(test_result_string_covers_the_unsupported_algorithm_code)
+{
+    ASSERT_EQ_INT(strcmp(oca_result_str(OCA_FAIL_UNSUPPORTED_ALGORITHM),
+                         "UNSUPPORTED_ALGORITHM"), 0);
+}
+
+/* The renamed checks are still reachable by their former names for one minor
+ * release, and the two names give the same verdict. */
+TEST(test_deprecated_check_names_reach_the_renamed_checks)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(buf);
+    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x05u;   /* PQC class on a Classic body */
+    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf), OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf, NULL, &ctx),
+                  OCA_FAIL_SECURE_BOOT_UNDETERMINED);
+    ASSERT_EQ_INT(oca_check_signing_description(buf, NULL, &ctx),
+                  OCA_FAIL_SECURE_BOOT_UNDETERMINED);
+}
+
 /* Pipeline: integrity is settled before anything reads the contents, so a
  * corrupt manifest reports MANIFEST_HASH rather than whichever field happens to
  * decode wrong out of the damaged bytes. Move oca_check_manifest_hash() back
@@ -1547,7 +1605,7 @@ static void build_encrypted_bundle_len(uint8_t *buf, size_t ct_len,
 {
     memset(buf, 0, OCA_CLASSIC_BODY_SIZE + ct_len);
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;             /* encrypted_payload */
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;  /* encrypted_payload */
     buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;  /* supported cipher */
     toc_put_u64(buf + OCA_OFF_PAYLOAD_HASHED_LENGTH, ct_len);
     toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, ct_len);
@@ -1587,7 +1645,7 @@ TEST(test_encryption_info_reports_cipher_and_selector)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_256_CBC;
     /* u16 LE, and deliberately > 8 bits so a byte-wide read is caught. */
     buf[OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT]      = 0x34u;
@@ -1605,7 +1663,7 @@ TEST(test_encryption_info_reports_an_unknown_cipher_verbatim)
     /* Reported, not rejected — oca_check_payload owns that decision. */
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     buf[OCA_OFF_ENCRYPTION_TYPE] = 0x7Fu;
 
     oca_payload_encryption_t enc;
@@ -1632,7 +1690,7 @@ TEST(test_encryption_info_needs_no_payload_resident)
     /* The staged case: a body-sized buffer with no payload after it. */
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;
     buf[OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT] = 0x01u;
     buf[OCA_OFF_PAYLOAD_HASHED_LENGTH] = 0x80u;   /* 128 B of ciphertext, LE u64 */
@@ -2213,6 +2271,94 @@ TEST(test_cleartext_payload_happy_path)
     oca_callbacks_t cb;
     cleartext_cb(&cb);
     ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL), OCA_OK);
+}
+
+/* Run an encrypted bundle whose declared algorithms the test has edited, and
+ * report what oca_check_payload() returned. Counts digests and decryptions, so
+ * the caller can assert a refusal came before either. */
+static oca_result_t check_encrypted_algorithms(uint8_t *buf, size_t len)
+{
+    oca_callbacks_t cb;
+    payload_cb(&cb, decrypt_ok);
+    cb.sha256 = counting_sha256;
+    g_sha_calls = 0;
+    g_fx.decrypt_calls = 0;
+    return oca_check_payload(buf, len, &cb, &g_authenticated, NULL);
+}
+
+/* An encrypted payload's key derivation and input-key source must be the ones
+ * the decrypt contract defines — SP 800-108r1 counter mode with HMAC-SHA-256,
+ * from the pre-shared secret — and its payload_hash_type SHA2-256. Each other
+ * value is refused before the ciphertext is hashed or decrypted. The supported
+ * combination reaches the payload hash, which is the control. */
+TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
+{
+    static const uint16_t kdfs[] = { 0x0000u, 0x0002u, 0x0008u, 0x0009u, 0xFF00u };
+    static const uint8_t key_sources[] = { 0x0u, 0x2u, 0x3u, 0x7u };
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN];
+    uint8_t ph[32]; memset(ph, 0x11, 32);
+    uint8_t chain[32]; memset(chain, 0, 32);
+
+    build_encrypted_bundle(buf, ph, chain);
+    ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf), OCA_FAIL_PAYLOAD_HASH);
+    ASSERT_EQ_INT(g_sha_calls, 1);
+
+    for (size_t i = 0u; i < sizeof kdfs / sizeof kdfs[0]; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, kdfs[i]);
+        ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
+                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
+        ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
+    }
+    for (size_t i = 0u; i < sizeof key_sources; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = (uint8_t)(
+            OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT
+            | (key_sources[i] << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT));
+        ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
+                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
+        ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
+    }
+    for (size_t i = 0u; i < sizeof UNSUPPORTED_HASH_TYPES; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
+        ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
+                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
+    }
+}
+
+/* A cleartext payload's digests follow payload_hash_type too. Its key
+ * derivation and key source describe no key, so they are not judged; nor is
+ * anything when no payload is declared. */
+TEST(test_cleartext_payload_judges_only_its_hash_type)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE + CLEAR_PAYLOAD_LEN];
+    oca_callbacks_t cb;
+    memset(&cb, 0, sizeof(cb));
+    cb.sha256 = counting_sha256;
+
+    for (size_t i = 0u; i < sizeof UNSUPPORTED_HASH_TYPES; ++i) {
+        build_cleartext_bundle(buf);
+        buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
+        g_sha_calls = 0;
+        ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL),
+                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
+    }
+
+    build_cleartext_bundle(buf);
+    toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, 0xFF00u);
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] =
+        (uint8_t)(0x2u << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT);
+    ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL), OCA_OK);
+
+    uint8_t bare[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(bare);
+    bare[OCA_OFF_PAYLOAD_HASH_TYPE] = 0xFFu;
+    ASSERT_EQ_INT(oca_check_payload(bare, sizeof bare, NULL, &g_authenticated, NULL), OCA_OK);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2932,7 +3078,7 @@ static void build_inplace_bundle(uint8_t *buf, const uint8_t payload_hash[32])
 {
     memset(buf, 0, OCA_CLASSIC_BODY_SIZE + INPLACE_CT_LEN);
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;                 /* encrypted */
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;  /* encrypted */
     buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;
     toc_put_u64(buf + OCA_OFF_PAYLOAD_HASHED_LENGTH, INPLACE_CT_LEN);
     toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, INPLACE_CT_LEN);
@@ -3560,7 +3706,7 @@ TEST(test_locate_payload_spans_the_ciphertext_when_encrypted)
     oca_storage_bounds_t bounds;
     int64_t addr = 0; size_t span = 0u;
     loc_body_init(buf, OCA_CLASSIC_BODY_SIZE);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     toc_put_u64(buf + OCA_OFF_PAYLOAD_HASHED_LENGTH, 8192u);
     loc_bounds_init(&bounds);
     ASSERT_EQ_INT(oca_locate_payload(buf, &bounds, &addr, &span), OCA_OK);
@@ -3825,6 +3971,7 @@ static void build_minimal_pqc_manifest(uint8_t buf[OCA_PQC_BODY_SIZE])
     buf[OCA_OFF_MANIFEST_VERSION_MINOR + 0] =
         (uint8_t)(OCA_LIB_MANIFEST_MINOR & 0xFF);
     fill_unused_identity(buf);
+    declare_supported_algorithms(buf);
     /* manifest_length = payload_offset = 36864 (0x9000) */
     buf[OCA_OFF_MANIFEST_LENGTH + 1] = 0x90;
     buf[OCA_PQC_OFF_PAYLOAD_OFFSET + 1] = 0x90;
@@ -3835,6 +3982,30 @@ static void build_minimal_pqc_manifest(uint8_t buf[OCA_PQC_BODY_SIZE])
      * sets g_fx.sha_hash_off to this variant's hash position. */
     for (unsigned i = 0; i < 32; ++i) {
         buf[OCA_PQC_OFF_MANIFEST_HASH + i] = (uint8_t)i;
+    }
+}
+
+/* manifest_hash_type names the digest; SHA2-256 is the only one this library
+ * computes, so any other is refused before anything is hashed, in both
+ * variants, rather than reported as a corrupt manifest. */
+TEST(test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing)
+{
+    oca_callbacks_t cb;
+    memset(&cb, 0, sizeof(cb));
+    cb.sha256 = counting_sha256;
+    for (size_t i = 0u; i < sizeof UNSUPPORTED_HASH_TYPES; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_minimal_manifest(buf);
+        buf[OCA_OFF_MANIFEST_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
+        g_sha_calls = 0;
+        ASSERT_EQ_INT(oca_check_manifest_hash(buf, &cb), OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
+
+        static uint8_t pqc[OCA_PQC_BODY_SIZE];
+        build_minimal_pqc_manifest(pqc);
+        pqc[OCA_OFF_MANIFEST_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
+        ASSERT_EQ_INT(oca_check_manifest_hash(pqc, &cb), OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
     }
 }
 
@@ -4087,7 +4258,7 @@ TEST(test_encryption_gate_applies_to_pqc_variant)
     static uint8_t buf[OCA_PQC_BODY_SIZE];
     memset(buf, 0, sizeof buf);
     memcpy(buf, "OCAP", 4);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
 
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
@@ -4105,7 +4276,7 @@ TEST(test_encryption_declared_with_zero_length_payload_still_refused)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     /* payload_length and payload_hashed_length both left at zero */
 
     oca_validation_context_t ctx;
@@ -5026,7 +5197,7 @@ static oca_result_t check_sizes(const uint8_t *buf)
     memset(&cb, 0, sizeof cb);
     cb.is_secure_boot_active = sb_inactive_cb;
     oca_validation_context_t ctx = determined_for(buf, &cb);
-    return oca_check_crypto_field_sizes(buf, &cb, &ctx);
+    return oca_check_signing_description(buf, &cb, &ctx);
 }
 
 TEST(test_consistent_crypto_field_sizes_are_accepted)
@@ -5108,10 +5279,10 @@ TEST(test_crypto_field_sizes_engage_when_the_device_enforces_secure_boot)
     build_secure_manifest(buf);
     buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x02u;
     oca_validation_context_t ctx = determined_for(buf, &cb);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signing_description(buf, &cb, &ctx), OCA_OK);
 
     buf[OCA_OFF_SIGNATURE_TYPE] = 0xF0u;
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf, &cb, &ctx),
+    ASSERT_EQ_INT(oca_check_signing_description(buf, &cb, &ctx),
                   OCA_FAIL_CRYPTO_FIELD_SIZE);
 }
 
@@ -5121,9 +5292,9 @@ TEST(test_crypto_field_sizes_refuse_an_undetermined_context)
     build_secure_manifest(buf);
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf, NULL, &ctx),
+    ASSERT_EQ_INT(oca_check_signing_description(buf, NULL, &ctx),
                   OCA_FAIL_SECURE_BOOT_UNDETERMINED);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf, NULL, NULL),
+    ASSERT_EQ_INT(oca_check_signing_description(buf, NULL, NULL),
                   OCA_FAIL_SECURE_BOOT_UNDETERMINED);
 }
 
@@ -5295,10 +5466,10 @@ TEST(test_pqc_class_bit_on_a_classic_manifest_is_rejected)
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
     buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x04u;    /* secure boot OFF */
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf),
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x05u;    /* secure boot ON */
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf),
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
 }
 
@@ -5308,7 +5479,7 @@ TEST(test_pqc_class_bit_is_permitted_on_a_pqc_manifest)
     memset(buf, 0, sizeof buf);
     memcpy(buf, "OCAP", 4);
     buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x04u;
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf), OCA_OK);
 }
 
 /* A PQC-only manifest (bit1 clear) zeroes its classical crypto description;
@@ -5427,6 +5598,48 @@ TEST(test_classic_description_accepts_only_supported_primitives)
     }
 }
 
+/* The classical description admits only the encodings its primitive defines.
+ * An unset, reserved or integrator encoding is refused even where its size
+ * matches another encoding's rule: an RSA key at any size within the field,
+ * which a DER key could be, and an ECDSA signature at the raw or DER size. */
+TEST(test_classic_description_accepts_only_defined_encodings)
+{
+    static const uint8_t undefined[] = { 0x00u, 0x03u, 0xF0u, 0xFFu };
+    static const uint16_t ecdsa_sig_sizes[] = { 64u, 72u };
+    for (size_t i = 0u; i < sizeof undefined / sizeof undefined[0]; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_secure_manifest(buf);
+        buf[OCA_OFF_PUBLIC_KEY_ENCODING] = undefined[i];
+        ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+
+        for (size_t s = 0u; s < sizeof ecdsa_sig_sizes / sizeof ecdsa_sig_sizes[0]; ++s) {
+            build_secure_manifest(buf);
+            buf[OCA_OFF_SIGNATURE_TYPE] = OCA_PRIMITIVE_ECDSA_P256_SHA256;
+            buf[OCA_OFF_SIGNATURE_ENCODING] = undefined[i];
+            toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, ecdsa_sig_sizes[s]);
+            toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 65u);
+            ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+        }
+    }
+
+    /* The defined encodings still pass: a DER RSA key, and an ECDSA signature
+     * in each encoding at its own size. */
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    buf[OCA_OFF_PUBLIC_KEY_ENCODING] = OCA_ENCODING_DER;
+    toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 398u);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+    static const oca_encoding_t ecdsa_encodings[] = { OCA_ENCODING_RAW, OCA_ENCODING_DER };
+    for (size_t e = 0u; e < 2u; ++e) {
+        build_secure_manifest(buf);
+        buf[OCA_OFF_SIGNATURE_TYPE] = OCA_PRIMITIVE_ECDSA_P256_SHA256;
+        buf[OCA_OFF_SIGNATURE_ENCODING] = (uint8_t)ecdsa_encodings[e];
+        toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, ecdsa_sig_sizes[e]);
+        toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 65u);
+        ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+    }
+}
+
 /* A key or signature field: its offset, the size its fixture declares valid,
  * and its width. */
 typedef struct {
@@ -5542,7 +5755,7 @@ TEST(test_secure_boot_off_ignores_each_dirty_pqc_signing_field)
          i < sizeof pqc_signing_field_bytes / sizeof pqc_signing_field_bytes[0]; ++i) {
         build_minimal_pqc_manifest(buf);
         buf[pqc_signing_field_bytes[i]] = 0x5Au;
-        ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_OK);
+        ASSERT_EQ_INT(oca_check_signature_class_variant(buf), OCA_OK);
     }
 }
 
@@ -5717,7 +5930,7 @@ TEST(test_key_checks_backstop_a_context_with_no_enforced_class)
     ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     ASSERT_EQ_INT(g_fx.revoke_calls, 0);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf, &cb, &ctx),
+    ASSERT_EQ_INT(oca_check_signing_description(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     ctx.secure_boot_key_authorized_classic = OCA_SECURE_TRUE;   /* even vouched-for */
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
@@ -5749,7 +5962,7 @@ TEST(test_key_checks_refuse_a_record_disagreeing_with_the_class_bits)
     ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx),
                   OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
     ASSERT_EQ_INT(g_fx.revoke_calls, 0);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf, &cb, &ctx),
+    ASSERT_EQ_INT(oca_check_signing_description(buf, &cb, &ctx),
                   OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
                   OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
@@ -5848,7 +6061,7 @@ TEST(test_hybrid_signature_fails_when_either_class_fails)
     for (i = 0; i < sizeof failing / sizeof failing[0]; ++i) {
         static uint8_t buf[OCA_PQC_BODY_SIZE];
         build_secure_pqc_manifest(buf, 0x07u);
-        buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+        buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
         test_fixture_reset();
         g_authorize_calls = 0;
         g_verify_fail_enabled = true;
@@ -5923,7 +6136,7 @@ TEST(test_pqc_enforcement_on_a_classic_variant_fails_closed)
     ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     ASSERT_EQ_INT(g_fx.revoke_calls, 0);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf, &cb, &ctx),
+    ASSERT_EQ_INT(oca_check_signing_description(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     ctx.secure_boot_key_authorized_pqc = OCA_SECURE_TRUE;   /* even vouched-for */
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
@@ -6547,7 +6760,7 @@ TEST(test_a_reporter_that_changes_its_answer_is_caught_at_each_consumer)
     for (flip_at = 1; flip_at <= 1 + GATED_CONSUMERS; ++flip_at) {
         uint8_t buf[OCA_CLASSIC_BODY_SIZE];
         build_device_decided_manifest(buf);
-        buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+        buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
         test_fixture_reset();
 
         oca_callbacks_t cb;
@@ -6642,7 +6855,7 @@ TEST(test_the_determination_costs_one_consultation_per_consumer)
 
     /* Encryption declared: the precondition now confirms too. */
     build_device_decided_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     test_fixture_reset();
     build_devstate_cb(&cb, buf);
     cb.is_secure_boot_disabled = sb_disabled_false_cb;
@@ -6867,7 +7080,7 @@ TEST(test_a_corrupted_engaged_word_runs_the_check_rather_than_skipping_it)
      * rather than from something upstream having already failed. */
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     test_fixture_reset();
 
     oca_callbacks_t cb;
@@ -7660,6 +7873,9 @@ int main(int argc, char **argv)
     /* manifest_hash + signature dispatch */
     RUN_TEST(test_manifest_hash_match_passes);
     RUN_TEST(test_manifest_hash_mismatch_fails);
+    RUN_TEST(test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing);
+    RUN_TEST(test_result_string_covers_the_unsupported_algorithm_code);
+    RUN_TEST(test_deprecated_check_names_reach_the_renamed_checks);
     RUN_TEST(test_corruption_outranks_a_field_level_violation);
     RUN_TEST(test_manifest_hash_dirty_padding_fails);
 
@@ -7746,6 +7962,8 @@ int main(int argc, char **argv)
 
     /* Cleartext payload stage */
     RUN_TEST(test_cleartext_payload_happy_path);
+    RUN_TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing);
+    RUN_TEST(test_cleartext_payload_judges_only_its_hash_type);
     RUN_TEST(test_encrypted_plaintext_reported_after_success);
     RUN_TEST(test_cleartext_plaintext_reported_after_success);
     RUN_TEST(test_plaintext_reported_from_every_entry_point);
@@ -7878,6 +8096,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_pqc_size_fields_must_be_the_exact_ml_dsa_87_sizes);
     RUN_TEST(test_pqc_description_is_ignored_when_the_pqc_class_is_off);
     RUN_TEST(test_classic_description_accepts_only_supported_primitives);
+    RUN_TEST(test_classic_description_accepts_only_defined_encodings);
     RUN_TEST(test_classic_padding_past_a_declared_size_must_be_zero);
     RUN_TEST(test_hybrid_padding_past_a_declared_size_must_be_zero);
     RUN_TEST(test_padding_is_not_judged_for_a_class_or_boot_that_does_not_use_it);

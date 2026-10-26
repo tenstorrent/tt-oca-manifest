@@ -132,7 +132,7 @@ def test_spec_only_list_names_no_value_the_packer_writes():
 
 
 def _c_accepted_primitives_by_class() -> dict[str, set[str]]:
-    """Primitive enumerators `oca_check_crypto_field_sizes()` accepts, per class."""
+    """Primitive enumerators `oca_check_signing_description()` accepts, per class."""
     return {
         signature_class: set(re.findall(r"OCA_PRIMITIVE_\w+", block))
         for signature_class, block in size_check_class_blocks().items()

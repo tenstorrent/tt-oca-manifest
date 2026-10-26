@@ -571,6 +571,40 @@ static void read_payload_shape(const uint8_t *body, bool *out_encrypted,
         : oca_le_u64(body + OCA_OFF_PAYLOAD_LENGTH);
 }
 
+/**
+ * @brief Refuse a payload whose declared algorithms this library cannot compute.
+ *
+ * payload_hash_type selects the digest of payload_hash, of the chain and of
+ * every entry hash, and only SHA2-256 is computed here. An encrypted payload
+ * also names where its key comes from and how it is derived, and the decrypt
+ * contract defines one of each: the pre-shared secret, through SP 800-108r1
+ * counter mode with HMAC-SHA-256. Refused before any digest or decryption, so a
+ * payload that is sound for another Consumer is not reported as corrupt.
+ *
+ * @param[in] body       Manifest body.
+ * @param[in] encrypted  Whether the payload is encrypted.
+ * @retval OCA_OK                          Every declared algorithm is supported.
+ * @retval OCA_FAIL_UNSUPPORTED_ALGORITHM  One is not.
+ */
+static oca_result_t check_payload_algorithms(const uint8_t *body, bool encrypted)
+{
+    if (body[OCA_OFF_PAYLOAD_HASH_TYPE] != OCA_HASH_TYPE_SHA2_256) {
+        return OCA_FAIL_UNSUPPORTED_ALGORITHM;
+    }
+    if (!encrypted) {
+        return OCA_OK;
+    }
+    uint16_t control = oca_le_u16(body + OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL);
+    unsigned key_source = (control & OCA_ENCRYPTION_INPUT_KEY_SOURCE_MASK)
+                          >> OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT;
+    if (key_source != OCA_ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED
+        || oca_le_u16(body + OCA_OFF_ENCRYPTION_KDF)
+               != OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256) {
+        return OCA_FAIL_UNSUPPORTED_ALGORITHM;
+    }
+    return OCA_OK;
+}
+
 oca_result_t oca_check_payload_at(const uint8_t *body,
                                   const uint8_t *payload, size_t payload_len,
                                   const oca_callbacks_t *cb,
@@ -601,6 +635,10 @@ oca_result_t oca_check_payload_at(const uint8_t *body,
      * composed no manifest checks at all, so a gate that exists only in the
      * composed order would be one the integrator can skip by accident. */
     status = oca_check_payload_encryption_policy(body, cb, ctx);
+    if (status != OCA_OK) {
+        return status;
+    }
+    status = check_payload_algorithms(body, encrypted);
     if (status != OCA_OK) {
         return status;
     }

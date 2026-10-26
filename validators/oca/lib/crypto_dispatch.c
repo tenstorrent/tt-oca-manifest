@@ -5,7 +5,7 @@
  * @brief Crypto callback dispatch for manifest_hash and signature_classic.
  */
 
-#include "crypto_dispatch.h"
+#include "oca_validator.h"
 
 #include "oca_compare.h"
 #include "oca_layout.h"
@@ -14,13 +14,18 @@
 #include "parser.h"
 #include "secure_boot.h"
 
-oca_result_t oca_manifest_hash_check(const uint8_t *body,
+oca_result_t oca_check_manifest_hash(const uint8_t *body,
                                      const oca_callbacks_t *cb)
 {
     oca_result_t status;
     const oca_variant_t *v = oca_variant_for_body(body, &status);
     if (v == 0) {
         return status;
+    }
+    /* Refused before hashing: a SHA-256 compared against a digest of another
+     * algorithm would report a sound manifest as corrupt. */
+    if (body[OCA_OFF_MANIFEST_HASH_TYPE] != OCA_HASH_TYPE_SHA2_256) {
+        return OCA_FAIL_UNSUPPORTED_ALGORITHM;
     }
     if (cb == 0 || cb->sha256 == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
@@ -136,7 +141,7 @@ static oca_result_t verify_signature_by_class(const uint8_t *body,
     return OCA_FAIL_SIGNATURE;
 }
 
-oca_result_t oca_signature_check(const uint8_t *body,
+oca_result_t oca_check_signature(const uint8_t *body,
                                  const oca_callbacks_t *cb,
                                  oca_validation_context_t *ctx)
 {

@@ -222,9 +222,7 @@ typedef enum oca_result {
     OCA_FAIL_MANIFEST_LENGTH            = 28,
     /** The manifest declares an encrypted payload, but secure-boot
      *  authentication was not CONFIRMED for it — either secure boot is not in
-     *  force, or no signature check ran and passed. Distinct from
-     *  OCA_FAIL_SECURE_BOOT_INVARIANT, which reports signing fields left
-     *  non-zero on a non-secure manifest: different cause, different fix. */
+     *  force, or no signature check ran and passed. */
     OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT = 29,
     /** The manifest selected a provisioned-secret slot this part holds no secret
      *  for. With this code, the callback ran, understood the request, and reports
@@ -312,11 +310,7 @@ typedef enum oca_result {
      *      format forbids regardless of secure-boot state;
      *    - a check gated on the recorded enforcement finds a context in which
      *      no class is enforced — the fail-closed backstop for a hand-composed
-     *      sequence that skipped the determination's rejection.
-     *
-     *  Distinct from OCA_FAIL_SECURE_BOOT_INVARIANT, which reports populated
-     *  signing fields on a manifest that disclaims secure boot: that is stale
-     *  data left behind, this is a live policy that cannot be satisfied. */
+     *      sequence that skipped the determination's rejection. */
     OCA_FAIL_SIGNATURE_CLASS_CONTROL    = 36,
     /** The device's signature posture demands a cohort this manifest is not
      *  verified by.
@@ -340,7 +334,21 @@ typedef enum oca_result {
      *  code. This reports an enforced class whose signature_type falls in a
      *  disabled class: the algorithm is no longer trusted at all, whatever key
      *  signed with it. */
-    OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED = 38
+    OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED = 38,
+    /** The manifest declares a digest or key-derivation algorithm this library
+     *  cannot compute: a manifest_hash_type or payload_hash_type other than
+     *  SHA2-256, or, for an encrypted payload, an
+     *  encryption_key_derivation_function other than SP 800-108r1 counter mode
+     *  with HMAC-SHA-256 or an input_key_source other than the pre-shared
+     *  secret.
+     *
+     *  Refused before the field is acted on. Computing SHA-256 where the
+     *  manifest names another digest would report a well-formed manifest as
+     *  corrupt — OCA_FAIL_MANIFEST_HASH or OCA_FAIL_PAYLOAD_HASH — and an
+     *  unsupported key derivation would surface as OCA_FAIL_DECRYPT. This code
+     *  says instead that the manifest may be valid for a Consumer whose
+     *  portfolio includes the algorithm. */
+    OCA_FAIL_UNSUPPORTED_ALGORITHM      = 39
 } oca_result_t;
 
 /**
@@ -779,7 +787,7 @@ typedef struct oca_crypto_blob {
     size_t               field_length;
     /** Valid bytes at the start of @c bytes: the manifest's own size field for
      *  this blob (signature_size_* or public_key_size_*), which
-     *  oca_check_crypto_field_sizes() has held to the declared algorithm and
+     *  oca_check_signing_description() has held to the declared algorithm and
      *  encoding ahead of both callbacks in the composed pipeline. Exact for
      *  every raw value and for a DER public key, whose DER must occupy all of
      *  it; for a DER ECDSA signature it is the algorithm's maximum DER length,
@@ -1543,7 +1551,7 @@ oca_result_t oca_check_reserved_bits  (const uint8_t *body);
  *
  * The signing fields themselves are not judged here. They are Secure-Boot-only:
  * a Consumer ignores them while secure boot is disabled, whatever they hold, and
- * oca_check_crypto_field_sizes() validates them once the determination puts
+ * oca_check_signing_description() validates them once the determination puts
  * secure boot in force.
  *
  * @param[in] body  Whole variant body. See the length contract above.
@@ -1554,7 +1562,18 @@ oca_result_t oca_check_reserved_bits  (const uint8_t *body);
  *                                             with no PQC fields to satisfy it.
  * @return Otherwise the magic or variant failure from resolving @p body.
  */
-oca_result_t oca_check_secure_boot_invariant(const uint8_t *body);
+oca_result_t oca_check_signature_class_variant(const uint8_t *body);
+
+/**
+ * @brief Former name of oca_check_signature_class_variant().
+ *
+ * The check once also judged the signing fields of a non-secure manifest, which
+ * this library now ignores; what remains is the class-against-variant rule the
+ * new name states. Kept so existing callers build for one minor release.
+ *
+ * @deprecated Use oca_check_signature_class_variant(). Removed in 0.8.
+ */
+#define oca_check_secure_boot_invariant oca_check_signature_class_variant
 
 /**
  * @brief Reject a signing description, under secure boot, that names a key and
@@ -1631,10 +1650,21 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body);
  *                                      can hold.
  * @return Otherwise the magic or variant failure from resolving @p body.
  */
-oca_result_t oca_check_crypto_field_sizes(
+oca_result_t oca_check_signing_description(
     const uint8_t *body,
     const oca_callbacks_t *cb,
     const oca_validation_context_t *ctx);
+
+/**
+ * @brief Former name of oca_check_signing_description().
+ *
+ * The check judges each enforced class's whole signing description — its
+ * primitive, encodings and padding as well as its size fields — which the new
+ * name states. Kept so existing callers build for one minor release.
+ *
+ * @deprecated Use oca_check_signing_description(). Removed in 0.8.
+ */
+#define oca_check_crypto_field_sizes oca_check_signing_description
 
 /**
  * @brief Reject a malformed signature_class_revoke: a group-code byte that is
@@ -1869,8 +1899,6 @@ oca_result_t oca_check_version_range(
  *
  * @param[in] body  Unused. Accepted so the signature matches the other checks.
  * @retval OCA_OK  Always.
- * @return The result of the demotion stage it delegates to, which is
- *         unconditionally OCA_OK.
  *
  * @note OCA_FAIL_DEMOTION_CONTROL exists for a Consumer enforcing a stricter
  *       policy; this function never returns it.
@@ -1890,6 +1918,10 @@ oca_result_t oca_check_demotion_control(const uint8_t *body);
  * @param[in] cb    Callback table; cb->sha256 is required.
  * @retval OCA_OK                          Recomputed digest matches.
  * @retval OCA_FAIL_INVALID_ARG            @p body or @p cb was NULL.
+ * @retval OCA_FAIL_UNSUPPORTED_ALGORITHM  manifest_hash_type names a digest
+ *                                         other than SHA2-256, the one this
+ *                                         library computes. Refused before
+ *                                         hashing.
  * @retval OCA_FAIL_MANIFEST_HASH          Digest mismatch.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   cb->sha256 is NULL or unavailable.
  * @return Otherwise the magic or variant failure from resolving @p body.
@@ -1986,7 +2018,7 @@ oca_result_t oca_check_signature(
  * The manifest's own posture fields play no part: they govern later boots,
  * once oca_commit_security_state() has folded them in.
  *
- * Compose this after oca_check_crypto_field_sizes(), whose checks make the
+ * Compose this after oca_check_signing_description(), whose checks make the
  * signature_type bytes meaningful, and before any key is authorized or used.
  * oca_check_signature() refuses a context this check did not vouch for.
  *
@@ -2012,7 +2044,7 @@ oca_result_t oca_check_signature(
  * @retval OCA_FAIL_CRYPTO_FIELD_SIZE          An enforced class names a
  *                                             signature_type the format does
  *                                             not define — only reachable around
- *                                             oca_check_crypto_field_sizes().
+ *                                             oca_check_signing_description().
  * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL    No class is enforced in an engaged
  *                                             context, or PQC is enforced on a
  *                                             variant with no PQC fields.
@@ -2321,6 +2353,9 @@ oca_result_t oca_check_payload_encryption_policy(
  *                                           oca_locate_payload() with
  *                                           oca_check_payload_at() instead.
  * @return Otherwise the result of the payload checks it composes —
+ *         OCA_FAIL_UNSUPPORTED_ALGORITHM for a payload_hash_type, or an
+ *         encrypted payload's key derivation or input-key source, this library
+ *         does not implement, checked before any digest or decryption;
  *         OCA_FAIL_PAYLOAD_HASH, OCA_FAIL_DECRYPT, OCA_FAIL_PAYLOAD_TOC,
  *         OCA_FAIL_PAYLOAD_TOO_MANY_IMAGES, OCA_FAIL_PAYLOAD_HASH_CHAIN,
  *         OCA_FAIL_PAYLOAD_ENTRY_HASH — or the magic or variant failure from
@@ -2822,7 +2857,7 @@ oca_result_t oca_commit_security_state(
  *     determination: it is the only gated check that spends no hardware read at
  *     all, so an encrypted payload on a non-secure part is rejected before any
  *     identity callback and long before a public-key operation;
- *   - oca_check_signature_posture() runs after oca_check_crypto_field_sizes(),
+ *   - oca_check_signature_posture() runs after oca_check_signing_description(),
  *     whose checks make the signature_type bytes meaningful, and before any key
  *     is authorized or used: a manifest relying on an algorithm the device has
  *     disabled, or lacking a cohort it demands, costs two device-state reads;

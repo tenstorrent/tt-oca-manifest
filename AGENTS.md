@@ -404,7 +404,7 @@ Python side and requires each to be either mapped to a C mirror in `MAPPING` or 
 Python and silently leave the validator behind.
 
 **The enum gates.** `tests/test_oca_encoding_enum_sync.py` pins the C `oca_encoding_t`
-enumerator values to the packer's on-disk encoding bytes, because `oca_signature_check()`
+enumerator values to the packer's on-disk encoding bytes, because `oca_check_signature()`
 casts those bytes straight to the enum with no translation. This gate exists because the
 failure it prevents actually happened. `tests/test_oca_primitive_enum_sync.py` does the same
 for `oca_primitive_type_t` and the signature-type bytes, and requires every enumerator the
