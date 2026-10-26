@@ -43,22 +43,6 @@ from . import constants as oca_consts
 from .validators import OcaConfigError
 
 
-# OCA `signature_type_classic` → internal `ManifestSignatureType` enum value.
-# The OCA RSA value (0x01) coincidentally equals the internal value (1). The
-# OCA ECC value (0x05) does NOT equal the internal value (2) — the table makes
-# that explicit.
-_OCA_TO_INTERNAL_SIG_TYPE = {
-    oca_consts.OcaClassicSignatureType.RSA_3072_PKCS1V15_SHA256.value:
-        ManifestSignatureType.RSA_3072.value,
-    oca_consts.OcaClassicSignatureType.ECDSA_P256_SHA256.value:
-        ManifestSignatureType.ECC_P_256.value,
-}
-
-# OCA `signature_type_pqc` → internal `ManifestSignatureType` enum value.
-_OCA_PQC_TO_INTERNAL_SIG_TYPE = {
-    oca_consts.OcaPqcSignatureType.ML_DSA_87.value: ManifestSignatureType.ML_DSA_87.value,
-}
-
 # Sentinel value for the legacy `manifest_identifier` field used in the adapter
 # dict passed to `prepare_signing_key`. Any value other than 0x314c4254 ("TBL1")
 # avoids the factory's BL1-must-use-RSA restriction.
@@ -82,13 +66,13 @@ def build_signing_key(config: dict):
     """Construct the classical class's `manifest_signing.SigningKey` from an
     OCA config. Only invoked when that class is enforced."""
     sig_type_oca = int(config["signature_type"])
-    if sig_type_oca not in _OCA_TO_INTERNAL_SIG_TYPE:
+    if sig_type_oca not in oca_consts.CLASSIC_SIGNING_TYPES:
         # Should be unreachable — reject_deferred_features catches this earlier.
         raise OcaConfigError(
             f"signature_type {sig_type_oca:#x} cannot be mapped to a supported signing key type",
             field_name="signature_type",
         )
-    adapter = _signing_adapter(config, "", _OCA_TO_INTERNAL_SIG_TYPE[sig_type_oca], "oca-key")
+    adapter = _signing_adapter(config, "", oca_consts.CLASSIC_SIGNING_TYPES[sig_type_oca], "oca-key")
     return _prepare_key(adapter, "signing_key_file")
 
 
@@ -96,13 +80,13 @@ def build_pqc_signing_key(config: dict):
     """Construct the PQC class's `manifest_signing.SigningKey` from an OCA-PQC
     config. Only invoked when that class is enforced."""
     sig_type_oca = int(config["signature_type_pqc"])
-    if sig_type_oca not in _OCA_PQC_TO_INTERNAL_SIG_TYPE:
+    if sig_type_oca not in oca_consts.PQC_SIGNING_TYPES:
         # Should be unreachable — the config validator refuses the type first.
         raise OcaConfigError(
             f"signature_type_pqc {sig_type_oca:#x} cannot be mapped to a supported signing key type",
             field_name="signature_type_pqc",
         )
-    adapter = _signing_adapter(config, "_pqc", _OCA_PQC_TO_INTERNAL_SIG_TYPE[sig_type_oca],
+    adapter = _signing_adapter(config, "_pqc", oca_consts.PQC_SIGNING_TYPES[sig_type_oca],
                                "oca-key-pqc")
     return _prepare_key(adapter, "signing_key_file_pqc")
 

@@ -22,13 +22,16 @@ from cryptography.hazmat.primitives.asymmetric import mldsa
 
 from oca_fixtures import ECC_P256_KEY_PATH, ML_DSA_87_KEY_PATH, RSA_3072_KEY_PATH
 from oca_fixtures import manifest_reader
+from tt_boot_manifest import manifest_signing
 from tt_boot_manifest.key_hygiene import ALLOW_CONFIG_FIELD, ALLOW_ENV_VAR, KeyHygieneError
 from tt_boot_manifest.oca import constants as oca_consts
 from tt_boot_manifest.oca import signing as oca_signing
 from tt_boot_manifest.oca.entry import pack_oca_bundle
 from tt_boot_manifest.oca.manifest import build_signed_region, build_unsigned_tail
 from tt_boot_manifest.oca.validators import (OcaConfigError, OcaLayoutError,
+                                             reject_deferred_features,
                                              validate_and_normalize_oca_classic)
+from tt_boot_manifest.pack_images_constants import ManifestSignatureType
 
 ML_DSA_87 = oca_consts.OcaPqcSignatureType.ML_DSA_87.value
 RSA_3072 = oca_consts.OcaClassicSignatureType.RSA_3072_PKCS1V15_SHA256.value
@@ -327,6 +330,47 @@ def test_signing_fields_need_secure_boot(tmp_path, manifest_format, field):
     assert "secure_boot: 1" in error.reason
 
 
+# Values that name a signing field without giving it content. A class that is
+# off may not name its signing fields at all, so each is refused as firmly as a
+# real value.
+_EMPTY_VALUES = [0, "", None, False]
+
+
+# Each way a class is off: (id, config builder, its overrides, the fields that
+# class may not name, the requirement the error states). The PQC class on a
+# classic-only manifest, the classical class on a PQC-only one, and both with
+# secure boot off.
+_DISABLED_CLASSES = [
+    ("pqc-off", _classic_only_ocap_config, {}, PQC_SIGNING_FIELDS, "secure_boot_pqc"),
+    ("classic-off", _pqc_only_config, {}, CLASSIC_SIGNING_FIELDS, "secure_boot_classic"),
+    ("secure-boot-off", _base_config, {"secure_boot": 0},
+     CLASSIC_SIGNING_FIELDS + PQC_SIGNING_FIELDS, "secure_boot: 1"),
+]
+_DISABLED_CLASS_FIELDS = [
+    pytest.param(build, overrides, field, requirement, id=f"{case}-{field}")
+    for case, build, overrides, fields, requirement in _DISABLED_CLASSES
+    for field in fields
+]
+
+
+@pytest.mark.parametrize("value", _EMPTY_VALUES, ids=repr)
+@pytest.mark.parametrize("build,overrides,field,requirement", _DISABLED_CLASS_FIELDS)
+def test_a_disabled_class_may_not_name_a_signing_field_even_empty(
+        tmp_path, build, overrides, field, requirement, value):
+    error = _config_error(build(tmp_path, **overrides, **{field: value}))
+    assert error.field_name == field
+    assert requirement in error.reason
+
+
+@pytest.mark.parametrize("build,overrides", [
+    pytest.param(build, overrides, id=case)
+    for case, build, overrides, _fields, _requirement in _DISABLED_CLASSES
+])
+def test_a_disabled_class_that_names_no_signing_field_packs(tmp_path, build, overrides):
+    """The control: the same configs, naming nothing, pack."""
+    assert pack_oca_bundle(build(tmp_path, **overrides))
+
+
 @pytest.mark.parametrize("field", ["signature_type", "signing_authority"])
 def test_the_classic_class_names_its_missing_fields(tmp_path, field):
     cfg = _classic_only_ocap_config(tmp_path)
@@ -355,7 +399,7 @@ def test_pqc_signature_types_other_than_ml_dsa_87_are_deferred(tmp_path, value):
 
 
 @pytest.mark.parametrize("authority,deferred", [
-    ("aws", "AWS signing authority for ML-DSA"),
+    ("aws", "AWS signing authority for ML-DSA-87"),
     ("hsm", "HSM signing authority"),
     ("bogus", None),
 ])
@@ -363,6 +407,48 @@ def test_the_pqc_key_signs_through_local_only(tmp_path, authority, deferred):
     error = _config_error(_pqc_only_config(tmp_path, signing_authority_pqc=authority))
     assert error.field_name == "signing_authority_pqc"
     assert error.deferred_feature == deferred
+
+
+def test_each_signing_table_covers_exactly_its_signature_types():
+    """A class's signing table names every signature type its enum does, and
+    each maps to a type the signing layer has authorities for, so neither table
+    can admit or drop an algorithm the other does not."""
+    assert set(oca_consts.CLASSIC_SIGNING_TYPES) == {
+        member.value for member in oca_consts.OcaClassicSignatureType}
+    assert set(oca_consts.PQC_SIGNING_TYPES) == {
+        member.value for member in oca_consts.OcaPqcSignatureType}
+    for signing_type in (*oca_consts.CLASSIC_SIGNING_TYPES.values(),
+                         *oca_consts.PQC_SIGNING_TYPES.values()):
+        assert signing_type in manifest_signing.SIGNING_AUTHORITIES_BY_TYPE
+
+
+def _deferred_feature(cfg):
+    """The deferred feature reject_deferred_features() names for `cfg`, or None
+    when it accepts it."""
+    try:
+        reject_deferred_features(cfg)
+    except OcaConfigError as error:
+        return error.deferred_feature or error.reason
+    return None
+
+
+def test_an_authority_for_ml_dsa_87_is_one_table_edit(tmp_path, monkeypatch):
+    """Giving ML-DSA-87 an AWS path is one entry in the signing layer's
+    authority table: config validation reads that table and needs no edit."""
+    cfg = _pqc_only_config(tmp_path, signing_authority_pqc="aws")
+    assert _deferred_feature(cfg) == "AWS signing authority for ML-DSA-87"
+    monkeypatch.setitem(manifest_signing.SIGNING_AUTHORITIES_BY_TYPE,
+                        ManifestSignatureType.ML_DSA_87.value, ("local", "aws"))
+    assert _deferred_feature(cfg) is None
+
+
+def test_a_pqc_signature_type_is_one_table_edit(tmp_path, monkeypatch):
+    """A PQC signature type is admitted by its entry in the PQC signing table
+    and refused without one."""
+    cfg = _pqc_only_config(tmp_path, signature_type_pqc=0x32)
+    assert _deferred_feature(cfg) == "Unsupported signature algorithm"
+    monkeypatch.setitem(oca_consts.PQC_SIGNING_TYPES, 0x32, ManifestSignatureType.ML_DSA_87.value)
+    assert _deferred_feature(cfg) is None
 
 
 @pytest.mark.parametrize("field", ["signature_encoding_pqc", "public_key_encoding_pqc"])

@@ -25,6 +25,8 @@ updates if the field is constraint-bearing.
 from collections import namedtuple
 from enum import Enum
 
+from ..pack_images_constants import ManifestSignatureType
+
 
 # ---------------------------------------------------------------------------
 # Magic byte strings (raw ASCII, NOT integer-packed)
@@ -450,6 +452,21 @@ class OcaPqcSignatureType(Enum):
     if the two drift apart.
     """
     ML_DSA_87 = 0x33
+
+
+# The signing type each supported OCA signature type is produced as, per class.
+# These are the support tables: a type with no entry is refused at config load,
+# and the authorities each type signs through are the signing layer's
+# SIGNING_AUTHORITIES_BY_TYPE entry for its signing type. The OCA codes are not
+# the signing layer's: OCA RSA (0x01) happens to equal its value, but OCA ECDSA
+# (0x05) does not.
+CLASSIC_SIGNING_TYPES = {
+    OcaClassicSignatureType.RSA_3072_PKCS1V15_SHA256.value: ManifestSignatureType.RSA_3072.value,
+    OcaClassicSignatureType.ECDSA_P256_SHA256.value: ManifestSignatureType.ECC_P_256.value,
+}
+PQC_SIGNING_TYPES = {
+    OcaPqcSignatureType.ML_DSA_87.value: ManifestSignatureType.ML_DSA_87.value,
+}
 
 
 # FIPS 204 encodings, which are the format's raw (0x02) encoding for ML-DSA: the

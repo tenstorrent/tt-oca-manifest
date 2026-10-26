@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from ..manifest_signing import SIGNING_AUTHORITIES_BY_TYPE
+from ..pack_images_constants import ManifestSignatureType
 from . import constants as oca_consts
 
 
@@ -121,9 +123,10 @@ def _normalize_signature_classes(config: Dict[str, Any], secure_boot: int,
 
 def _reject_fields_for_disabled_class(config: Dict[str, Any], fields: tuple,
                                       requirement: str) -> None:
-    """Refuse a signing field named for a signature class that is not enforced."""
+    """Refuse a signing field named for a signature class that is not enforced,
+    whatever its value: a zero, empty or null value still names the field."""
     for field in fields:
-        if _truthy(config, field):
+        if field in config:
             raise OcaConfigError(
                 f"{field} describes a signature this manifest does not carry; it "
                 f"requires {requirement}",
@@ -188,18 +191,7 @@ def _normalize_pqc_signing(config: Dict[str, Any], out: Dict[str, Any],
     else:
         context = "the PQC signature class"
         sig_type = int(_require(config, "signature_type_pqc", context))
-        if sig_type != oca_consts.OcaPqcSignatureType.ML_DSA_87.value:
-            raise OcaConfigError(
-                f"signature_type_pqc must be {oca_consts.OcaPqcSignatureType.ML_DSA_87.value:#04x} "
-                f"(ML-DSA-87); got {sig_type:#x}",
-                field_name="signature_type_pqc",
-            )
-        authority = _require(config, "signing_authority_pqc", context)
-        if authority != "local":
-            raise OcaConfigError(
-                f"signing_authority_pqc must be 'local' for ML-DSA-87; got {authority!r}",
-                field_name="signing_authority_pqc",
-            )
+        _require(config, "signing_authority_pqc", context)
         _require(config, "signing_key_file_pqc", context)
         select = int(_require(config, "public_key_select_pqc", context))
         if not (0 < select < (1 << 128)):
@@ -560,19 +552,69 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
     return out
 
 
+def _reject_unsupported_signing(config: Dict[str, Any], *, pqc: bool) -> None:
+    """Refuse a class's signature type when the packer cannot sign it, and its
+    signing authority when that authority cannot produce the type.
+
+    Both rules are read from tables: the class's signing-type map in constants,
+    and the signing layer's SIGNING_AUTHORITIES_BY_TYPE. A new algorithm or
+    authority is one table edit. An authority the signing layer knows, but not
+    for this type, is a deferred feature, as is the reserved `hsm`.
+    """
+    suffix = "_pqc" if pqc else ""
+    signing_types = oca_consts.PQC_SIGNING_TYPES if pqc else oca_consts.CLASSIC_SIGNING_TYPES
+    type_field = f"signature_type{suffix}"
+    authority_field = f"signing_authority{suffix}"
+
+    named = None
+    if _truthy(config, type_field):
+        named = signing_types.get(int(config[type_field]))
+        if named is None:
+            raise OcaConfigError(
+                f"OCA feature deferred to future pass: Unsupported signature algorithm "
+                f"(field {type_field})",
+                field_name=type_field,
+                deferred_feature="Unsupported signature algorithm",
+            )
+
+    if not _truthy(config, authority_field):
+        return
+    authority = config[authority_field]
+    candidates = [named] if named is not None else list(signing_types.values())
+    allowed = {a for t in candidates for a in SIGNING_AUTHORITIES_BY_TYPE[t]}
+    if authority in allowed:
+        return
+    known = {a for authorities in SIGNING_AUTHORITIES_BY_TYPE.values() for a in authorities}
+    if authority == "hsm":
+        label = "HSM signing authority"
+    elif authority in known:
+        algorithms = ", ".join(ManifestSignatureType(t).name.replace("_", "-")
+                               for t in candidates)
+        label = f"{authority.upper()} signing authority for {algorithms}"
+    else:
+        raise OcaConfigError(
+            f"{authority_field} must be one of {', '.join(sorted(allowed))}; "
+            f"got {authority!r}",
+            field_name=authority_field,
+        )
+    raise OcaConfigError(
+        f"OCA feature deferred to future pass: {label} (field {authority_field})",
+        field_name=authority_field,
+        deferred_feature=label,
+    )
+
+
 def reject_deferred_features(config: Dict[str, Any]) -> None:
     """Raise OcaConfigError for any config that enables an OCA capability the
     packer does not support yet.
 
     Checked features:
-      - PQC signature algorithms other than ML-DSA-87 (0x33), and an ML-DSA
-        signing authority other than `local`
+      - Signature algorithms outside each class's signing table, and signing
+        authorities that cannot produce the algorithm named
       - Payload encryption fields
       - Verifier-key entry fields
       - Co-signer entries
-      - Signature algorithms outside {0x01, 0x05}
       - Hash algorithms outside {0x01} (SHA-256)
-      - HSM signing authority
 
     Designed to run BEFORE validate_and_normalize_oca_classic so deferred
     features fail fast with their *named feature* rather than a downstream
@@ -590,26 +632,11 @@ def reject_deferred_features(config: Dict[str, Any]) -> None:
             field_name="manifest_format",
         )
 
-    # PQC signature algorithm and authority. Of the PQC algorithms the packer
-    # supports ML-DSA-87 alone, and it signs through `local` only. Checked
-    # whatever secure_boot says, so an unsupported request is named before any
-    # class rule fires.
-    if _truthy(config, "signature_type_pqc") and \
-            int(config["signature_type_pqc"]) != oca_consts.OcaPqcSignatureType.ML_DSA_87.value:
-        raise OcaConfigError(
-            "OCA feature deferred to future pass: Unsupported signature algorithm "
-            "(field signature_type_pqc)",
-            field_name="signature_type_pqc",
-            deferred_feature="Unsupported signature algorithm",
-        )
-    for authority, label in (("aws", "AWS signing authority for ML-DSA"),
-                             ("hsm", "HSM signing authority")):
-        if config.get("signing_authority_pqc") == authority:
-            raise OcaConfigError(
-                f"OCA feature deferred to future pass: {label} (field signing_authority_pqc)",
-                field_name="signing_authority_pqc",
-                deferred_feature=label,
-            )
+    # Signature algorithms and authorities, for both classes, from the signing
+    # tables. Checked whatever secure_boot says, so an unsupported request is
+    # named before any class rule fires.
+    _reject_unsupported_signing(config, pqc=False)
+    _reject_unsupported_signing(config, pqc=True)
 
     # Payload encryption. The supported path — AES-256-CBC or AES-128-CBC with a key
     # derived from a pre-shared secret via SP 800-108r1 over the expanded input block
@@ -687,23 +714,6 @@ def reject_deferred_features(config: Dict[str, Any]) -> None:
             deferred_feature="Co-signer entries",
         )
 
-    # Signature algorithm.
-    if config.get("secure_boot"):
-        sig_type = config.get("signature_type")
-        if sig_type is not None:
-            sig_type_int = int(sig_type)
-            allowed = {
-                oca_consts.OcaClassicSignatureType.RSA_3072_PKCS1V15_SHA256.value,
-                oca_consts.OcaClassicSignatureType.ECDSA_P256_SHA256.value,
-            }
-            if sig_type_int not in allowed:
-                raise OcaConfigError(
-                    f"OCA feature deferred to future pass: Unsupported signature algorithm "
-                    f"(field signature_type)",
-                    field_name="signature_type",
-                    deferred_feature="Unsupported signature algorithm",
-                )
-
     # Hash algorithms.
     for fname in ("manifest_hash_type", "payload_hash_type"):
         v = config.get(fname)
@@ -714,16 +724,6 @@ def reject_deferred_features(config: Dict[str, Any]) -> None:
                 field_name=fname,
                 deferred_feature="Hash algorithms beyond SHA-256",
             )
-
-    # HSM signing authority.
-    sa = config.get("signing_authority")
-    if sa == "hsm":
-        raise OcaConfigError(
-            "OCA feature deferred to future pass: HSM signing authority "
-            "(field signing_authority)",
-            field_name="signing_authority",
-            deferred_feature="HSM signing authority",
-        )
 
 
 def _truthy(config: Dict[str, Any], key: str) -> bool:

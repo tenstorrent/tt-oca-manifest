@@ -166,6 +166,36 @@ def test_hsm_signing_authority_rejected(tmp_path):
     assert exc.value.field_name == "signing_authority"
 
 
+@pytest.mark.parametrize("secure_boot", [0, 1])
+@pytest.mark.parametrize("signature_type", [0x02, 0x33, 0xF0])
+def test_unsupported_classical_signature_type_is_named_whatever_secure_boot_says(
+        tmp_path, secure_boot, signature_type):
+    """A classical type outside the signing table is named as unsupported
+    before any class rule fires, as a PQC one is."""
+    cfg = _base_config(tmp_path)
+    cfg["secure_boot"] = secure_boot
+    cfg["signature_type"] = signature_type
+    with pytest.raises(OcaConfigError) as exc:
+        oca_entry.pack_oca_bundle(cfg)
+    assert exc.value.deferred_feature == "Unsupported signature algorithm"
+    assert exc.value.field_name == "signature_type"
+
+
+def test_unknown_classical_signing_authority_is_refused_at_config_load(tmp_path):
+    """An authority the signing layer does not know is a config error naming the
+    field and the authorities the signature type can use, not a failure later
+    in the signing layer."""
+    cfg = _base_config(tmp_path)
+    cfg["secure_boot"] = 1
+    cfg["signature_type"] = 0x01
+    cfg["signing_authority"] = "bogus"
+    with pytest.raises(OcaConfigError) as exc:
+        oca_entry.pack_oca_bundle(cfg)
+    assert exc.value.field_name == "signing_authority"
+    assert exc.value.deferred_feature is None
+    assert "aws, local" in exc.value.reason
+
+
 @pytest.mark.parametrize(
     "bad",
     [
