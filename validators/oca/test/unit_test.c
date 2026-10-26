@@ -5427,6 +5427,101 @@ TEST(test_classic_description_accepts_only_supported_primitives)
     }
 }
 
+/* A key or signature field: its offset, the size its fixture declares valid,
+ * and its width. */
+typedef struct {
+    size_t off;
+    size_t valid;
+    size_t width;
+} padded_field_t;
+
+/* The classical fields of build_secure_manifest(). */
+static const padded_field_t CLASSIC_PADDED_FIELDS[] = {
+    { OCA_CLASSIC_OFF_SIGNATURE, 384u, OCA_LEN_SIGNATURE },
+    { OCA_OFF_PUBLIC_KEY,        388u, OCA_LEN_PUBLIC_KEY },
+};
+
+/* Every field of a hybrid build_secure_pqc_manifest(): signature_classic sits
+ * at its PQC-variant offset. */
+static const padded_field_t HYBRID_PADDED_FIELDS[] = {
+    { OCA_PQC_OFF_SIGNATURE,     384u, OCA_LEN_SIGNATURE },
+    { OCA_OFF_PUBLIC_KEY,        388u, OCA_LEN_PUBLIC_KEY },
+    { OCA_PQC_OFF_SIGNATURE_PQC, OCA_PQC_ML_DSA_87_SIGNATURE_BYTES,
+      OCA_PQC_LEN_SIGNATURE_PQC },
+    { OCA_PQC_OFF_PUBLIC_KEY,    OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES,
+      OCA_PQC_LEN_PUBLIC_KEY },
+};
+
+/* Assert the padding rule on @p f of @p buf, a body @p rebuild restores: a
+ * non-zero last valid byte is content and accepted, while a non-zero first or
+ * last padding byte is refused. */
+static void assert_padding_must_be_zero(uint8_t *buf, void (*rebuild)(uint8_t *),
+                                        const padded_field_t *f)
+{
+    rebuild(buf);
+    buf[f->off + f->valid - 1u] = 0xA5u;
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+
+    rebuild(buf);
+    buf[f->off + f->valid] = 0x01u;
+    ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+
+    rebuild(buf);
+    buf[f->off + f->width - 1u] = 0x80u;
+    ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+}
+
+static void rebuild_secure_manifest(uint8_t *buf)
+{
+    build_secure_manifest(buf);
+}
+
+static void rebuild_hybrid_manifest(uint8_t *buf)
+{
+    build_secure_pqc_manifest(buf, 0x07u);
+}
+
+TEST(test_classic_padding_past_a_declared_size_must_be_zero)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    for (size_t i = 0u; i < sizeof CLASSIC_PADDED_FIELDS / sizeof CLASSIC_PADDED_FIELDS[0];
+         ++i) {
+        assert_padding_must_be_zero(buf, rebuild_secure_manifest, &CLASSIC_PADDED_FIELDS[i]);
+    }
+}
+
+TEST(test_hybrid_padding_past_a_declared_size_must_be_zero)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    for (size_t i = 0u; i < sizeof HYBRID_PADDED_FIELDS / sizeof HYBRID_PADDED_FIELDS[0];
+         ++i) {
+        assert_padding_must_be_zero(buf, rebuild_hybrid_manifest, &HYBRID_PADDED_FIELDS[i]);
+    }
+}
+
+/* The padding rule belongs to the signing description, so it is skipped with
+ * it: for a class the manifest does not enforce, and while secure boot is not
+ * in force. */
+TEST(test_padding_is_not_judged_for_a_class_or_boot_that_does_not_use_it)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+
+    build_secure_pqc_manifest(buf, 0x05u);          /* PQC only */
+    buf[OCA_PQC_OFF_SIGNATURE + 384u] = 0x01u;
+    buf[OCA_OFF_PUBLIC_KEY + 388u] = 0x01u;
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+
+    build_secure_pqc_manifest(buf, 0x03u);          /* classical only */
+    buf[OCA_PQC_OFF_SIGNATURE_PQC + OCA_PQC_ML_DSA_87_SIGNATURE_BYTES] = 0x01u;
+    buf[OCA_PQC_OFF_PUBLIC_KEY + OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES] = 0x01u;
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+
+    uint8_t classic[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(classic);                /* secure boot off */
+    classic[OCA_CLASSIC_OFF_SIGNATURE + OCA_LEN_SIGNATURE - 1u] = 0x01u;
+    ASSERT_EQ_INT(check_sizes(classic), OCA_OK);
+}
+
 /* The first and last byte of every PQC signing field. */
 static const unsigned pqc_signing_field_bytes[] = {
     OCA_PQC_OFF_SIGNATURE_TYPE,
@@ -7783,6 +7878,9 @@ int main(int argc, char **argv)
     RUN_TEST(test_pqc_size_fields_must_be_the_exact_ml_dsa_87_sizes);
     RUN_TEST(test_pqc_description_is_ignored_when_the_pqc_class_is_off);
     RUN_TEST(test_classic_description_accepts_only_supported_primitives);
+    RUN_TEST(test_classic_padding_past_a_declared_size_must_be_zero);
+    RUN_TEST(test_hybrid_padding_past_a_declared_size_must_be_zero);
+    RUN_TEST(test_padding_is_not_judged_for_a_class_or_boot_that_does_not_use_it);
     RUN_TEST(test_secure_boot_off_ignores_each_dirty_pqc_signing_field);
     RUN_TEST(test_non_secure_manifest_with_populated_signing_fields_validates);
     RUN_TEST(test_device_enforced_bit_clear_manifest_validates_end_to_end);

@@ -55,7 +55,7 @@ not need a callback never touch it, and a check that *does* need one fails with
 | Field | What it is | Prototype | Purpose, and why it is a callback | System resources it reaches for you |
 |---|---|---|---|---|
 | `sha256` | Message digest | `oca_result_t (*)(const uint8_t *msg, size_t msg_len, uint8_t out_digest[32])` | Every integrity check in the library is built on this one primitive — `manifest_hash`, `payload_hash`, `payload_hash_chain`, per-image entry hashes. The library ships no hash implementation, so the target can use its accelerator instead of paying for a software SHA-256 in ROM. **Required on every path**; `manifest_hash` runs unconditionally and early, so a NULL here fails immediately. | SHA-256 engine or accelerator; whatever DMA/clock/power gating it needs. Software SHA-256 if there is no engine. |
-| `verify_signature` | Signature verification | `oca_result_t (*)(const oca_crypto_blob_t *signature, const oca_crypto_blob_t *public_key, const uint8_t *signed_region, size_t signed_region_len)` | The library's only authenticity primitive — it establishes trust in the signed region, and transitively in every digest that region carries. Invoked once per signature class the manifest enforces: a hybrid manifest produces one classical call and one PQC call, and both must verify. This library composes and enforces the AND result of the two signatures. Algorithm and encoding vary (classical: RSA-3072 PKCS#1 v1.5 or ECDSA P-256, DER or raw; PQC: ML-DSA-87 today, raw only) so the `oca_crypto_blob_t` descriptors tell you which, and `key_algorithm` names the family. Each blob's `length` is its validated size. For ML-DSA-87 the contract is pure FIPS 204 ML-DSA.Verify over `signed_region` exactly as given, with the empty context: no pre-hash and no HashML-DSA (an engine that takes μ computes it as [Enabling PQC secure boot](#enabling-pqc-secure-boot) shows). The key is the raw 2592-byte FIPS 204 public-key encoding and the signature the raw 4627-byte signature encoding. The library performs none of this cryptography. A backend without a PQC implementation returns `OCA_FAIL_CALLBACK_UNAVAILABLE` for `OCA_KEY_ALGO_PQC` and the manifest fails closed. Required under secure boot. | Public-key accelerator or bignum unit; constant-time modular arithmetic; any key-format parsing (DER) you need; a PQC signature engine or software implementation (ML-DSA today) for the PQC class. |
+| `verify_signature` | Signature verification | `oca_result_t (*)(const oca_crypto_blob_t *signature, const oca_crypto_blob_t *public_key, const uint8_t *signed_region, size_t signed_region_len)` | The library's only authenticity primitive — it establishes trust in the signed region, and transitively in every digest that region carries. Invoked once per signature class the manifest enforces: a hybrid manifest produces one classical call and one PQC call, and both must verify. This library composes and enforces the AND result of the two signatures. Algorithm and encoding vary (classical: RSA-3072 PKCS#1 v1.5 or ECDSA P-256, DER or raw; PQC: ML-DSA-87 today, raw only) so the `oca_crypto_blob_t` descriptors tell you which, and `key_algorithm` names the family. Each blob's `length` is its validated size; read no further than it, and parse a DER value within it — a DER public key must occupy exactly `length` bytes, and a DER ECDSA signature, whose `length` is the 72-byte maximum, may be followed only by zero bytes up to it. For ML-DSA-87 the contract is pure FIPS 204 ML-DSA.Verify over `signed_region` exactly as given, with the empty context: no pre-hash and no HashML-DSA (an engine that takes μ computes it as [Enabling PQC secure boot](#enabling-pqc-secure-boot) shows). The key is the raw 2592-byte FIPS 204 public-key encoding and the signature the raw 4627-byte signature encoding. The library performs none of this cryptography. A backend without a PQC implementation returns `OCA_FAIL_CALLBACK_UNAVAILABLE` for `OCA_KEY_ALGO_PQC` and the manifest fails closed. Required under secure boot. | Public-key accelerator or bignum unit; constant-time modular arithmetic; any key-format parsing (DER) you need; a PQC signature engine or software implementation (ML-DSA today) for the PQC class. |
 | `decrypt_payload` | Payload key derivation + decryption | `oca_result_t (*)(const oca_decrypt_input_t *in, const uint8_t **out_plaintext, size_t *out_plaintext_len)` | Resolves `in->secret_select` against your key store, runs the SP 800-108r1 CTR-HMAC-SHA-256 KDF over `in->kdf_input`, and AES-CBC-decrypts with the result, stripping PKCS#7. It is a callback because **the provisioned secret is**: the library must never hold key material. Everything the operation reads is a named field on `in` — including the cipher and the secret index — so it never re-reads the manifest. The selector is an INDEX, never a secret: no key material crosses this boundary in either direction. Invoked only after the ciphertext's `payload_hash` verifies. Required only for encrypted payloads. | AES engine (CBC, 128/256-bit); HMAC-SHA-256 for the KDF; the **key store** holding the pre-shared secret — fuses, OTP, a key vault, or a derived-key slot the CPU cannot read. |
 | `get_identity_bytes` | Silicon identity readback | `oca_hw_result_t (*)(oca_id_kind_t field, uint8_t out[32])` | Supplies the chiplet / package / system ID the manifest is checked against, per `selector_bits`. The library holds no device state, so these can only come from silicon. Returning `OCA_HW_UNAVAILABLE` is a hard failure, never a silent pass. Required when the matching selector bit is set. | Identity fuses, OTP, ID ROM, or an ID register block. |
 | `get_lifecycle_state` | Lifecycle readback | `oca_hw_result_t (*)(oca_lifecycle_level_t level, oca_lifecycle_token_t *out_state)` | Reports the device's current lifecycle state so the manifest's permitted-state mask can be enforced. Same reasoning as identity: device state the library cannot see. Required when the lifecycle selector bit is set. | Lifecycle-state fuses or the lifecycle controller. |
@@ -610,7 +610,11 @@ at every use" below.
 
 - **Signing description** (`oca_check_crypto_field_sizes()`) — each enforced
   class's signature type, encodings and size fields must describe a key and
-  signature this library accepts (`CRYPTO_FIELD_SIZE` otherwise). These are
+  signature this library accepts, and every byte of its key and signature
+  fields past the declared size must be zero (`CRYPTO_FIELD_SIZE` otherwise).
+  The signature fields lie outside the signed region, so a padding byte that
+  were allowed to vary would give one signed manifest many byte-distinct
+  bundles. These are
   Secure-Boot-only fields, so the check is keyed on the determination rather
   than on the manifest's `secure_boot_enforced` bit: a part that enforces secure
   boot itself validates them even on a manifest that leaves the bit clear, and
@@ -864,14 +868,17 @@ to accept. The anchor's shape is yours, but it must bind two things, for the
 classical anchor as much as the PQC one:
 
 - **the whole key** — compare or digest all `length` bytes. For a raw RSA key
-  that is the exponent as well as the modulus;
+  that is the exponent as well as the modulus, and for a DER key the whole
+  PKCS#1 structure;
 - **the selected slot** — accept only a key matching the anchor of a slot whose
   bit is set in `select`. Revocation is decided from that bitmap, so an anchor
   that ignores it lets the holder of a revoked key select a different slot and
   boot. The library refuses a class that selects no key before asking.
 
-The reference harness digests the whole raw key with SHA-256 and holds each
-digest for one slot (`--root-key-digest-pqc [<slot>:]HEX64`); the comparison
+The reference harness digests the whole key, as the manifest encodes it, with
+SHA-256 and holds each digest for one slot (`--root-key-digest [<slot>:]HEX64`
+for a raw or DER RSA-3072 key or a raw P-256 point,
+`--root-key-digest-pqc [<slot>:]HEX64` for an ML-DSA-87 key); the comparison
 should be constant time.
 
 **4. Give the PQC family its own revocation state.** `get_root_key_revocation`
@@ -927,7 +934,7 @@ what `get_signature_cohort_enforce` and `get_signature_class_revoke` report:
 | `ROOT_KEY_REVOKED` | The selected PQC key is revoked in the manifest's or the device's PQC bitmap |
 | `SIGNATURE` | The PQC signature did not verify, or either half of a hybrid manifest did not |
 | `CALLBACK_UNAVAILABLE` | `verify_signature` has no backend for the manifest's PQC algorithm, the PQC revocation state could not be read, or a signature posture reader is missing or failed |
-| `CRYPTO_FIELD_SIZE` | The PQC description names an algorithm, encoding or size this library does not accept — today, anything but raw ML-DSA-87 at its exact sizes |
+| `CRYPTO_FIELD_SIZE` | The PQC description names an algorithm, encoding or size this library does not accept — today, anything but raw ML-DSA-87 at its exact sizes — or the PQC key or signature field is not zero past that size |
 | `SIGNATURE_CLASS_CONTROL` | `secure_boot_pqc` on a Classic manifest, or secure boot with no class selected |
 | `SIGNATURE_ALGORITHM_REVOKED` | The device has disabled the PQC algorithm's class, or the whole PQC group (`0xAC`) — or, for a hybrid manifest, the classical one's |
 | `SIGNATURE_COHORT_REQUIRED` | The device demands a cohort the manifest does not enforce: PQC of a classic-only manifest, or the classical cohort of a PQC-only one |
@@ -986,6 +993,12 @@ Changes an existing integration should check. Most show only at run time.
   no `default` needs both cases.
 - **The PQC description is pinned.** The PQC class accepts raw ML-DSA-87 at its
   exact sizes; anything else is `CRYPTO_FIELD_SIZE`.
+- **Padding past a declared size must be zero.** Under secure boot, a key or
+  signature field of an enforced class that holds a non-zero byte past its
+  declared size is `CRYPTO_FIELD_SIZE`. This packer has always written zeros
+  there. A verify callback that parses DER must do so within the blob's
+  `length`: a DER key that does not fill it exactly, or a DER ECDSA signature
+  followed by non-zero bytes inside it, is a failed verification.
 - **Secure-Boot-only fields are ignored while secure boot is off.** A
   non-secure manifest with populated signing fields now validates, and a device
   that enforces secure boot checks a manifest's signing description even when

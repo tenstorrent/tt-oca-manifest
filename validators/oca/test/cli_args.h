@@ -44,9 +44,10 @@ typedef struct cli_options {
      * Outranked by --secure-boot-disabled, exactly as on a real part. */
     bool secure_boot_active;
     /* Root-key trust anchors, one per algorithm family, each a SHA-256 over a
-     * whole raw key held for one select slot: --root-key-digest for a raw
-     * RSA-3072 key (modulus and exponent), --root-key-digest-pqc for a raw PQC
-     * key. Each family is authorized by its own anchor only, and only for a
+     * whole encoded key held for one select slot: --root-key-digest for a
+     * classical key (raw or PKCS#1 DER RSA-3072, or a raw P-256 point),
+     * --root-key-digest-pqc for a raw PQC key. Each family is authorized by its
+     * own anchor only, and only for a
      * manifest that selects the anchor's slot. --trust-any-root-key authorizes
      * whatever the manifest carries, which is only ever right for structural
      * checks on a fixture whose key is not the point. */

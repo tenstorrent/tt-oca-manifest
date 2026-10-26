@@ -84,22 +84,39 @@ oca_hw_result_t cli_get_version(oca_version_level_t level,
     return OCA_HW_ERROR;
 }
 
-/* Whether `public_key` is a raw key of `primitive`, selected in `select` at
- * the anchor's `slot`, whose whole encoding hashes to `anchor`, compared in
- * constant time.
+/* Whether an anchor of the key's own family can hold it: a primitive of that
+ * family, in an encoding the format defines for that primitive's key. RSA-3072
+ * keys come raw or as PKCS#1 DER, a P-256 key and an ML-DSA-87 key raw only. */
+static int key_is_anchorable(const oca_crypto_blob_t *public_key)
+{
+    oca_encoding_t enc = public_key->encoding;
+    if (public_key->key_algorithm == OCA_KEY_ALGO_PQC) {
+        return public_key->primitive_type == OCA_PRIMITIVE_ML_DSA_87
+               && enc == OCA_ENCODING_RAW;
+    }
+    if (public_key->primitive_type == OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256) {
+        return enc == OCA_ENCODING_RAW || enc == OCA_ENCODING_DER;
+    }
+    return public_key->primitive_type == OCA_PRIMITIVE_ECDSA_P256_SHA256
+           && enc == OCA_ENCODING_RAW;
+}
+
+/* Whether `public_key` is a key its family's anchor can hold, selected in
+ * `select` at the anchor's `slot`, whose whole encoding hashes to `anchor`,
+ * compared in constant time.
  *
  * Both bindings matter. The digest covers the blob's validated length, every
  * byte the verifier uses: for a raw RSA key the exponent as well as the
- * modulus. And the anchor vouches only for its own slot: revocation is decided
- * from the select bitmap, so an anchor that ignored it would let a revoked key
- * claim another slot. Any other shape is unauthorized. */
+ * modulus, and for a DER key the whole PKCS#1 structure. A digest is over one
+ * encoding, so the raw and DER forms of one RSA key are different anchors. And
+ * the anchor vouches only for its own slot: revocation is decided from the
+ * select bitmap, so an anchor that ignored it would let a revoked key claim
+ * another slot. Any other shape is unauthorized. */
 static oca_result_t key_matches_anchor(const oca_crypto_blob_t *public_key,
                                        const uint8_t select[16], unsigned slot,
-                                       oca_primitive_type_t primitive,
                                        const uint8_t anchor[32])
 {
-    if (public_key->encoding != OCA_ENCODING_RAW
-        || public_key->primitive_type != primitive
+    if (!key_is_anchorable(public_key)
         || public_key->length == 0u
         || public_key->length > public_key->field_length
         || ((select[slot / 8u] >> (slot % 8u)) & 1u) == 0u) {
@@ -143,12 +160,11 @@ oca_result_t cli_is_key_authorized(const oca_crypto_blob_t *public_key,
             return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
         }
         return key_matches_anchor(public_key, select, g_opt->root_key_slot_pqc,
-                                  OCA_PRIMITIVE_ML_DSA_87, g_opt->root_key_digest_pqc);
+                                  g_opt->root_key_digest_pqc);
     }
     if (!g_opt->root_key_digest_present) {
         return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
     }
     return key_matches_anchor(public_key, select, g_opt->root_key_slot,
-                              OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256,
                               g_opt->root_key_digest);
 }

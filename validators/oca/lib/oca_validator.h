@@ -277,7 +277,8 @@ typedef enum oca_result {
      *  Each size field bounds how far a Consumer reads into its companion field,
      *  so a value that is zero, overruns the field, or disagrees with the
      *  algorithm is rejected before any parse relies on it, as is a primitive or
-     *  encoding the library does not accept for that class. Distinct from
+     *  encoding the library does not accept for that class, and a key or
+     *  signature field whose padding past its size is not zero. Distinct from
      *  OCA_FAIL_SIGNATURE, which reports a signature that was parsed and did not
      *  verify; this one means the manifest never described a parseable value. */
     OCA_FAIL_CRYPTO_FIELD_SIZE          = 34,
@@ -780,9 +781,11 @@ typedef struct oca_crypto_blob {
      *  this blob (signature_size_* or public_key_size_*), which
      *  oca_check_crypto_field_sizes() has held to the declared algorithm and
      *  encoding ahead of both callbacks in the composed pipeline. Exact for
-     *  every raw value and for a DER public key; for a DER ECDSA signature it is
-     *  the algorithm's maximum DER length, and the DER framing gives the encoded
-     *  length within it. The rest of the field is padding. */
+     *  every raw value and for a DER public key, whose DER must occupy all of
+     *  it; for a DER ECDSA signature it is the algorithm's maximum DER length,
+     *  and the DER framing gives the encoded length within it. Read no further
+     *  than this: the rest of the field is zero padding, which the library has
+     *  confirmed. */
     size_t               length;
     oca_blob_kind_t      kind;            /**< Whether this is the key or the signature. */
     oca_encoding_t       encoding;        /**< How @c bytes is encoded. */
@@ -1570,6 +1573,13 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body);
  * exists, and a DER ECDSA length is value-dependent. The DER length octets give
  * the real size within the declared maximum.
  *
+ * Every byte of an enforced class's key and signature fields past the declared
+ * size must be zero. The format calls the unused bytes of a key field 0x00, and
+ * a signature field lies outside the signed region, so anything else in its
+ * padding would let byte-distinct bundles share one signed manifest. The
+ * padding inside a DER ECDSA signature's declared maximum, after the DER value
+ * ends, is the crypto backend's to check: only it parses the DER framing.
+ *
  * The signing description is Secure-Boot-only, so this is a gated check: a
  * no-op returning OCA_OK when @p ctx records that secure boot is not in force,
  * whatever the fields hold. In force is the determination's answer, not the
@@ -1588,9 +1598,10 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body);
  * undefined for PQC. The raw sizes are exact — a 2592-byte public key and a
  * 4627-byte signature.
  *
- * Structural validation of the DER itself — well-formed, and decoding to no
- * more than the declared size — belongs to the crypto backend, the only
- * component that parses ASN.1.
+ * Structural validation of the DER itself belongs to the crypto backend, the
+ * only component that parses ASN.1: the value must be well formed, a DER public
+ * key must occupy exactly its declared size, and a DER ECDSA signature must
+ * end within its declared maximum with only zero bytes after it.
  *
  * @param[in] body  Whole variant body. See the length contract above.
  * @param[in] cb    Callback table. The secure-boot reporters are consulted
@@ -1604,10 +1615,12 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body);
  *                                      force.
  * @retval OCA_FAIL_INVALID_ARG         @p body was NULL.
  * @retval OCA_FAIL_CRYPTO_FIELD_SIZE   An enforced class names a primitive or
- *                                      encoding it does not accept, or a size
+ *                                      encoding it does not accept, a size
  *                                      field is zero, overruns its field, or
  *                                      disagrees with the declared algorithm
- *                                      and encoding.
+ *                                      and encoding, or a key or signature
+ *                                      field holds a non-zero byte past its
+ *                                      declared size.
  * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED  @p ctx holds no determination.
  * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination, or the
  *                                      recorded class enforcement, no longer

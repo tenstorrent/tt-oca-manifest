@@ -7,6 +7,7 @@
 
 #include "parser.h"
 
+#include "oca_compare.h"
 #include "oca_layout.h"
 #include "oca_layout_classic.h"
 #include "oca_layout_pqc.h"
@@ -200,12 +201,35 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body)
 /** Largest RFC 3279 ECDSA-Sig-Value a P-256 key can produce. */
 #define DER_EC_P256_SIGNATURE_MAX_BYTES 72u
 
+/**
+ * @brief Whether a key or signature field holds anything past its valid bytes.
+ *
+ * The bytes after a value's declared size are padding. They are refused unless
+ * zero: a signature field lies outside the signed region, so any other content
+ * there would make byte-distinct bundles of one signed manifest.
+ *
+ * @param[in] field       Start of the field.
+ * @param[in] field_len   Width of the field.
+ * @param[in] valid_len   The field's declared size, already held to
+ *                        @p field_len.
+ * @return Non-zero when any byte in [valid_len, field_len) is non-zero.
+ */
+static int padding_is_dirty(const uint8_t *field, size_t field_len, size_t valid_len)
+{
+    return oca_ct_any_nonzero(field + valid_len, field_len - valid_len);
+}
+
 oca_result_t oca_check_crypto_field_sizes(const uint8_t *body,
                                           const oca_callbacks_t *cb,
                                           const oca_validation_context_t *ctx)
 {
     if (body == 0) {
         return OCA_FAIL_INVALID_ARG;
+    }
+    oca_result_t status;
+    const oca_variant_t *v = oca_variant_for_body(body, &status);
+    if (v == 0) {
+        return status;
     }
     /* The signing description is Secure-Boot-only: validated when secure boot
      * is in force and ignored otherwise. In force is the determination's
@@ -271,6 +295,14 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body,
         if (sig_size != want_sig || key_size != want_key) {
             return OCA_FAIL_CRYPTO_FIELD_SIZE;
         }
+        /* Confirm the classical signature and public key are zero-padded past
+         * their declared sizes. signature_classic is the one variant-positioned
+         * field here, so its offset comes from the descriptor. */
+        if (padding_is_dirty(body + v->off_signature, OCA_LEN_SIGNATURE, sig_size)
+            || padding_is_dirty(body + OCA_OFF_PUBLIC_KEY, OCA_LEN_PUBLIC_KEY,
+                                key_size)) {
+            return OCA_FAIL_CRYPTO_FIELD_SIZE;
+        }
     }
 
     /* FIPS 204 defines no bare ASN.1 structure for an ML-DSA key or signature,
@@ -296,6 +328,14 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body,
             || pqc_key_enc != OCA_ENCODING_RAW
             || pqc_sig_size != OCA_PQC_ML_DSA_87_SIGNATURE_BYTES
             || pqc_key_size != OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES) {
+            return OCA_FAIL_CRYPTO_FIELD_SIZE;
+        }
+        /* Confirm the PQC signature and public key are zero-padded past their
+         * declared sizes. */
+        if (padding_is_dirty(body + OCA_PQC_OFF_SIGNATURE_PQC,
+                             OCA_PQC_LEN_SIGNATURE_PQC, pqc_sig_size)
+            || padding_is_dirty(body + OCA_PQC_OFF_PUBLIC_KEY,
+                                OCA_PQC_LEN_PUBLIC_KEY, pqc_key_size)) {
             return OCA_FAIL_CRYPTO_FIELD_SIZE;
         }
     }

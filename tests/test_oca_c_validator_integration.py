@@ -25,7 +25,8 @@ import pytest
 
 from tt_boot_manifest.oca import constants as oca_constants
 from tt_boot_manifest.oca.entry import pack_oca_bundle
-from tt_boot_manifest.oca.signing import build_pqc_signing_key, sign_signed_region_pqc
+from tt_boot_manifest.oca.signing import (build_pqc_signing_key, build_signing_key,
+                                          sign_signed_region, sign_signed_region_pqc)
 from tt_boot_manifest.utils import load_config
 
 
@@ -1998,6 +1999,61 @@ def test_cli_secure_boot_active_still_validates_a_properly_signed_bundle():
     assert PASS_RE.match(result.stdout), result.stdout
 
 
+# secure_boot_control of pqc_secure_mldsa: enforced (bit 0) and the PQC class
+# (bit 2). Clearing bit 0 leaves a manifest that names the PQC class but does not
+# assert secure boot itself.
+_PQC_ONLY_ENFORCED = 0x05
+_PQC_ONLY_NOT_ENFORCED = 0x04
+
+
+def _device_enforced_pqc_bundle() -> bytearray:
+    """pqc_secure_mldsa with its enforced bit cleared, re-signed.
+
+    The producer refuses to build this — a signature class requires
+    `secure_boot: 1` — so it is tooled here. Only a device that enforces secure
+    boot itself uses the PQC class it names."""
+    data = _fixture_bytes("pqc_secure_mldsa")
+    assert data[oca_constants.OFF_SECURE_BOOT_CONTROL] == _PQC_ONLY_ENFORCED
+    data[oca_constants.OFF_SECURE_BOOT_CONTROL] = _PQC_ONLY_NOT_ENFORCED
+    _resign_pqc(data, "pqc_secure_mldsa")
+    return data
+
+
+def test_cli_a_device_that_enforces_secure_boot_verifies_the_pqc_class_alone(tmp_path):
+    """The device-enforced route on an OCA-PQC manifest: the device puts secure
+    boot in force, and the manifest's class bit selects ML-DSA-87, authorized by
+    a real anchor."""
+    result = _run_bundle(tmp_path, _device_enforced_pqc_bundle(), "device_enforced_pqc",
+                         flags=("--secure-boot-active",
+                                "--root-key-digest-pqc", _mldsa_dev_key_digest()))
+    _assert_passed(result)
+
+
+@pytest.mark.parametrize("flip_signature,anchor,code", [
+    (True, "dev", "SIGNATURE"),
+    (False, "other", "ROOT_KEY_UNAUTHORIZED"),
+])
+def test_cli_the_device_enforced_pqc_route_still_verifies_and_authorizes(
+        tmp_path, flip_signature, anchor, code):
+    data = _device_enforced_pqc_bundle()
+    if flip_signature:
+        data[oca_constants.OFF_SIGNATURE_PQC] ^= 0x01
+    digest = (_mldsa_dev_key_digest() if anchor == "dev"
+              else _key_digest(_fresh_mldsa_key().public_key().public_bytes_raw()))
+    result = _run_bundle(tmp_path, data, f"device_enforced_pqc_{code}",
+                         flags=("--secure-boot-active", "--root-key-digest-pqc", digest))
+    _assert_refused(result, code)
+
+
+def test_cli_without_the_device_the_pqc_class_bit_alone_verifies_nothing(tmp_path):
+    """The contrast that shows the device decides: with the enforced bit clear
+    and no device enforcement, secure boot is not in force, so even a broken
+    signature boots."""
+    data = _device_enforced_pqc_bundle()
+    data[oca_constants.OFF_SIGNATURE_PQC] ^= 0x01
+    _assert_passed(_run_bundle(tmp_path, data, "pqc_class_bit_only", flags=()))
+
+
 def test_cli_reports_a_reason_for_every_refusal_it_can_produce(tmp_path):
     """A failure code with no `reason_for` case would print `FAIL: CODE: ok`,
     which reads as a pass to anyone skimming a CI log. The switch has no
@@ -2089,29 +2145,56 @@ def test_cli_help_documents_every_exit_code():
 # ---------------------------------------------------------------------------
 # ROOT-key trust anchor
 #
-# Every secure fixture runs with --trust-any-root-key, which leaves the anchor
-# check untested end to end. These drive --root-key-digest, the CLI's stand-in
-# for a key digest held by a device: a SHA-256 over the whole raw key, bound to
-# one select slot (slot 0 unless the flag says otherwise). Digests are computed
-# here from the committed development keys rather than committed as literals.
+# These drive --root-key-digest, the CLI's stand-in for a key digest held by a
+# device: a SHA-256 over the whole key as the manifest encodes it, bound to one
+# select slot (slot 0 unless the flag says otherwise). Digests are computed here
+# from the committed development keys rather than committed as literals; the
+# fixtures whose .flags carry a real anchor are pinned to these below.
 # ---------------------------------------------------------------------------
 
 RSA_F4_KEY = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.f4.pem")
 RSA_E3_KEY = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "rsa_private_key.e3.pem")
+EC_P256_KEY = os.path.join(PROJECT_ROOT, "tests", "signing_keys", "ec_private_key.pem")
+
+
+def _public_key_of(key_path: str):
+    from cryptography.hazmat.primitives import serialization
+
+    with open(key_path, "rb") as f:
+        return serialization.load_pem_private_key(f.read(), password=None).public_key()
+
+
+def _sha256_hex(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
 
 
 def _rsa_raw_key_digest(key_path: str) -> str:
     """SHA-256 of the key's 388-byte raw encoding — big-endian modulus, then a
     4-byte big-endian exponent — as --root-key-digest takes it."""
-    import hashlib
+    numbers = _public_key_of(key_path).public_numbers()
+    return _sha256_hex(numbers.n.to_bytes(384, "big") + numbers.e.to_bytes(4, "big"))
 
+
+def _rsa_der_key_digest(key_path: str) -> str:
+    """SHA-256 of the key's PKCS#1 RSAPublicKey DER encoding."""
     from cryptography.hazmat.primitives import serialization
 
-    with open(key_path, "rb") as f:
-        key = serialization.load_pem_private_key(f.read(), password=None)
-    numbers = key.public_key().public_numbers()
-    raw = numbers.n.to_bytes(384, "big") + numbers.e.to_bytes(4, "big")
-    return hashlib.sha256(raw).hexdigest()
+    return _sha256_hex(_public_key_of(key_path).public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.PKCS1))
+
+
+def _ec_raw_point_digest(public_key) -> str:
+    """SHA-256 of a P-256 key's 65-byte SEC1 uncompressed point."""
+    from cryptography.hazmat.primitives import serialization
+
+    return _sha256_hex(public_key.public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint))
+
+
+def _ec_raw_key_digest(key_path: str) -> str:
+    return _ec_raw_point_digest(_public_key_of(key_path))
 
 
 def test_cli_root_key_digest_authorizes_the_matching_key():
@@ -2152,6 +2235,55 @@ def test_cli_rejects_a_malformed_root_key_digest(digest_first, bad_digest):
     assert result.returncode == 2, (
         f"expected a usage error; rc={result.returncode} stderr={result.stderr!r}")
     assert b"--root-key-digest" in result.stderr
+
+
+@pytest.mark.parametrize("fixture,digest_of,key_path", [
+    ("secure_rsa", _rsa_raw_key_digest, RSA_F4_KEY),
+    ("secure_rsa_der", _rsa_der_key_digest, RSA_F4_KEY),
+    ("secure_rsa_e3_der", _rsa_der_key_digest, RSA_E3_KEY),
+    ("secure_ecdsa", _ec_raw_key_digest, EC_P256_KEY),
+], ids=["rsa-raw", "rsa-der", "rsa-e3-der", "ecdsa-raw"])
+def test_cli_classical_anchor_authorizes_every_key_shape(fixture, digest_of, key_path):
+    """Every classical key the format can carry has an anchor: raw and PKCS#1
+    DER RSA-3072, and a raw P-256 point."""
+    _assert_passed(_run_cli(["--manifest", _pack_fixture(fixture),
+                             "--root-key-digest", digest_of(key_path)]))
+
+
+def test_cli_classical_anchor_refuses_another_ecdsa_key():
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    other = _ec_raw_point_digest(ec.generate_private_key(ec.SECP256R1()).public_key())
+    _assert_refused(_run_cli(["--manifest", _pack_fixture("secure_ecdsa"),
+                              "--root-key-digest", other]), "ROOT_KEY_UNAUTHORIZED")
+
+
+@pytest.mark.parametrize("fixture,digest_of", [
+    ("secure_rsa_der", _rsa_raw_key_digest),
+    ("secure_rsa", _rsa_der_key_digest),
+], ids=["der-key-raw-anchor", "raw-key-der-anchor"])
+def test_cli_an_anchor_binds_the_key_encoding(fixture, digest_of):
+    """A digest is over one encoding, so the raw and DER forms of the same RSA
+    key are different anchors."""
+    _assert_refused(_run_cli(["--manifest", _pack_fixture(fixture),
+                              "--root-key-digest", digest_of(RSA_F4_KEY)]),
+                    "ROOT_KEY_UNAUTHORIZED")
+
+
+@pytest.mark.parametrize("fixture,digest_of,key_path", [
+    ("secure_rsa_der", _rsa_der_key_digest, RSA_F4_KEY),
+    ("secure_ecdsa", _ec_raw_key_digest, EC_P256_KEY),
+], ids=["rsa-der", "ecdsa-raw"])
+def test_cli_classical_anchor_covers_the_whole_key(tmp_path, fixture, digest_of, key_path):
+    """The last declared byte of the key — the end of the DER exponent, the end
+    of the point's Y coordinate — is under the digest too."""
+    data = _fixture_bytes(fixture)
+    size = struct.unpack_from("<H", data, oca_constants.OFF_PUBLIC_KEY_SIZE_CLASSIC)[0]
+    data[oca_constants.OFF_PUBLIC_KEY_CLASSIC + size - 1] ^= 0x02
+    _reseal_manifest_hash(data)
+    result = _run_bundle(tmp_path, data, f"{fixture}_altered_key",
+                         flags=("--root-key-digest", digest_of(key_path)))
+    _assert_refused(result, "ROOT_KEY_UNAUTHORIZED")
 
 
 # ---------------------------------------------------------------------------
@@ -2392,6 +2524,36 @@ def test_cli_rejects_a_malformed_root_key_digest_pqc(bad_digest):
     assert b"--root-key-digest-pqc" in result.stderr
 
 
+def _mldsa_key_digest(key_path: str) -> str:
+    return _key_digest(_public_key_of(key_path).public_bytes_raw())
+
+
+# Fixtures whose .flags hold a real anchor rather than --trust-any-root-key, so
+# the fixture sweep and the PASS-for-each-fixture test exercise the trust anchor
+# for every key shape and both families.
+_FIXTURE_ANCHORS = [
+    ("secure_rsa", "--root-key-digest", "signing_key_file", _rsa_raw_key_digest),
+    ("secure_rsa_der", "--root-key-digest", "signing_key_file", _rsa_der_key_digest),
+    ("secure_ecdsa", "--root-key-digest", "signing_key_file", _ec_raw_key_digest),
+    ("pqc_secure_mldsa", "--root-key-digest-pqc", "signing_key_file_pqc", _mldsa_key_digest),
+    ("pqc_hybrid_ecdsa", "--root-key-digest", "signing_key_file", _ec_raw_key_digest),
+    ("pqc_hybrid_ecdsa", "--root-key-digest-pqc", "signing_key_file_pqc", _mldsa_key_digest),
+]
+
+
+@pytest.mark.parametrize("fixture,flag,key_field,digest_of", _FIXTURE_ANCHORS)
+def test_fixture_anchor_is_the_digest_of_the_key_it_signs_with(fixture, flag, key_field,
+                                                              digest_of):
+    """A committed anchor is pinned to the key its fixture's config names, so a
+    key rotation fails here, naming the fixture, rather than in the sweep."""
+    flags = _read_flags(fixture)
+    assert "--trust-any-root-key" not in flags
+    assert flag in flags, f"{fixture}.flags has no {flag}"
+    cfg = load_config(os.path.join(FIXTURE_DIR, f"{fixture}.yaml"))
+    expected = digest_of(os.path.join(PROJECT_ROOT, cfg[key_field]))
+    assert flags[flags.index(flag) + 1] == expected
+
+
 # --- The PQC signing description ---
 
 
@@ -2589,6 +2751,164 @@ def test_cli_rejects_a_malformed_anchor_slot(flag, bad):
     result = _run_cli(["--manifest", _pack_fixture("basic"), flag, bad])
     assert result.returncode == 2, result.stderr
     assert flag.encode() in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Declared sizes bound every key and signature
+#
+# A key or signature field holds its value at the start and zero padding past
+# the declared size. The library refuses a non-zero padding byte: a signature
+# field lies outside the signed region, so anything else there would make
+# byte-distinct bundles of one signed manifest. The reference backend parses a
+# DER value within its declared size: a DER key must fill it exactly, and a DER
+# ECDSA signature may be followed only by zeros up to its declared maximum.
+# ---------------------------------------------------------------------------
+
+
+def _resign_classic(data: bytearray, fixture: str) -> None:
+    """Re-seal manifest_hash and re-sign the classical class through the signing
+    layer, with the key `fixture`'s config names and the encoding and declared
+    size the body already carries, so an edit to the signed region survives the
+    integrity and signature checks."""
+    _reseal_manifest_hash(data)
+    if bytes(data[:4]) == oca_constants.OCAP_MAGIC:
+        region_end = oca_constants.PQC_SIGNED_REGION_END
+        start = oca_constants.OFF_PQC_SIGNATURE_CLASSIC
+    else:
+        region_end = oca_constants.OCA_CLASSIC_SIGNED_REGION_END
+        start = oca_constants.OFF_SIGNATURE_CLASSIC
+    cfg = load_config(os.path.join(FIXTURE_DIR, f"{fixture}.yaml"))
+    prev = os.getcwd()
+    os.chdir(PROJECT_ROOT)
+    try:
+        signing_key = build_signing_key(cfg)
+    finally:
+        os.chdir(prev)
+    encoding = data[oca_constants.OFF_SIGNATURE_ENCODING_CLASSIC]
+    declared = struct.unpack_from("<H", data, oca_constants.OFF_SIGNATURE_SIZE_CLASSIC)[0]
+    data[start:start + oca_constants.SIGNATURE_CLASSIC_SIZE] = sign_signed_region(
+        bytes(data[:region_end]), signing_key, encoding, declared)
+
+
+def _with_public_key_size_classic(fixture: str, delta: int) -> bytearray:
+    """`fixture` with public_key_size_classic moved by `delta`, re-signed."""
+    data = _fixture_bytes(fixture)
+    declared = struct.unpack_from("<H", data, oca_constants.OFF_PUBLIC_KEY_SIZE_CLASSIC)[0]
+    _set_le(data, oca_constants.OFF_PUBLIC_KEY_SIZE_CLASSIC, 2, declared + delta)
+    _resign_classic(data, fixture)
+    return data
+
+
+@pytest.mark.parametrize("fixture", ["secure_rsa_der", "secure_ecdsa", "pqc_hybrid_rsa"])
+def test_cli_a_resigned_classical_bundle_still_verifies(tmp_path, fixture):
+    """The control for every re-signed refusal below: re-signing alone changes
+    nothing a verifier objects to."""
+    _assert_passed(_run_bundle(tmp_path, _with_public_key_size_classic(fixture, 0),
+                               f"{fixture}_resigned"))
+
+
+@pytest.mark.parametrize("fixture", ["secure_rsa_der", "secure_rsa_e3_der"])
+def test_cli_refuses_a_der_key_shorter_than_its_declared_size(tmp_path, fixture):
+    """public_key_size_classic two bytes past the end of the DER key, correctly
+    re-signed. The two extra bytes are zero padding, so only the backend's rule
+    that a DER key fills its declared size exactly catches it — run with any
+    key trusted, since an anchor over the declared bytes would refuse first."""
+    data = _with_public_key_size_classic(fixture, +2)
+    _assert_refused(_run_bundle(tmp_path, data, f"{fixture}_size_plus_2"), "SIGNATURE")
+
+
+@pytest.mark.parametrize("fixture", ["secure_rsa_der", "secure_rsa_e3_der"])
+def test_cli_refuses_a_der_key_longer_than_its_declared_size(tmp_path, fixture):
+    """public_key_size_classic two bytes short of the DER key: its last two
+    bytes lie past the declared size, where only zero padding may be."""
+    data = _with_public_key_size_classic(fixture, -2)
+    _assert_refused(_run_bundle(tmp_path, data, f"{fixture}_size_minus_2"),
+                    "CRYPTO_FIELD_SIZE")
+
+
+# (fixture, field offset, declared valid bytes, field width). The signature
+# fields are unsigned, so these need no re-seal; the key fields are signed.
+_SIGNATURE_FIELDS = [
+    ("secure_rsa", oca_constants.OFF_SIGNATURE_CLASSIC, 384,
+     oca_constants.SIGNATURE_CLASSIC_SIZE),
+    ("secure_ecdsa", oca_constants.OFF_SIGNATURE_CLASSIC, 64,
+     oca_constants.SIGNATURE_CLASSIC_SIZE),
+    ("pqc_hybrid_rsa", oca_constants.OFF_PQC_SIGNATURE_CLASSIC, 384,
+     oca_constants.SIGNATURE_CLASSIC_SIZE),
+    ("pqc_secure_mldsa", oca_constants.OFF_SIGNATURE_PQC,
+     oca_constants.ML_DSA_87_SIGNATURE_BYTES, oca_constants.LEN_SIGNATURE_PQC),
+]
+_PUBLIC_KEY_FIELDS = [
+    ("secure_rsa", oca_constants.OFF_PUBLIC_KEY_CLASSIC, 388,
+     oca_constants.PUBLIC_KEY_CLASSIC_SIZE),
+    ("secure_rsa_der", oca_constants.OFF_PUBLIC_KEY_CLASSIC, 398,
+     oca_constants.PUBLIC_KEY_CLASSIC_SIZE),
+    ("secure_ecdsa", oca_constants.OFF_PUBLIC_KEY_CLASSIC, 65,
+     oca_constants.PUBLIC_KEY_CLASSIC_SIZE),
+    ("pqc_secure_mldsa", oca_constants.OFF_PUBLIC_KEY_PQC,
+     oca_constants.ML_DSA_87_PUBLIC_KEY_BYTES, oca_constants.LEN_PUBLIC_KEY_PQC),
+]
+
+
+def _padding_ids(cases) -> list:
+    return [f"{fixture}@{offset}" for fixture, offset, _valid, _width in cases]
+
+
+@pytest.mark.parametrize("position", ["first", "last"])
+@pytest.mark.parametrize("fixture,offset,valid,width", _SIGNATURE_FIELDS,
+                         ids=_padding_ids(_SIGNATURE_FIELDS))
+def test_cli_refuses_a_signature_whose_padding_is_not_zero(tmp_path, fixture, offset,
+                                                          valid, width, position):
+    data = _fixture_bytes(fixture)
+    assert not any(data[offset + valid:offset + width]), "the packer pads with zeros"
+    data[offset + (valid if position == "first" else width - 1)] = 0x01
+    _assert_refused(_run_bundle(tmp_path, data, f"{fixture}_sig_pad_{position}"),
+                    "CRYPTO_FIELD_SIZE")
+
+
+@pytest.mark.parametrize("position", ["first", "last"])
+@pytest.mark.parametrize("fixture,offset,valid,width", _PUBLIC_KEY_FIELDS,
+                         ids=_padding_ids(_PUBLIC_KEY_FIELDS))
+def test_cli_refuses_a_public_key_whose_padding_is_not_zero(tmp_path, fixture, offset,
+                                                           valid, width, position):
+    data = _fixture_bytes(fixture)
+    assert not any(data[offset + valid:offset + width]), "the packer pads with zeros"
+    data[offset + (valid if position == "first" else width - 1)] = 0x01
+    _reseal_manifest_hash(data)
+    _assert_refused(_run_bundle(tmp_path, data, f"{fixture}_key_pad_{position}"),
+                    "CRYPTO_FIELD_SIZE")
+
+
+_DER_ECDSA_MAXIMUM = oca_constants.CLASSIC_DER_SIGNATURE_MAX_LENGTHS[
+    oca_constants.OcaClassicSignatureType.ECDSA_P256_SHA256.value]
+
+
+def _der_ecdsa_bundle_with_slack() -> tuple:
+    """A DER ECDSA bundle whose signature is shorter than the declared maximum,
+    and that signature's DER length."""
+    for timestamp, der_len, _ends_in_zero in _ecdsa_sweep():
+        if 0 < der_len < _DER_ECDSA_MAXIMUM:
+            return bytearray(_ecdsa_bundle_for_timestamp(timestamp)), der_len
+    pytest.fail("no DER ECDSA signature in the sweep is shorter than its maximum")
+
+
+@pytest.mark.parametrize("position", ["first", "last"])
+def test_cli_refuses_a_der_ecdsa_signature_followed_by_non_zero_bytes(tmp_path, position):
+    """Between the DER value's end and the declared maximum the field is
+    padding, which only the backend can locate, since only it reads the DER
+    framing. The bytes are unsigned, so anything but zero there is refused."""
+    bundle, der_len = _der_ecdsa_bundle_with_slack()
+    index = der_len if position == "first" else _DER_ECDSA_MAXIMUM - 1
+    bundle[_SIGNATURE_OFFSET + index] = 0x01
+    result = _validate_bundle(bytes(bundle), tmp_path, f"ecdsa_slack_{position}")
+    _assert_refused(result, "SIGNATURE")
+
+
+def test_cli_refuses_a_der_ecdsa_signature_with_bytes_past_its_maximum(tmp_path):
+    bundle, _der_len = _der_ecdsa_bundle_with_slack()
+    bundle[_SIGNATURE_OFFSET + _DER_ECDSA_MAXIMUM] = 0x01
+    result = _validate_bundle(bytes(bundle), tmp_path, "ecdsa_past_maximum")
+    _assert_refused(result, "CRYPTO_FIELD_SIZE")
 
 
 def _unreachable_openssl_minimum() -> str:

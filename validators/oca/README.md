@@ -205,7 +205,7 @@ boot path.
 | manifest format (magic) | `OCAC` (classic), `OCAP` (PQC) | one library parses both; magic selects the path |
 | `manifest_hash_type` | SHA2-256 (`0x01`) | the only digest this build recomputes |
 | `signature_type_classic` | RSA-3072-PKCS#1v1.5-SHA256 (`0x01`), ECDSA-P256-SHA256 (`0x05`) | the primitive is passed to the host `verify_signature` callback; the callback owns the math |
-| `signature_encoding_classic` / `public_key_encoding_classic` | raw (`0x02`); ASN.1 DER (`0x01`) for RSA public keys and ECDSA signatures | |
+| `signature_encoding_classic` / `public_key_encoding_classic` | raw (`0x02`); ASN.1 DER (`0x01`) for RSA public keys and ECDSA signatures | under secure boot, every key and signature field of an enforced class must be zero past its declared size, or the manifest is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
 | `secure_boot_control` signature classes | classical, PQC, or both (hybrid) | under secure boot at least one class must be set, and the PQC class only on an `OCAP` manifest (else `OCA_FAIL_SIGNATURE_CLASS_CONTROL`); each enforced class's key is authorized against its own anchor family, and a hybrid manifest needs both signatures to verify |
 | `signature_type_pqc` | ML-DSA-87 (`0x33`) | pure FIPS 204 over the signed region, empty context; the host `verify_signature` callback owns the math |
 | `signature_encoding_pqc` / `public_key_encoding_pqc` | raw (`0x02`) only, with exact sizes: 4627-byte signature, 2592-byte key | any other PQC primitive, encoding or size is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |

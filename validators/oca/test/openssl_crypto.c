@@ -18,9 +18,10 @@
  * sanity bound, not the trust decision: the anchor in cli_hwid.c binds the
  * whole key, exponent included.
  *
- * The classical types come in both encodings the format defines. The library
- * hands us the full field width as an upper bound and the blob's `encoding` /
- * `primitive_type`, which together determine how to read the bytes:
+ * The classical types come in both encodings the format defines. Each blob
+ * carries its field width, its declared `length`, and its `encoding` /
+ * `primitive_type`, which together determine how to read the bytes. A DER
+ * value is parsed within `length` and never past it:
  *
  *   Public key, raw (0x02)  RSA: big-endian modulus || 4-byte big-endian
  *                                exponent (388 bytes)
@@ -112,6 +113,16 @@ static size_t der_sequence_total_len(const uint8_t *p, size_t avail)
         return 0u;                          /* empty, or runs past the field */
     }
     return header + content;
+}
+
+/* Whether all `len` bytes at `p` are zero. */
+static int all_zero(const uint8_t *p, size_t len)
+{
+    uint8_t acc = 0u;
+    for (size_t i = 0u; i < len; ++i) {
+        acc |= p[i];
+    }
+    return acc == 0u;
 }
 
 /* Raw public-key component widths, per the spec's encoded-length table. */
@@ -214,26 +225,31 @@ done:
  *
  * Dispatches on the blob's encoding and primitive: DER means a PKCS#1
  * RSAPublicKey (defined for RSA only), raw means the algorithm's own byte
- * layout. The DER length is not known in advance — it varies with the public
- * exponent — so d2i_PublicKey is handed the whole field as an upper bound and
- * consumes only what the structure declares, leaving the zero padding alone.
+ * layout. A DER key's length varies with the public exponent, which is why the
+ * manifest declares it: the structure is parsed within that length and must
+ * consume all of it, so a public_key_size that misdescribes the key is refused.
  *
  * @param[in] public_key  The key blob, with its encoding and primitive type.
  * @return A caller-owned EVP_PKEY, or NULL if the encoding is undefined for the
- *         declared primitive, the field is too small, or parsing failed.
+ *         declared primitive, the field is too small, parsing failed, or a DER
+ *         key does not occupy exactly its declared length.
  */
 static EVP_PKEY *decode_public_key(const oca_crypto_blob_t *public_key)
 {
     if (public_key->encoding == OCA_ENCODING_DER) {
-        /* PKCS#1 RSAPublicKey. d2i_PublicKey consumes only what the DER
-         * structure asks for and leaves the trailing 0x00 padding alone. DER is
-         * defined for RSA keys only. */
-        if (public_key->primitive_type != OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256) {
+        if (public_key->primitive_type != OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256
+            || public_key->length == 0u
+            || public_key->length > public_key->field_length) {
             return NULL;
         }
         const unsigned char *p = public_key->bytes;
-        return d2i_PublicKey(EVP_PKEY_RSA, NULL, &p,
-                             (long)public_key->field_length);
+        EVP_PKEY *pkey = d2i_PublicKey(EVP_PKEY_RSA, NULL, &p,
+                                       (long)public_key->length);
+        if (pkey != NULL && (size_t)(p - public_key->bytes) != public_key->length) {
+            EVP_PKEY_free(pkey);
+            return NULL;
+        }
+        return pkey;
     }
     if (public_key->encoding != OCA_ENCODING_RAW) {
         return NULL;
@@ -466,7 +482,8 @@ oca_result_t openssl_verify_signature(
     /* Resolve the signature bytes within the fixed-width field. Three shapes:
      * a fixed-width RSA integer; a variable-length ECDSA DER value whose length
      * comes from its own SEQUENCE framing (never from trimming padding — see
-     * der_sequence_total_len); or a fixed-width raw r || s that has to be
+     * der_sequence_total_len), bounded by the declared maximum and followed by
+     * nothing but zeros up to it; or a fixed-width raw r || s that has to be
      * re-encoded as DER for OpenSSL. */
     const unsigned char *sig_bytes = signature->bytes;
     size_t sig_len = 0u;
@@ -481,9 +498,12 @@ oca_result_t openssl_verify_signature(
         sig_len = RSA_3072_SIGNATURE_BYTES;
     } else if (signature->primitive_type == OCA_PRIMITIVE_ECDSA_P256_SHA256) {
         if (signature->encoding == OCA_ENCODING_DER) {
-            sig_len = der_sequence_total_len(signature->bytes,
-                                             signature->field_length);
-            if (sig_len == 0u) {
+            if (signature->length <= signature->field_length) {
+                sig_len = der_sequence_total_len(signature->bytes,
+                                                 signature->length);
+            }
+            if (sig_len == 0u
+                || !all_zero(signature->bytes + sig_len, signature->length - sig_len)) {
                 EVP_PKEY_free(pkey);
                 return OCA_FAIL_SIGNATURE;
             }
