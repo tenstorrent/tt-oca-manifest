@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "oca_validator.h"
+#include "algorithms.h"
 #include "oca_compare.h"
 #include "oca_layout.h"
 #include "oca_layout_classic.h"
@@ -1380,10 +1381,12 @@ static oca_result_t counting_sha256(const uint8_t *msg, size_t msg_len, uint8_t 
  * defines, and a reserved value. */
 static const uint8_t UNSUPPORTED_HASH_TYPES[] = { 0x00u, 0x02u, 0x04u, 0x08u, 0x09u, 0xFFu };
 
-TEST(test_result_string_covers_the_unsupported_algorithm_code)
+TEST(test_result_string_covers_the_algorithm_codes)
 {
-    ASSERT_EQ_INT(strcmp(oca_result_str(OCA_FAIL_UNSUPPORTED_ALGORITHM),
-                         "UNSUPPORTED_ALGORITHM"), 0);
+    ASSERT_EQ_INT(strcmp(oca_result_str(OCA_FAIL_ALGORITHM_NOT_ENABLED),
+                         "ALGORITHM_NOT_ENABLED"), 0);
+    ASSERT_EQ_INT(strcmp(oca_result_str(OCA_FAIL_ALGORITHM_RESERVED),
+                         "ALGORITHM_RESERVED"), 0);
 }
 
 /* The renamed checks are still reachable by their former names for one minor
@@ -2307,7 +2310,7 @@ TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
         build_encrypted_bundle(buf, ph, chain);
         toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, kdfs[i]);
         ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
-                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+                      OCA_FAIL_ALGORITHM_NOT_ENABLED);
         ASSERT_EQ_INT(g_sha_calls, 0);
         ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
     }
@@ -2317,7 +2320,7 @@ TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
             OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT
             | (key_sources[i] << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT));
         ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
-                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+                      OCA_FAIL_ALGORITHM_NOT_ENABLED);
         ASSERT_EQ_INT(g_sha_calls, 0);
         ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
     }
@@ -2325,7 +2328,7 @@ TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
         build_encrypted_bundle(buf, ph, chain);
         buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
         ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
-                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+                      OCA_FAIL_ALGORITHM_NOT_ENABLED);
         ASSERT_EQ_INT(g_sha_calls, 0);
     }
 }
@@ -2345,7 +2348,7 @@ TEST(test_cleartext_payload_judges_only_its_hash_type)
         buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
         g_sha_calls = 0;
         ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL),
-                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+                      OCA_FAIL_ALGORITHM_NOT_ENABLED);
         ASSERT_EQ_INT(g_sha_calls, 0);
     }
 
@@ -3998,13 +4001,13 @@ TEST(test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing)
         build_minimal_manifest(buf);
         buf[OCA_OFF_MANIFEST_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
         g_sha_calls = 0;
-        ASSERT_EQ_INT(oca_check_manifest_hash(buf, &cb), OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(oca_check_manifest_hash(buf, &cb), OCA_FAIL_ALGORITHM_NOT_ENABLED);
         ASSERT_EQ_INT(g_sha_calls, 0);
 
         static uint8_t pqc[OCA_PQC_BODY_SIZE];
         build_minimal_pqc_manifest(pqc);
         pqc[OCA_OFF_MANIFEST_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
-        ASSERT_EQ_INT(oca_check_manifest_hash(pqc, &cb), OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(oca_check_manifest_hash(pqc, &cb), OCA_FAIL_ALGORITHM_NOT_ENABLED);
         ASSERT_EQ_INT(g_sha_calls, 0);
     }
 }
@@ -5283,7 +5286,7 @@ TEST(test_crypto_field_sizes_engage_when_the_device_enforces_secure_boot)
 
     buf[OCA_OFF_SIGNATURE_TYPE] = 0xF0u;
     ASSERT_EQ_INT(oca_check_signing_description(buf, &cb, &ctx),
-                  OCA_FAIL_CRYPTO_FIELD_SIZE);
+                  OCA_FAIL_ALGORITHM_NOT_ENABLED);
 }
 
 TEST(test_crypto_field_sizes_refuse_an_undetermined_context)
@@ -5505,23 +5508,30 @@ TEST(test_ml_dsa_87_description_passes_the_size_check)
     ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
 }
 
-/* ML-DSA-87 is the only PQC primitive accepted: the other format-defined PQC
- * parameter sets, an unset type, a classical code point and integrator values
- * are all refused, in a PQC-only and a hybrid manifest alike. */
+/* ML-DSA-87 is the only PQC algorithm this build enables. The format's other
+ * parameter sets and the integrator values are not enabled; an unset type, the
+ * classical code points and the values held for FN-DSA are reserved. Alike in a
+ * PQC-only and a hybrid manifest. */
 TEST(test_pqc_description_accepts_only_ml_dsa_87)
 {
-    static const uint8_t refused[] = {
-        0x00u, 0x01u, 0x05u, 0x31u, 0x32u, 0x34u,
-        0x51u, 0x52u, 0x53u, 0x54u, 0x55u, 0x56u, 0xF0u, 0xFFu,
+    static const uint8_t not_enabled[] = {
+        0x31u, 0x32u, 0x51u, 0x52u, 0x53u, 0x54u, 0x55u, 0x56u, 0xF0u, 0xFFu,
+    };
+    static const uint8_t reserved[] = {
+        0x00u, 0x01u, 0x05u, 0x30u, 0x34u, 0x41u, 0x42u, 0x50u, 0x57u, 0xEFu,
     };
     static const uint8_t controls[] = { 0x05u, 0x07u };
     static uint8_t buf[OCA_PQC_BODY_SIZE];
     for (size_t c = 0u; c < sizeof controls / sizeof controls[0]; ++c) {
-        for (size_t i = 0u; i < sizeof refused / sizeof refused[0]; ++i) {
+        for (size_t i = 0u; i < sizeof not_enabled / sizeof not_enabled[0]; ++i) {
             build_secure_pqc_manifest(buf, controls[c]);
-            buf[OCA_PQC_OFF_SIGNATURE_TYPE] = refused[i];
-            ASSERT_EQ_INT(check_sizes(buf),
-                          OCA_FAIL_CRYPTO_FIELD_SIZE);
+            buf[OCA_PQC_OFF_SIGNATURE_TYPE] = not_enabled[i];
+            ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_ALGORITHM_NOT_ENABLED);
+        }
+        for (size_t i = 0u; i < sizeof reserved / sizeof reserved[0]; ++i) {
+            build_secure_pqc_manifest(buf, controls[c]);
+            buf[OCA_PQC_OFF_SIGNATURE_TYPE] = reserved[i];
+            ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_ALGORITHM_RESERVED);
         }
     }
 }
@@ -5584,17 +5594,106 @@ TEST(test_pqc_description_is_ignored_when_the_pqc_class_is_off)
     ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
 }
 
-/* The classical description admits only the primitives this library accepts:
- * an unset type, an unsupported classical code point, a PQC code point and an
- * integrator value are all refused. */
+/* Every signature_type value the format defines, per class, written out value
+ * by value from its signature_type tables rather than as ranges, so a range
+ * comparison in the library cannot hide an off-by-one. */
+static int format_defines_signature(oca_key_algorithm_t family, unsigned type)
+{
+    static const uint8_t classical[] = {
+        0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u, 0x07u, 0x0Au, 0x0Bu,
+    };
+    static const uint8_t pqc[] = {
+        0x31u, 0x32u, 0x33u, 0x51u, 0x52u, 0x53u, 0x54u, 0x55u, 0x56u,
+    };
+    const uint8_t *defined = family == OCA_KEY_ALGO_PQC ? pqc : classical;
+    const size_t count = family == OCA_KEY_ALGO_PQC ? sizeof pqc : sizeof classical;
+    if (type >= 0xF0u) {
+        return 1;   /* integrator-defined */
+    }
+    for (size_t i = 0u; i < count; ++i) {
+        if (defined[i] == type) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Every value of both classes resolves to exactly one outcome: the enabled
+ * algorithms to their rows, the other defined ones to "not enabled", and the
+ * rest to "reserved". */
+TEST(test_every_signature_type_resolves_against_the_format_and_the_build)
+{
+    static const oca_key_algorithm_t families[] = { OCA_KEY_ALGO_CLASSIC, OCA_KEY_ALGO_PQC };
+    for (size_t f = 0u; f < 2u; ++f) {
+        for (unsigned type = 0u; type <= 0xFFu; ++type) {
+            oca_result_t status = OCA_OK;
+            const oca_signature_algorithm_t *row =
+                oca_signature_algorithm(families[f], (uint8_t)type, &status);
+            const int enabled = families[f] == OCA_KEY_ALGO_PQC
+                ? type == 0x33u : (type == 0x01u || type == 0x05u);
+            if (enabled) {
+                ASSERT_EQ_INT(status, OCA_OK);
+                ASSERT_TRUE(row != NULL && row->type == type);
+            } else {
+                ASSERT_TRUE(row == NULL);
+                ASSERT_EQ_INT(status, format_defines_signature(families[f], type)
+                                      ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                      : OCA_FAIL_ALGORITHM_RESERVED);
+            }
+        }
+    }
+}
+
+/* Each enabled row carries the format's encoded lengths and DER rules. */
+TEST(test_signature_rows_carry_the_format_encoded_lengths)
+{
+    oca_result_t status;
+    const oca_signature_algorithm_t *rsa =
+        oca_signature_algorithm(OCA_KEY_ALGO_CLASSIC, 0x01u, &status);
+    ASSERT_TRUE(rsa != NULL);
+    ASSERT_EQ_INT(rsa->public_key_raw, 388);
+    ASSERT_EQ_INT(rsa->signature_raw, 384);
+    ASSERT_EQ_INT(rsa->public_key_der, OCA_DER_ENABLED);
+    ASSERT_EQ_INT(rsa->signature_der, OCA_DER_UNDEFINED);
+
+    const oca_signature_algorithm_t *ecdsa =
+        oca_signature_algorithm(OCA_KEY_ALGO_CLASSIC, 0x05u, &status);
+    ASSERT_TRUE(ecdsa != NULL);
+    ASSERT_EQ_INT(ecdsa->public_key_raw, 65);
+    ASSERT_EQ_INT(ecdsa->signature_raw, 64);
+    ASSERT_EQ_INT(ecdsa->public_key_der, OCA_DER_UNDEFINED);
+    ASSERT_EQ_INT(ecdsa->signature_der, OCA_DER_ENABLED);
+    ASSERT_EQ_INT(ecdsa->signature_der_max, 72);
+
+    const oca_signature_algorithm_t *ml_dsa =
+        oca_signature_algorithm(OCA_KEY_ALGO_PQC, 0x33u, &status);
+    ASSERT_TRUE(ml_dsa != NULL);
+    ASSERT_EQ_INT(ml_dsa->public_key_raw, 2592);
+    ASSERT_EQ_INT(ml_dsa->signature_raw, 4627);
+    ASSERT_EQ_INT(ml_dsa->public_key_der, OCA_DER_UNDEFINED);
+    ASSERT_EQ_INT(ml_dsa->signature_der, OCA_DER_UNDEFINED);
+}
+
+/* The classical description admits only the algorithms this build enables.
+ * The format's other RSA, ECDSA and EdDSA algorithms and the integrator values
+ * are not enabled; an unset type, the gaps between them and a PQC code point
+ * are reserved. */
 TEST(test_classic_description_accepts_only_supported_primitives)
 {
-    static const uint8_t refused[] = { 0x00u, 0x02u, 0x33u, 0xF0u };
-    for (size_t i = 0u; i < sizeof refused / sizeof refused[0]; ++i) {
-        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    static const uint8_t not_enabled[] = {
+        0x02u, 0x03u, 0x04u, 0x06u, 0x07u, 0x0Au, 0x0Bu, 0xF0u, 0xFFu,
+    };
+    static const uint8_t reserved[] = { 0x00u, 0x08u, 0x09u, 0x0Cu, 0x33u, 0xEFu };
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    for (size_t i = 0u; i < sizeof not_enabled / sizeof not_enabled[0]; ++i) {
         build_secure_manifest(buf);
-        buf[OCA_OFF_SIGNATURE_TYPE] = refused[i];
-        ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+        buf[OCA_OFF_SIGNATURE_TYPE] = not_enabled[i];
+        ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_ALGORITHM_NOT_ENABLED);
+    }
+    for (size_t i = 0u; i < sizeof reserved / sizeof reserved[0]; ++i) {
+        build_secure_manifest(buf);
+        buf[OCA_OFF_SIGNATURE_TYPE] = reserved[i];
+        ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_ALGORITHM_RESERVED);
     }
 }
 
@@ -5807,7 +5906,8 @@ TEST(test_device_enforced_bit_clear_manifest_validates_end_to_end)
 }
 
 /* On that route the signing description is validated exactly as on a manifest
- * asserting secure boot: a PQC class naming RSA never reaches the verifier. */
+ * asserting secure boot: a PQC class naming RSA's classical code point, which
+ * the PQC class reserves, never reaches the verifier. */
 TEST(test_device_enforced_bit_clear_manifest_with_a_bad_description_is_refused)
 {
     static uint8_t buf[OCA_PQC_BODY_SIZE];
@@ -5821,7 +5921,7 @@ TEST(test_device_enforced_bit_clear_manifest_with_a_bad_description_is_refused)
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
     ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx),
-                  OCA_FAIL_CRYPTO_FIELD_SIZE);
+                  OCA_FAIL_ALGORITHM_RESERVED);
     ASSERT_EQ_INT(g_fx.sig_calls, 0);
 }
 
@@ -7560,11 +7660,11 @@ TEST(test_every_defined_signature_type_maps_to_its_revocation_bit)
 }
 
 /* A type the format does not define names no algorithm class, and is refused
- * rather than waved through. */
+ * as reserved rather than waved through. */
 TEST(test_an_undefined_signature_type_is_refused_by_the_posture_check)
 {
-    ASSERT_EQ_INT(posture_for_classic(0x08u, 0u, 0u), OCA_FAIL_CRYPTO_FIELD_SIZE);
-    ASSERT_EQ_INT(posture_for_pqc_type(0x34u, 0u), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    ASSERT_EQ_INT(posture_for_classic(0x08u, 0u, 0u), OCA_FAIL_ALGORITHM_RESERVED);
+    ASSERT_EQ_INT(posture_for_pqc_type(0x34u, 0u), OCA_FAIL_ALGORITHM_RESERVED);
 }
 
 /* Only the intact group code disables a whole group; a fragment of it, which
@@ -7874,7 +7974,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_manifest_hash_match_passes);
     RUN_TEST(test_manifest_hash_mismatch_fails);
     RUN_TEST(test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing);
-    RUN_TEST(test_result_string_covers_the_unsupported_algorithm_code);
+    RUN_TEST(test_result_string_covers_the_algorithm_codes);
     RUN_TEST(test_deprecated_check_names_reach_the_renamed_checks);
     RUN_TEST(test_corruption_outranks_a_field_level_violation);
     RUN_TEST(test_manifest_hash_dirty_padding_fails);
@@ -8095,6 +8195,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_pqc_description_requires_raw_encodings);
     RUN_TEST(test_pqc_size_fields_must_be_the_exact_ml_dsa_87_sizes);
     RUN_TEST(test_pqc_description_is_ignored_when_the_pqc_class_is_off);
+    RUN_TEST(test_every_signature_type_resolves_against_the_format_and_the_build);
+    RUN_TEST(test_signature_rows_carry_the_format_encoded_lengths);
     RUN_TEST(test_classic_description_accepts_only_supported_primitives);
     RUN_TEST(test_classic_description_accepts_only_defined_encodings);
     RUN_TEST(test_classic_padding_past_a_declared_size_must_be_zero);

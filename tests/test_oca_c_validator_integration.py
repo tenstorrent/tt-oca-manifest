@@ -1249,6 +1249,25 @@ def _default_toc_max_images() -> int:
         return tomllib.load(handle)["limits"]["toc_max_images"]
 
 
+def _toml_bool(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _build_config_text(toc_max_images=256, rsa=True, ecdsa=True, ml_dsa=True,
+                       der_rsa=True, der_ecdsa=True) -> str:
+    """A complete build configuration: the default, with the given changes."""
+    return (
+        "[variants]\nclassic = true\npqc = true\n"
+        f"[limits]\ntoc_max_images = {toc_max_images}\n"
+        "[hardening]\nrecheck_security_version = true\n"
+        f"[signature_classic]\nrsa_3072_pkcs1v15_sha256 = {_toml_bool(rsa)}\n"
+        f"ecdsa_p256_sha256 = {_toml_bool(ecdsa)}\n"
+        f"[signature_pqc]\nml_dsa_87 = {_toml_bool(ml_dsa)}\n"
+        f"[der]\nrsa_public_key = {_toml_bool(der_rsa)}\n"
+        f"ecdsa_signature = {_toml_bool(der_ecdsa)}\n"
+    )
+
+
 def _configured_cli(build_dir, config_text: str) -> str:
     """Build the CLI from a build configuration of its own; return its path."""
     config = os.path.join(build_dir, "build_config.toml")
@@ -1317,11 +1336,64 @@ def test_toc_just_over_the_cap_is_rejected_and_just_under_is_not(tmp_path):
 
 def test_the_toc_cap_follows_the_build_configuration(tmp_path):
     """A cap set in the configuration file reaches the built validator."""
-    cli = _configured_cli(str(tmp_path / "build"), (
-        "[variants]\nclassic = true\npqc = true\n"
-        "[limits]\ntoc_max_images = 3\n"
-        "[hardening]\nrecheck_security_version = true\n"))
+    cli = _configured_cli(str(tmp_path / "build"), _build_config_text(toc_max_images=3))
     _assert_toc_cap_is(cli, 3, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# The algorithm portfolio: what a build configuration turns off is refused
+#
+# Two CLIs built from reduced configurations. Everything they leave on still
+# verifies; everything they turn off is refused as not enabled, before any
+# signature is checked.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def ecdsa_raw_only_cli(tmp_path_factory):
+    """ECDSA P-256 with raw signatures only: no RSA, no ML-DSA, no DER."""
+    return _configured_cli(str(tmp_path_factory.mktemp("ecdsa-raw-only")),
+                           _build_config_text(rsa=False, ml_dsa=False,
+                                              der_rsa=False, der_ecdsa=False))
+
+
+@pytest.fixture(scope="module")
+def rsa_raw_only_cli(tmp_path_factory):
+    """RSA-3072 with raw public keys only: no ECDSA, no ML-DSA, no DER."""
+    return _configured_cli(str(tmp_path_factory.mktemp("rsa-raw-only")),
+                           _build_config_text(ecdsa=False, ml_dsa=False,
+                                              der_rsa=False, der_ecdsa=False))
+
+
+@pytest.mark.parametrize("cli_fixture, fixture, outcome", [
+    ("ecdsa_raw_only_cli", "secure_ecdsa", "PASS"),
+    ("ecdsa_raw_only_cli", "secure_rsa", "ALGORITHM_NOT_ENABLED"),
+    ("ecdsa_raw_only_cli", "pqc_secure_mldsa", "ALGORITHM_NOT_ENABLED"),
+    ("ecdsa_raw_only_cli", "pqc_hybrid_ecdsa", "ALGORITHM_NOT_ENABLED"),
+    ("rsa_raw_only_cli", "secure_rsa", "PASS"),
+    ("rsa_raw_only_cli", "pqc_secure_rsa", "PASS"),
+    ("rsa_raw_only_cli", "secure_rsa_der", "ALGORITHM_NOT_ENABLED"),
+    ("rsa_raw_only_cli", "secure_ecdsa", "ALGORITHM_NOT_ENABLED"),
+    ("rsa_raw_only_cli", "pqc_hybrid_rsa", "ALGORITHM_NOT_ENABLED"),
+])
+def test_a_build_refuses_what_its_configuration_turns_off(request, cli_fixture,
+                                                          fixture, outcome):
+    cli = request.getfixturevalue(cli_fixture)
+    result = _run_cli_at(cli, ["--manifest", _pack_fixture(fixture), *_read_flags(fixture)])
+    if outcome == "PASS":
+        _assert_passed(result)
+    else:
+        _assert_refused(result, outcome)
+
+
+def test_a_der_ecdsa_signature_is_refused_where_der_is_turned_off(tmp_path,
+                                                                ecdsa_raw_only_cli):
+    """The same DER-signed manifest verifies on the default build."""
+    bundle = tmp_path / "der_ecdsa.bin"
+    bundle.write_bytes(_ecdsa_bundle_for_timestamp(0))
+    args = ["--manifest", str(bundle), "--trust-any-root-key"]
+    _assert_passed(_run_cli(args))
+    _assert_refused(_run_cli_at(ecdsa_raw_only_cli, args), "ALGORITHM_NOT_ENABLED")
 
 
 def test_real_multi_image_fixture_is_unaffected_by_the_cap():
@@ -2585,20 +2657,22 @@ def test_fixture_anchor_is_the_digest_of_the_key_it_signs_with(fixture, flag, ke
 # --- The PQC signing description ---
 
 
-@pytest.mark.parametrize("name,offset,width,value", [
-    ("ml-dsa-65", oca_constants.OFF_SIGNATURE_TYPE_PQC, 1, 0x32),
+@pytest.mark.parametrize("name,offset,width,value,code", [
+    ("ml-dsa-65", oca_constants.OFF_SIGNATURE_TYPE_PQC, 1, 0x32, "ALGORITHM_NOT_ENABLED"),
+    ("fn-dsa-512", oca_constants.OFF_SIGNATURE_TYPE_PQC, 1, 0x41, "ALGORITHM_RESERVED"),
     ("signature-size", oca_constants.OFF_SIGNATURE_SIZE_PQC, 2,
-     oca_constants.ML_DSA_87_SIGNATURE_BYTES - 1),
+     oca_constants.ML_DSA_87_SIGNATURE_BYTES - 1, "CRYPTO_FIELD_SIZE"),
     ("key-size", oca_constants.OFF_PUBLIC_KEY_SIZE_PQC, 2,
-     oca_constants.ML_DSA_87_PUBLIC_KEY_BYTES + 1),
-    ("signature-der", oca_constants.OFF_SIGNATURE_ENCODING_PQC, 1, 0x01),
-    ("key-der", oca_constants.OFF_PUBLIC_KEY_ENCODING_PQC, 1, 0x01),
+     oca_constants.ML_DSA_87_PUBLIC_KEY_BYTES + 1, "CRYPTO_FIELD_SIZE"),
+    ("signature-der", oca_constants.OFF_SIGNATURE_ENCODING_PQC, 1, 0x01, "CRYPTO_FIELD_SIZE"),
+    ("key-der", oca_constants.OFF_PUBLIC_KEY_ENCODING_PQC, 1, 0x01, "CRYPTO_FIELD_SIZE"),
 ])
-def test_cli_mldsa_refuses_a_description_it_cannot_verify(tmp_path, name, offset, width, value):
+def test_cli_mldsa_refuses_a_description_it_cannot_verify(tmp_path, name, offset, width,
+                                                          value, code):
     data = _fixture_bytes("pqc_secure_mldsa")
     _set_le(data, offset, width, value)
     _reseal_manifest_hash(data)
-    _assert_refused(_run_bundle(tmp_path, data, name), "CRYPTO_FIELD_SIZE")
+    _assert_refused(_run_bundle(tmp_path, data, name), code)
 
 
 # --- ROOT-key revocation, per family ---
@@ -2979,7 +3053,7 @@ def test_cli_refuses_digests_it_does_not_compute_even_when_resealed_as_sha256(tm
     data[oca_constants.OFF_PAYLOAD_HASH_TYPE] = _SHAKE256_512
     _reseal_manifest_hash(data)
     _assert_refused(_run_bundle(tmp_path, data, "declared_sha384", flags=()),
-                    "UNSUPPORTED_ALGORITHM")
+                    "ALGORITHM_NOT_ENABLED")
 
 
 @pytest.mark.parametrize("fixture,offset,value", [
@@ -2993,7 +3067,7 @@ def test_cli_refuses_an_unsupported_hash_type(tmp_path, fixture, offset, value):
     data[offset] = value
     _reseal_manifest_hash(data)
     result = _run_bundle(tmp_path, data, f"{fixture}_hash_type_{offset}", flags=())
-    _assert_refused(result, "UNSUPPORTED_ALGORITHM")
+    _assert_refused(result, "ALGORITHM_NOT_ENABLED")
     assert not result.stderr.rstrip().endswith(b": ok"), result.stderr
 
 
@@ -3036,7 +3110,7 @@ def test_cli_refuses_an_encrypted_payload_it_cannot_derive_a_key_for(tmp_path, f
     data = _encrypted_with(field, value)
     result = _run_bundle(tmp_path, data, f"encrypted_{field}_{value:#x}",
                          flags=_read_flags("encrypted_aes"))
-    _assert_refused(result, "UNSUPPORTED_ALGORITHM")
+    _assert_refused(result, "ALGORITHM_NOT_ENABLED")
 
 
 def _unreachable_openssl_minimum() -> str:

@@ -334,20 +334,27 @@ typedef enum oca_result {
      *  disabled class: the algorithm is no longer trusted at all, whatever key
      *  signed with it. */
     OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED = 38,
-    /** The manifest declares a digest or key-derivation algorithm this library
-     *  cannot compute: a manifest_hash_type or payload_hash_type other than
-     *  SHA2-256, or, for an encrypted payload, an
-     *  encryption_key_derivation_function other than SP 800-108r1 counter mode
-     *  with HMAC-SHA-256 or an input_key_source other than the pre-shared
+    /** The manifest names an algorithm the format defines but this build does
+     *  not enable. Which algorithms a build accepts is its security portfolio,
+     *  chosen in the build configuration; everything outside it is refused
+     *  with this code. It covers a signature_type of an enforced class, a DER
+     *  encoding the configuration turns off, a manifest_hash_type or
+     *  payload_hash_type other than SHA2-256, and, for an encrypted payload,
+     *  an encryption_key_derivation_function other than SP 800-108r1 counter
+     *  mode with HMAC-SHA-256 or an input_key_source other than the pre-shared
      *  secret.
      *
-     *  Refused before the field is acted on. Computing SHA-256 where the
-     *  manifest names another digest would report a well-formed manifest as
-     *  corrupt — OCA_FAIL_MANIFEST_HASH or OCA_FAIL_PAYLOAD_HASH — and an
-     *  unsupported key derivation would surface as OCA_FAIL_DECRYPT. This code
-     *  says instead that the manifest may be valid for a Consumer whose
-     *  portfolio includes the algorithm. */
-    OCA_FAIL_UNSUPPORTED_ALGORITHM      = 39
+     *  Refused before the field is acted on, so the manifest is not reported as
+     *  corrupt for an algorithm this build never computes: it may be valid for
+     *  a Consumer whose portfolio includes the algorithm. Distinct from
+     *  OCA_FAIL_ALGORITHM_RESERVED, which no Consumer accepts. */
+    OCA_FAIL_ALGORITHM_NOT_ENABLED      = 39,
+    /** The manifest names an algorithm value the format reserves: a
+     *  signature_type of an enforced class that the format assigns to no
+     *  algorithm and does not leave to integrators. No Consumer can accept it,
+     *  so unlike OCA_FAIL_ALGORITHM_NOT_ENABLED it says the manifest is
+     *  malformed rather than outside this build's portfolio. */
+    OCA_FAIL_ALGORITHM_RESERVED         = 40
 } oca_result_t;
 
 /**
@@ -1633,13 +1640,20 @@ oca_result_t oca_check_signature_class_variant(const uint8_t *body);
  *                                      consistent, or secure boot is not in
  *                                      force.
  * @retval OCA_FAIL_INVALID_ARG         @p body was NULL.
- * @retval OCA_FAIL_CRYPTO_FIELD_SIZE   An enforced class names a primitive or
- *                                      encoding it does not accept, a size
- *                                      field is zero, overruns its field, or
- *                                      disagrees with the declared algorithm
- *                                      and encoding, or a key or signature
- *                                      field holds a non-zero byte past its
- *                                      declared size.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An enforced class names a
+ *                                      signature algorithm the format defines
+ *                                      but this build does not enable, or a
+ *                                      DER encoding the build configuration
+ *                                      turns off.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED  An enforced class's signature_type is a
+ *                                      value the format reserves.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE   An enforced class names an encoding the
+ *                                      format does not define for its
+ *                                      algorithm, a size field is zero,
+ *                                      overruns its field, or disagrees with
+ *                                      the declared algorithm and encoding, or
+ *                                      a key or signature field holds a
+ *                                      non-zero byte past its declared size.
  * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED  @p ctx holds no determination.
  * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination, or the
  *                                      recorded class enforcement, no longer
@@ -1918,9 +1932,9 @@ oca_result_t oca_check_demotion_control(const uint8_t *body);
  * @param[in] cb    Callback table; cb->sha256 is required.
  * @retval OCA_OK                          Recomputed digest matches.
  * @retval OCA_FAIL_INVALID_ARG            @p body or @p cb was NULL.
- * @retval OCA_FAIL_UNSUPPORTED_ALGORITHM  manifest_hash_type names a digest
- *                                         other than SHA2-256, the one this
- *                                         library computes. Refused before
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  manifest_hash_type names a digest
+ *                                         other than SHA2-256, the only one a
+ *                                         build can enable. Refused before
  *                                         hashing.
  * @retval OCA_FAIL_MANIFEST_HASH          Digest mismatch.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   cb->sha256 is NULL or unavailable.
@@ -2041,9 +2055,9 @@ oca_result_t oca_check_signature(
  *                                             disabled on this device.
  * @retval OCA_FAIL_SIGNATURE_COHORT_REQUIRED  The device demands a cohort the
  *                                             manifest does not enforce.
- * @retval OCA_FAIL_CRYPTO_FIELD_SIZE          An enforced class names a
- *                                             signature_type the format does
- *                                             not define — only reachable around
+ * @retval OCA_FAIL_ALGORITHM_RESERVED         An enforced class names a
+ *                                             signature_type the format
+ *                                             reserves — only reachable around
  *                                             oca_check_signing_description().
  * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL    No class is enforced in an engaged
  *                                             context, or PQC is enforced on a
@@ -2353,9 +2367,9 @@ oca_result_t oca_check_payload_encryption_policy(
  *                                           oca_locate_payload() with
  *                                           oca_check_payload_at() instead.
  * @return Otherwise the result of the payload checks it composes —
- *         OCA_FAIL_UNSUPPORTED_ALGORITHM for a payload_hash_type, or an
- *         encrypted payload's key derivation or input-key source, this library
- *         does not implement, checked before any digest or decryption;
+ *         OCA_FAIL_ALGORITHM_NOT_ENABLED for a payload_hash_type, or an
+ *         encrypted payload's key derivation or input-key source, this build
+ *         does not enable, checked before any digest or decryption;
  *         OCA_FAIL_PAYLOAD_HASH, OCA_FAIL_DECRYPT, OCA_FAIL_PAYLOAD_TOC,
  *         OCA_FAIL_PAYLOAD_TOO_MANY_IMAGES, OCA_FAIL_PAYLOAD_HASH_CHAIN,
  *         OCA_FAIL_PAYLOAD_ENTRY_HASH — or the magic or variant failure from

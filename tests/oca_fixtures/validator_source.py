@@ -12,33 +12,55 @@ import os
 import re
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-VALIDATOR_PARSER = os.path.join(_PROJECT_ROOT, "validators", "oca", "lib", "parser.c")
+_LIB = os.path.join(_PROJECT_ROOT, "validators", "oca", "lib")
+VALIDATOR_PARSER = os.path.join(_LIB, "parser.c")
+VALIDATOR_ALGORITHMS = os.path.join(_LIB, "algorithms.c")
+
+_TABLES = {"classic": "CLASSICAL_SIGNATURES", "pqc": "PQC_SIGNATURES"}
+_ROW = re.compile(
+    r"\{\s*(?P<type>0x[0-9A-Fa-f]+)u,\s*[^,]+,\s*[^,]+,\s*"
+    r"(?P<public_key_der>\w+),\s*(?P<signature_der>\w+),")
 
 
-def size_check_class_blocks() -> dict[str, str]:
-    """The source of each signature class's block in `oca_check_signing_description()`.
+def signature_table_rows() -> dict[str, list[dict]]:
+    """The rows of each signature class's table in algorithms.c.
 
-    Each block names exactly the primitives and encodings its class admits, and
-    every other value falls through to OCA_FAIL_CRYPTO_FIELD_SIZE, so the names
-    in a block are its accepted set.
+    Each row is an algorithm the library has rules for, with how it treats DER
+    for its public key and signature. The sentinel row that ends each table is
+    left out.
+    """
+    with open(VALIDATOR_ALGORITHMS) as handle:
+        text = handle.read()
+    rows = {}
+    for signature_class, table in _TABLES.items():
+        match = re.search(rf"\b{table}\[\]\s*=\s*\{{(?P<body>.*?)\n\}};", text, re.S)
+        assert match, (
+            f"{table} was not found in {VALIDATOR_ALGORITHMS}; if it moved or "
+            f"changed shape, update this parser rather than deleting the gates "
+            f"that use it")
+        rows[signature_class] = [
+            {"type": int(row["type"], 16), "public_key_der": row["public_key_der"],
+             "signature_der": row["signature_der"]}
+            for row in _ROW.finditer(match.group("body"))
+            if int(row["type"], 16) != 0x00
+        ]
+        assert rows[signature_class], f"{table} has no algorithm rows"
+    return rows
+
+
+def encodings_required_size_accepts() -> set[str]:
+    """The encoding enumerators `required_size()` in parser.c admits.
+
+    It names each encoding it accepts and refuses everything else, so the names
+    in its body are the accepted set. Whether DER applies to a given value is
+    the table row's to say.
     """
     with open(VALIDATOR_PARSER) as handle:
         text = handle.read()
-
-    match = re.search(
-        r"oca_result_t oca_check_signing_description\([^)]*\)\s*"
-        r"\{(?P<body>.*?)\n\}\n",
-        text,
-        re.DOTALL,
-    )
+    match = re.search(r"static oca_result_t required_size\([^)]*\)\s*\{(?P<body>.*?)\n\}\n",
+                      text, re.S)
     assert match, (
-        f"oca_check_signing_description() was not found in {VALIDATOR_PARSER}; if "
-        f"it moved or changed shape, update this parser rather than deleting the "
-        f"gates that use it")
-    body = match.group("body")
-    classic_at = body.find("ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE")
-    pqc_at = body.find("ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE")
-    assert 0 <= classic_at < pqc_at, (
-        "expected a classical class block followed by a PQC class block in "
-        "oca_check_signing_description()")
-    return {"classic": body[classic_at:pqc_at], "pqc": body[pqc_at:]}
+        f"required_size() was not found in {VALIDATOR_PARSER}; if it moved or "
+        f"changed shape, update this parser rather than deleting the gates that "
+        f"use it")
+    return set(re.findall(r"OCA_ENCODING_\w+", match.group("body")))

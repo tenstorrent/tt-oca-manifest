@@ -111,9 +111,11 @@ static const char *reason_for(oca_result_t r)
         case OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED:
             return "a signature this manifest relies on uses an algorithm the "
                    "device has disabled (see --signature-class-revoke)";
-        case OCA_FAIL_UNSUPPORTED_ALGORITHM:
-            return "manifest declares a hash, key derivation function, or input "
-                   "key source this build does not implement";
+        case OCA_FAIL_ALGORITHM_NOT_ENABLED:
+            return "manifest names an algorithm or encoding this build's "
+                   "configuration does not enable";
+        case OCA_FAIL_ALGORITHM_RESERVED:
+            return "manifest names an algorithm value the format reserves";
         case OCA_FAIL_SIGNATURE_CLASS_CONTROL:
             return "secure_boot_control class bits name a signature policy this "
                    "manifest cannot satisfy (neither class selected under secure "

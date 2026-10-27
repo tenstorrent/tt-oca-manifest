@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 #
 # Build configuration for the `pqc-only` target: lib/oca_config.toml with
-# Classic compiled out: OCA-Classic manifests are refused with OCA_FAIL_UNSUPPORTED_VARIANT.
+# Classic compiled out: OCA-Classic manifests are refused with
+# OCA_FAIL_UNSUPPORTED_VARIANT.
 
 [variants]
 classic = false
@@ -13,3 +14,14 @@ toc_max_images = 256
 
 [hardening]
 recheck_security_version = true
+
+[signature_classic]
+rsa_3072_pkcs1v15_sha256 = true
+ecdsa_p256_sha256 = true
+
+[signature_pqc]
+ml_dsa_87 = true
+
+[der]
+rsa_public_key = true
+ecdsa_signature = true

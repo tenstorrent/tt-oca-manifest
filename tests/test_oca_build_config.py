@@ -25,6 +25,8 @@ import time
 
 import pytest
 
+from tt_boot_manifest.oca import constants as oca_constants
+
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VALIDATOR_DIR = os.path.join(PROJECT_ROOT, "validators", "oca")
@@ -51,18 +53,27 @@ def _load(path, name):
 
 
 gen_config = _load(GENERATOR, "oca_gen_config")
-SETTING_IDS = [setting.name for setting in gen_config.SETTINGS]
+REQUIRED = [setting for setting in gen_config.SETTINGS if setting.required]
+IMPLEMENTED = [setting for setting in gen_config.SETTINGS if setting.implemented]
+SWITCHES = [setting for setting in IMPLEMENTED if setting.kind == "bool"]
+NOT_IMPLEMENTED = [setting for setting in gen_config.SETTINGS if not setting.implemented]
 
 DEFAULT_VALUES = {
     "OCA_CFG_VARIANT_CLASSIC": 1,
     "OCA_CFG_VARIANT_PQC": 1,
     "OCA_CFG_TOC_MAX_IMAGES": 256,
     "OCA_CFG_RECHECK_SECURITY_VERSION": 1,
+    "OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256": 1,
+    "OCA_CFG_SIG_ECDSA_P256_SHA256": 1,
+    "OCA_CFG_SIG_ML_DSA_87": 1,
+    "OCA_CFG_DER_RSA_PUBLIC_KEY": 1,
+    "OCA_CFG_DER_ECDSA_SIGNATURE": 1,
 }
 
 
 def config_text(classic="true", pqc="true", toc_max_images="256",
-                recheck_security_version="true", extra=""):
+                recheck_security_version="true", rsa="true", ecdsa="true",
+                ml_dsa_87="true", der_rsa="true", der_ecdsa="true", extra=""):
     """A complete configuration, every value given as its TOML text."""
     return (
         "[variants]\n"
@@ -72,6 +83,14 @@ def config_text(classic="true", pqc="true", toc_max_images="256",
         f"toc_max_images = {toc_max_images}\n"
         "\n[hardening]\n"
         f"recheck_security_version = {recheck_security_version}\n"
+        "\n[signature_classic]\n"
+        f"rsa_3072_pkcs1v15_sha256 = {rsa}\n"
+        f"ecdsa_p256_sha256 = {ecdsa}\n"
+        "\n[signature_pqc]\n"
+        f"ml_dsa_87 = {ml_dsa_87}\n"
+        "\n[der]\n"
+        f"rsa_public_key = {der_rsa}\n"
+        f"ecdsa_signature = {der_ecdsa}\n"
         f"{extra}"
     )
 
@@ -111,23 +130,22 @@ def test_the_shipped_default_is_the_documented_default():
     assert gen_config.resolve_settings(document) == DEFAULT_VALUES
 
 
-@pytest.mark.parametrize("name, classic, pqc", [
-    ("classic_only.toml", 1, 0),
-    ("pqc_only.toml", 0, 1),
+@pytest.mark.parametrize("name, changes", [
+    # A Classic-only build carries no PQC signature, so ML-DSA-87 goes too.
+    ("classic_only.toml", {"OCA_CFG_VARIANT_PQC": 0, "OCA_CFG_SIG_ML_DSA_87": 0}),
+    ("pqc_only.toml", {"OCA_CFG_VARIANT_CLASSIC": 0}),
 ])
 def test_the_variant_build_configs_differ_from_the_default_only_in_variants(
-        name, classic, pqc):
+        name, changes):
     document, _ = gen_config.load_config(os.path.join(BUILD_CONFIG_DIR, name))
-    expected = {**DEFAULT_VALUES, "OCA_CFG_VARIANT_CLASSIC": classic,
-                "OCA_CFG_VARIANT_PQC": pqc}
-    assert gen_config.resolve_settings(document) == expected
+    assert gen_config.resolve_settings(document) == {**DEFAULT_VALUES, **changes}
 
 
 def test_a_complete_configuration_is_accepted():
     assert problems_for(config_text()) == []
 
 
-@pytest.mark.parametrize("setting", gen_config.SETTINGS, ids=SETTING_IDS)
+@pytest.mark.parametrize("setting", REQUIRED, ids=[s.name for s in REQUIRED])
 def test_every_setting_is_required(setting):
     """A configuration replaces the default, so leaving a setting out is refused,
     never filled in from a default nobody reviewed."""
@@ -139,7 +157,8 @@ def test_every_setting_is_required(setting):
 
 
 def test_an_empty_configuration_names_every_setting():
-    assert len(problems_for("")) == len(gen_config.SETTINGS)
+    """Every required setting, and that no signature algorithm is enabled."""
+    assert len(problems_for("")) == len(REQUIRED) + 1
 
 
 def test_an_unknown_section_is_refused():
@@ -186,8 +205,104 @@ def test_a_count_at_either_end_of_its_range_is_accepted(value):
 
 
 def test_a_build_that_accepts_no_variant_is_refused():
-    assert problems_for(config_text(classic="false", pqc="false")) == [
+    assert problems_for(config_text(classic="false", pqc="false", ml_dsa_87="false")) == [
         "[variants] must enable at least one of classic and pqc"]
+
+
+# ---------------------------------------------------------------------------
+# The algorithm portfolio
+# ---------------------------------------------------------------------------
+
+
+def test_an_algorithm_left_out_is_off():
+    """An adopter's file names what it accepts; an algorithm it does not name is
+    refused, never inherited from the default."""
+    text = config_text().replace("ecdsa_p256_sha256 = true\n", "")
+    text = text.replace("ecdsa_signature = true", "ecdsa_signature = false")
+    values = gen_config.resolve_settings(gen_config.tomllib.loads(text))
+    assert values["OCA_CFG_SIG_ECDSA_P256_SHA256"] == 0
+
+
+def test_an_algorithm_section_may_be_left_out_entirely():
+    text = config_text(ml_dsa_87="false").replace("\n[signature_pqc]\nml_dsa_87 = false\n", "")
+    values = gen_config.resolve_settings(gen_config.tomllib.loads(text))
+    assert values["OCA_CFG_SIG_ML_DSA_87"] == 0
+
+
+@pytest.mark.parametrize("setting", NOT_IMPLEMENTED, ids=[s.name for s in NOT_IMPLEMENTED])
+def test_an_algorithm_the_library_has_no_rules_for_cannot_be_turned_on(setting):
+    """Turning one on is a build error, never a request quietly ignored."""
+    text = config_text().replace(f"[{setting.section}]\n",
+                                 f"[{setting.section}]\n{setting.key} = true\n", 1)
+    assert problems_for(text) == [
+        f"{setting.name} ({setting.description}) is not implemented in this "
+        f"library; implement its rules before enabling it"]
+
+
+@pytest.mark.parametrize("setting", NOT_IMPLEMENTED, ids=[s.name for s in NOT_IMPLEMENTED])
+def test_an_algorithm_the_library_has_no_rules_for_may_be_stated_off(setting):
+    text = config_text().replace(f"[{setting.section}]\n", f"[{setting.section}]\n"
+                                 f"{setting.key} = false\n", 1)
+    assert problems_for(text) == []
+
+
+def test_every_algorithm_is_listed_by_its_format_code():
+    """Each class lists the format's algorithms once each, so a configuration can
+    name every one."""
+    for group in (gen_config.CLASSICAL_SIGNATURES, gen_config.PQC_SIGNATURES):
+        codes = [setting.code for setting in group]
+        assert len(codes) == len(set(codes))
+    assert {s.code for s in gen_config.CLASSICAL_SIGNATURES} == {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0A, 0x0B}
+    assert {s.code for s in gen_config.PQC_SIGNATURES} == {
+        0x31, 0x32, 0x33, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56}
+
+
+def test_a_build_with_no_signature_algorithm_is_refused():
+    text = config_text(rsa="false", ecdsa="false", ml_dsa_87="false",
+                       der_rsa="false", der_ecdsa="false")
+    assert problems_for(text) == [
+        "no signature algorithm is enabled: [signature_classic] or "
+        "[signature_pqc] must enable at least one"]
+
+
+def test_one_signature_algorithm_is_enough():
+    text = config_text(rsa="false", ecdsa="false", der_rsa="false", der_ecdsa="false")
+    assert problems_for(text) == []
+
+
+def test_a_pqc_signature_needs_the_pqc_variant():
+    assert problems_for(config_text(pqc="false")) == [
+        "signature_pqc.ml_dsa_87 needs [variants] pqc, the only variant that "
+        "carries a PQC signature"]
+
+
+@pytest.mark.parametrize("changes, problem", [
+    ({"rsa": "false"},
+     "der.rsa_public_key needs one of signature_classic.rsa_3072_pkcs1v15_sha256, "
+     "signature_classic.rsa_3072_pss_sha256, signature_classic.rsa_4096_pkcs1v15_sha512, "
+     "signature_classic.rsa_4096_pss_sha512 enabled"),
+    ({"ecdsa": "false"},
+     "der.ecdsa_signature needs one of signature_classic.ecdsa_p256_sha256, "
+     "signature_classic.ecdsa_p384_sha384, signature_classic.ecdsa_p521_sha512 enabled"),
+], ids=["rsa", "ecdsa"])
+def test_a_der_encoding_needs_an_algorithm_of_its_family(changes, problem):
+    assert problems_for(config_text(**changes)) == [problem]
+
+
+@pytest.mark.parametrize("der_rsa, der_ecdsa", [("false", "true"), ("true", "false"),
+                                                ("false", "false")])
+def test_each_der_encoding_can_be_turned_off_on_its_own(der_rsa, der_ecdsa):
+    text = config_text(der_rsa=der_rsa, der_ecdsa=der_ecdsa)
+    values = gen_config.resolve_settings(gen_config.tomllib.loads(text))
+    assert values["OCA_CFG_DER_RSA_PUBLIC_KEY"] == (der_rsa == "true")
+    assert values["OCA_CFG_DER_ECDSA_SIGNATURE"] == (der_ecdsa == "true")
+
+
+def test_an_unimplemented_algorithm_generates_no_macro(tmp_path):
+    header = gen_config.header_for_config(write_config(tmp_path, config_text()))
+    for setting in NOT_IMPLEMENTED:
+        assert setting.key.upper() not in header
 
 
 def test_every_problem_is_reported_at_once():
@@ -267,7 +382,7 @@ def test_an_unchanged_header_is_not_rewritten(tmp_path):
 def test_a_changed_configuration_rewrites_the_header(tmp_path):
     out = tmp_path / "oca_config.h"
     gen_config.generate(write_config(tmp_path, config_text()), str(out))
-    changed = write_config(tmp_path, config_text(pqc="false"))
+    changed = write_config(tmp_path, config_text(pqc="false", ml_dsa_87="false"))
     assert gen_config.generate(changed, str(out)) is True
     assert "#define OCA_CFG_VARIANT_PQC 0\n" in out.read_text()
 
@@ -345,14 +460,14 @@ def test_the_check_header_requires_the_format_the_generator_writes():
     assert match and int(match.group(1)) == gen_config.CONFIG_FORMAT
 
 
-@pytest.mark.parametrize("setting", gen_config.SETTINGS, ids=SETTING_IDS)
+@pytest.mark.parametrize("setting", IMPLEMENTED, ids=[s.name for s in IMPLEMENTED])
 def test_the_check_header_requires_every_setting(setting):
     guard = re.search(r"#if (!defined\(OCA_CFG_VARIANT_CLASSIC\).*?)\n#error",
                       _check_header_text(), re.S)
     assert guard and f"!defined({setting.macro})" in guard.group(1)
 
 
-@pytest.mark.parametrize("setting", gen_config.SETTINGS, ids=SETTING_IDS)
+@pytest.mark.parametrize("setting", IMPLEMENTED, ids=[s.name for s in IMPLEMENTED])
 def test_every_setting_reaches_the_library(setting):
     """A setting nothing reads would be a configuration key with no effect."""
     readers = []
@@ -362,6 +477,57 @@ def test_every_setting_reaches_the_library(setting):
                 if setting.macro in handle.read():
                     readers.append(name)
     assert readers, f"{setting.macro} is generated but no library source reads it"
+
+
+@pytest.mark.parametrize("setting", SWITCHES, ids=[s.name for s in SWITCHES])
+def test_the_check_header_holds_every_switch_to_0_or_1(setting):
+    assert f"!OCA_CFG_IS_SWITCH({setting.macro})" in _check_header_text()
+
+
+def _library_sources():
+    for name in sorted(os.listdir(LIB_DIR)):
+        if name.endswith((".c", ".h")):
+            with open(os.path.join(LIB_DIR, name)) as handle:
+                yield name, handle.read()
+
+
+def test_every_configuration_macro_the_library_reads_is_generated():
+    """A misspelled macro in an #if is 0, which would silently turn a feature off."""
+    generated = {s.macro for s in IMPLEMENTED} | {"OCA_CFG_FORMAT", "OCA_CFG_IS_SWITCH"}
+    for name, text in _library_sources():
+        for macro in set(re.findall(r"\bOCA_CFG_[A-Z0-9_]+\b", text)):
+            assert macro in generated, f"{name} reads {macro}, which nothing generates"
+
+
+def _table_rows():
+    """{macro: format code} for every row of the C algorithm tables."""
+    with open(os.path.join(LIB_DIR, "algorithms.c")) as handle:
+        text = handle.read()
+    return {macro: int(code, 16) for macro, code in re.findall(
+        r"#if (OCA_CFG_SIG_\w+)\n(?:\s*/\*.*?\*/\n)?\s*\{ (0x[0-9A-Fa-f]+)u,", text, re.S)}
+
+
+def test_every_implemented_algorithm_has_a_table_row_with_its_code():
+    algorithms = {s.macro: s.code for s in IMPLEMENTED if s.code is not None}
+    assert _table_rows() == algorithms
+
+
+def test_every_algorithm_the_packer_writes_is_enabled_by_default():
+    """The producer can never emit a signature the default validator refuses."""
+    document, _ = gen_config.load_config(DEFAULT_CONFIG)
+    values = gen_config.resolve_settings(document)
+    by_code = {
+        "signature_classic": oca_constants.CLASSIC_SIGNING_TYPES,
+        "signature_pqc": oca_constants.PQC_SIGNING_TYPES,
+    }
+    for section, codes in by_code.items():
+        for code in codes:
+            setting = next(s for s in gen_config.SETTINGS
+                           if s.section == section and s.code == code)
+            assert setting.implemented and values[setting.macro] == 1, setting.name
+    # The packer writes DER RSA keys and DER ECDSA signatures.
+    assert values["OCA_CFG_DER_RSA_PUBLIC_KEY"] == 1
+    assert values["OCA_CFG_DER_ECDSA_SIGNATURE"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +604,17 @@ UNGENERATED_HEADERS = [
     pytest.param({"values": {"OCA_CFG_TOC_MAX_IMAGES": "0u"}},
                  "sets toc_max_images below 1",
                  id="toc-zero"),
+    pytest.param({"values": {"OCA_CFG_DER_ECDSA_SIGNATURE": "2"}},
+                 "holds a true/false setting that is neither 0 nor 1",
+                 id="der-not-bool"),
+    pytest.param({"values": {"OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256": "0",
+                             "OCA_CFG_SIG_ECDSA_P256_SHA256": "0",
+                             "OCA_CFG_SIG_ML_DSA_87": "0"}},
+                 "enables no signature algorithm",
+                 id="no-signature"),
+    pytest.param({"values": {"OCA_CFG_VARIANT_PQC": "0"}},
+                 "enables a PQC signature algorithm without [variants] pqc",
+                 id="pqc-signature-without-pqc"),
 ]
 
 
@@ -459,7 +636,7 @@ def test_a_header_the_generator_would_not_write_is_refused(tmp_path, edits, mess
     assert message in result.stderr
 
 
-@pytest.mark.parametrize("setting", gen_config.SETTINGS, ids=SETTING_IDS)
+@pytest.mark.parametrize("setting", IMPLEMENTED, ids=[s.name for s in IMPLEMENTED])
 def test_a_header_missing_a_setting_is_refused(tmp_path, setting):
     result = compile_probe(tmp_path, drop_define(default_header(), setting.macro))
     assert result.returncode != 0
@@ -514,7 +691,7 @@ def test_a_changed_configuration_rebuilds_and_an_unchanged_one_does_not(tmp_path
     # make 3.81 compares timestamps to the whole second, so a header rewritten
     # in the same second as the objects would not look newer than them.
     time.sleep(1.1)
-    write_config(tmp_path, config_text(pqc="false"))
+    write_config(tmp_path, config_text(pqc="false", ml_dsa_87="false"))
     changed = run_make(build, f"CONFIG={config}", "lib")
     assert changed.returncode == 0
     assert variant_object.stat().st_mtime_ns != first, changed.stdout

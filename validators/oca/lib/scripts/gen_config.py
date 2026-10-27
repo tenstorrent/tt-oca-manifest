@@ -55,20 +55,103 @@ CONFIG_FORMAT = 1
 
 @dataclass(frozen=True)
 class Setting:
-    """One configuration key and the macro it generates."""
+    """One configuration key and the macro it generates.
+
+    A required setting must be stated in every configuration. An optional one
+    is a switch that is off unless the configuration turns it on, which is how
+    every algorithm is listed: a build accepts only what it names.
+
+    A switch the library has no rules for is not implemented. It generates no
+    macro, and turning it on is an error rather than a request the library
+    would silently ignore.
+    """
 
     section: str
     key: str
-    macro: str
+    macro: str             # "" for a switch that is not implemented
     kind: str              # "bool" or "count"
     description: str
     minimum: int = 0
     maximum: int = 0
+    required: bool = True
+    code: int | None = None        # the format's value for an algorithm
+    requires: tuple[str, ...] = ()  # turning this on needs one of these on
 
     @property
     def name(self) -> str:
         return f"{self.section}.{self.key}"
 
+    @property
+    def implemented(self) -> bool:
+        return bool(self.macro)
+
+
+def _algorithm(section: str, key: str, code: int, description: str,
+               macro: str = "") -> Setting:
+    """An algorithm switch: off unless named, implemented when it has a macro."""
+    return Setting(section, key, macro, "bool", description, required=False,
+                   code=code)
+
+
+def _encoding(key: str, macro: str, description: str,
+              requires: tuple[str, ...]) -> Setting:
+    """A switch for an encoding the format defines for one family of algorithms."""
+    return Setting("der", key, macro, "bool", description, required=False,
+                   requires=requires)
+
+
+# The format's algorithms, every one of them, in each class. Those with a
+# macro are the ones the library has rules for; the rest are listed so a
+# configuration can name them, and turning one on says it is not implemented.
+CLASSICAL_SIGNATURES = (
+    _algorithm("signature_classic", "rsa_3072_pkcs1v15_sha256", 0x01,
+               "RSA-3072, RSASSA-PKCS1-v1_5, SHA-256",
+               "OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256"),
+    _algorithm("signature_classic", "rsa_3072_pss_sha256", 0x02,
+               "RSA-3072, RSASSA-PSS, SHA-256"),
+    _algorithm("signature_classic", "rsa_4096_pkcs1v15_sha512", 0x03,
+               "RSA-4096, RSASSA-PKCS1-v1_5, SHA-512"),
+    _algorithm("signature_classic", "rsa_4096_pss_sha512", 0x04,
+               "RSA-4096, RSASSA-PSS, SHA-512"),
+    _algorithm("signature_classic", "ecdsa_p256_sha256", 0x05,
+               "ECDSA P-256, SHA-256", "OCA_CFG_SIG_ECDSA_P256_SHA256"),
+    _algorithm("signature_classic", "ecdsa_p384_sha384", 0x06,
+               "ECDSA P-384, SHA-384"),
+    _algorithm("signature_classic", "ecdsa_p521_sha512", 0x07,
+               "ECDSA P-521, SHA-512"),
+    _algorithm("signature_classic", "ed25519", 0x0A, "Ed25519"),
+    _algorithm("signature_classic", "ed448", 0x0B, "Ed448"),
+)
+
+PQC_SIGNATURES = (
+    _algorithm("signature_pqc", "ml_dsa_44", 0x31, "FIPS 204 ML-DSA-44"),
+    _algorithm("signature_pqc", "ml_dsa_65", 0x32, "FIPS 204 ML-DSA-65"),
+    _algorithm("signature_pqc", "ml_dsa_87", 0x33, "FIPS 204 ML-DSA-87",
+               "OCA_CFG_SIG_ML_DSA_87"),
+    _algorithm("signature_pqc", "slh_dsa_sha2_128s", 0x51,
+               "FIPS 205 SLH-DSA-SHA2-128s"),
+    _algorithm("signature_pqc", "slh_dsa_sha2_192s", 0x52,
+               "FIPS 205 SLH-DSA-SHA2-192s"),
+    _algorithm("signature_pqc", "slh_dsa_sha2_256s", 0x53,
+               "FIPS 205 SLH-DSA-SHA2-256s"),
+    _algorithm("signature_pqc", "slh_dsa_shake_128s", 0x54,
+               "FIPS 205 SLH-DSA-SHAKE-128s"),
+    _algorithm("signature_pqc", "slh_dsa_shake_192s", 0x55,
+               "FIPS 205 SLH-DSA-SHAKE-192s"),
+    _algorithm("signature_pqc", "slh_dsa_shake_256s", 0x56,
+               "FIPS 205 SLH-DSA-SHAKE-256s"),
+)
+
+ENCODINGS = (
+    _encoding("rsa_public_key", "OCA_CFG_DER_RSA_PUBLIC_KEY",
+              "Accept DER (PKCS#1 RSAPublicKey) RSA public keys",
+              tuple(s.name for s in CLASSICAL_SIGNATURES
+                    if s.key.startswith("rsa_"))),
+    _encoding("ecdsa_signature", "OCA_CFG_DER_ECDSA_SIGNATURE",
+              "Accept DER (RFC 3279 ECDSA-Sig-Value) ECDSA signatures",
+              tuple(s.name for s in CLASSICAL_SIGNATURES
+                    if s.key.startswith("ecdsa_"))),
+)
 
 SETTINGS = (
     Setting("variants", "classic", "OCA_CFG_VARIANT_CLASSIC", "bool",
@@ -81,6 +164,9 @@ SETTINGS = (
     Setting("hardening", "recheck_security_version",
             "OCA_CFG_RECHECK_SECURITY_VERSION", "bool",
             "Evaluate anti-rollback again after the signature verifies"),
+    *CLASSICAL_SIGNATURES,
+    *PQC_SIGNATURES,
+    *ENCODINGS,
 )
 
 
@@ -144,26 +230,59 @@ def resolve_settings(document: dict) -> dict[str, int]:
                     problems.append(f"unknown key {section}.{key}")
 
     values: dict[str, int] = {}
+    enabled: set[str] = set()
     for setting in SETTINGS:
         table = document.get(setting.section)
         if not isinstance(table, dict) or setting.key not in table:
-            problems.append(
-                f"{setting.name} is required: a configuration replaces the "
-                f"default, so every setting must be stated")
+            if setting.required:
+                problems.append(
+                    f"{setting.name} is required: a configuration replaces the "
+                    f"default, so every setting must be stated")
+            elif setting.implemented:
+                values[setting.macro] = 0
             continue
-        problem = _check_value(setting, table[setting.key])
+        value = table[setting.key]
+        problem = _check_value(setting, value)
         if problem is not None:
             problems.append(problem)
             continue
-        values[setting.macro] = int(table[setting.key])
+        if value is True and not setting.implemented:
+            problems.append(
+                f"{setting.name} ({setting.description}) is not implemented in "
+                f"this library; implement its rules before enabling it")
+            continue
+        if value is True:
+            enabled.add(setting.name)
+        values[setting.macro] = int(value)
 
-    if (values.get("OCA_CFG_VARIANT_CLASSIC") == 0
-            and values.get("OCA_CFG_VARIANT_PQC") == 0):
-        problems.append("[variants] must enable at least one of classic and pqc")
-
+    problems.extend(_cross_setting_problems(values, enabled))
     if problems:
         raise ConfigError(problems)
     return values
+
+
+def _cross_setting_problems(values: dict[str, int], enabled: set[str]) -> list[str]:
+    """Combinations of individually valid settings that no build can use."""
+    problems = []
+    if (values.get("OCA_CFG_VARIANT_CLASSIC") == 0
+            and values.get("OCA_CFG_VARIANT_PQC") == 0):
+        problems.append("[variants] must enable at least one of classic and pqc")
+    signatures = [s.name for s in (*CLASSICAL_SIGNATURES, *PQC_SIGNATURES)
+                  if s.name in enabled]
+    if not signatures:
+        problems.append("no signature algorithm is enabled: [signature_classic] "
+                        "or [signature_pqc] must enable at least one")
+    if values.get("OCA_CFG_VARIANT_PQC") == 0:
+        for setting in PQC_SIGNATURES:
+            if setting.name in enabled:
+                problems.append(f"{setting.name} needs [variants] pqc, the only "
+                                f"variant that carries a PQC signature")
+    for setting in SETTINGS:
+        if setting.requires and setting.name in enabled \
+                and not enabled.intersection(setting.requires):
+            problems.append(f"{setting.name} needs one of "
+                            f"{', '.join(setting.requires)} enabled")
+    return problems
 
 
 def render_header(values: dict[str, int], source_name: str, source: bytes) -> str:
@@ -182,6 +301,8 @@ def render_header(values: dict[str, int], source_name: str, source: bytes) -> st
         f"#define OCA_CFG_FORMAT {CONFIG_FORMAT}",
     ]
     for setting in SETTINGS:
+        if not setting.implemented:
+            continue
         value = values[setting.macro]
         rendered = f"{value}u" if setting.kind == "count" else str(value)
         lines += ["", f"/* {setting.name}: {setting.description}. */",

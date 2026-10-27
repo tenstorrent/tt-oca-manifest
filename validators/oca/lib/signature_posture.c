@@ -77,7 +77,8 @@ static int pqc_revoke_bit(uint8_t type)
  * @param[in] revoke          The device's signature_class_revoke state.
  * @retval OCA_OK                               The algorithm is usable.
  * @retval OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED Its class or group is disabled.
- * @retval OCA_FAIL_CRYPTO_FIELD_SIZE           The type names no class.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED          The type names no class, which
+ *                                              only a reserved value does.
  */
 static oca_result_t check_class_algorithm(
     int bit,
@@ -85,7 +86,7 @@ static oca_result_t check_class_algorithm(
     const uint8_t revoke[OCA_LEN_SIGNATURE_CLASS_REVOKE])
 {
     if (bit < 0) {
-        return OCA_FAIL_CRYPTO_FIELD_SIZE;
+        return OCA_FAIL_ALGORITHM_RESERVED;
     }
     oca_secure_bool_t class_disabled =
         (((revoke[bit / 8] >> (bit % 8)) & 1u) != 0u)

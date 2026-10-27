@@ -27,3 +27,25 @@ toc_max_images = 256
 # Evaluate anti-rollback a second time, after the signature verifies. The first
 # evaluation already decides; the second catches a fault that skipped it.
 recheck_security_version = true
+
+[signature_classic]
+# Classical signature algorithms this build verifies. Any algorithm not listed
+# here as true is refused with OCA_FAIL_ALGORITHM_NOT_ENABLED. The format also
+# defines rsa_3072_pss_sha256, rsa_4096_pkcs1v15_sha512, rsa_4096_pss_sha512,
+# ecdsa_p384_sha384, ecdsa_p521_sha512, ed25519 and ed448; the library has no
+# rules for those yet, so turning one on stops the build.
+rsa_3072_pkcs1v15_sha256 = true
+ecdsa_p256_sha256 = true
+
+[signature_pqc]
+# Post-quantum signature algorithms this build verifies; needs [variants] pqc.
+# The format also defines ml_dsa_44, ml_dsa_65 and the six slh_dsa_* parameter
+# sets, which are not implemented yet.
+ml_dsa_87 = true
+
+[der]
+# ASN.1 DER encodings, where the format defines one. Raw encodings are always
+# accepted. Turned off, a manifest using the encoding is refused with
+# OCA_FAIL_ALGORITHM_NOT_ENABLED; each needs an algorithm of its family.
+rsa_public_key = true
+ecdsa_signature = true

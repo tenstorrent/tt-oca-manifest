@@ -238,6 +238,15 @@ missing-setting guard in `oca_config_check.h`; `tests/test_oca_build_config.py` 
 three agree and a library source reads it. `README.md`, "Build configuration", lists the
 settings.
 
+The algorithm sections are the build's portfolio: an algorithm the file does not name is off.
+The generator lists every algorithm the format defines, but only those with a row in
+`lib/algorithms.c` are implemented, and turning on any other stops the build. A manifest naming
+an algorithm the build leaves off is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`; one naming
+a value the format reserves with `OCA_FAIL_ALGORITHM_RESERVED`. To implement an algorithm, add
+its row with the sizes the format fixes, give its `Setting` in `gen_config.py` a macro, and add
+that macro to the check header; the lock-step tests in `tests/test_oca_build_config.py` hold
+the table rows, the generator and the packer's signing tables together.
+
 A consumer that must **never** accept a variant turns the other off in `[variants]`.
 `classic-only` builds from `test/build_configs/classic_only.toml`, `pqc-only` from
 `pqc_only.toml`, and `both` from the default, which accepts everything; each lands in its own

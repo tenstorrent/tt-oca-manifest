@@ -65,7 +65,8 @@ const char *oca_result_str(oca_result_t r)
         case OCA_FAIL_SIGNATURE_COHORT_REQUIRED: return "SIGNATURE_COHORT_REQUIRED";
         case OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED:
                                                 return "SIGNATURE_ALGORITHM_REVOKED";
-        case OCA_FAIL_UNSUPPORTED_ALGORITHM:    return "UNSUPPORTED_ALGORITHM";
+        case OCA_FAIL_ALGORITHM_NOT_ENABLED:    return "ALGORITHM_NOT_ENABLED";
+        case OCA_FAIL_ALGORITHM_RESERVED:       return "ALGORITHM_RESERVED";
     }
     return "UNKNOWN";
 }

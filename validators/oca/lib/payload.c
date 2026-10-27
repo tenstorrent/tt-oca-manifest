@@ -572,24 +572,25 @@ static void read_payload_shape(const uint8_t *body, bool *out_encrypted,
 }
 
 /**
- * @brief Refuse a payload whose declared algorithms this library cannot compute.
+ * @brief Refuse a payload whose declared algorithms this build does not enable.
  *
  * payload_hash_type selects the digest of payload_hash, of the chain and of
- * every entry hash, and only SHA2-256 is computed here. An encrypted payload
- * also names where its key comes from and how it is derived, and the decrypt
- * contract defines one of each: the pre-shared secret, through SP 800-108r1
- * counter mode with HMAC-SHA-256. Refused before any digest or decryption, so a
- * payload that is sound for another Consumer is not reported as corrupt.
+ * every entry hash, and SHA2-256 is the only one a build can enable. An
+ * encrypted payload also names where its key comes from and how it is derived,
+ * and the decrypt contract defines one of each: the pre-shared secret, through
+ * SP 800-108r1 counter mode with HMAC-SHA-256. Refused before any digest or
+ * decryption, so a payload that is sound for another Consumer is not reported
+ * as corrupt.
  *
  * @param[in] body       Manifest body.
  * @param[in] encrypted  Whether the payload is encrypted.
- * @retval OCA_OK                          Every declared algorithm is supported.
- * @retval OCA_FAIL_UNSUPPORTED_ALGORITHM  One is not.
+ * @retval OCA_OK                          Every declared algorithm is enabled.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  One is not.
  */
 static oca_result_t check_payload_algorithms(const uint8_t *body, bool encrypted)
 {
     if (body[OCA_OFF_PAYLOAD_HASH_TYPE] != OCA_HASH_TYPE_SHA2_256) {
-        return OCA_FAIL_UNSUPPORTED_ALGORITHM;
+        return OCA_FAIL_ALGORITHM_NOT_ENABLED;
     }
     if (!encrypted) {
         return OCA_OK;
@@ -600,7 +601,7 @@ static oca_result_t check_payload_algorithms(const uint8_t *body, bool encrypted
     if (key_source != OCA_ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED
         || oca_le_u16(body + OCA_OFF_ENCRYPTION_KDF)
                != OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256) {
-        return OCA_FAIL_UNSUPPORTED_ALGORITHM;
+        return OCA_FAIL_ALGORITHM_NOT_ENABLED;
     }
     return OCA_OK;
 }

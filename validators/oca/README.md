@@ -109,8 +109,24 @@ make BUILD=build/cap32 CONFIG=path/to/cap32.toml all
 | `[limits] toc_max_images` | `256` | Cap on payload TOC entries this build will process (exposed to code as `OCA_TOC_MAX_IMAGES`). |
 | `[hardening] recheck_security_version` | `true` | Re-evaluate anti-rollback after the signature verifies (`OCA_RECHECK_SECURITY_VERSION`). |
 
+| `[signature_classic] rsa_3072_pkcs1v15_sha256` | `true` | Verify RSA-3072, RSASSA-PKCS1-v1_5, SHA-256. |
+| `[signature_classic] ecdsa_p256_sha256` | `true` | Verify ECDSA P-256, SHA-256. |
+| `[signature_pqc] ml_dsa_87` | `true` | Verify FIPS 204 ML-DSA-87. Needs `[variants] pqc`. |
+| `[der] rsa_public_key` | `true` | Accept DER (PKCS#1) RSA public keys. Needs an RSA algorithm. |
+| `[der] ecdsa_signature` | `true` | Accept DER ECDSA signatures. Needs an ECDSA algorithm. |
+
 At least one variant must be on. A variant turned off is refused with
 `OCA_FAIL_UNSUPPORTED_VARIANT` instead of validated.
+
+The algorithm sections are the build's portfolio, and they work differently
+from the settings above: an algorithm or encoding the file does not name is
+off, so the file lists what the build accepts and nothing is accepted by
+default. At least one signature algorithm must be on. Every algorithm the
+format defines may be named — `lib/oca_config.toml` lists them — but only those
+with a row in `lib/algorithms.c` may be turned on; turning on any other stops
+the generator, naming it as not implemented. A manifest that names an
+algorithm or DER encoding the build leaves off is refused with
+`OCA_FAIL_ALGORITHM_NOT_ENABLED`, before any signature is checked.
 
 `recheck_security_version` is worth understanding before turning it off. The
 anti-rollback comparison runs *before* signature verification, so a replayed
@@ -222,24 +238,28 @@ The Makefile also auto-discovers a venv at `<repo>/.venv` or
 The
 [OCA boot manifest specification](https://www.openchipletatlas.org/specifications/oca/latest)
 asks every consumer implementor to document the "security portfolio" — the
-algorithms and manifest capabilities it supports. This library accepts the
-following and rejects everything else it is asked to act upon on the current
-boot path.
+algorithms and manifest capabilities it supports. This library can accept the
+following, and the default build configuration enables all of it. A build's
+configuration chooses which of these it accepts ([Settings](#settings)); a
+manifest naming an algorithm the build does not enable is refused with
+`OCA_FAIL_ALGORITHM_NOT_ENABLED`, and one naming a value the format reserves
+with `OCA_FAIL_ALGORITHM_RESERVED`. Everything else the library is asked to act
+upon on the current boot path is rejected too.
 
 | Manifest field | Supported value(s) | Notes |
 |----------------|--------------------|-------|
 | manifest format (magic) | `OCAC` (classic), `OCAP` (PQC) | one library parses both; magic selects the path |
-| `manifest_hash_type` | SHA2-256 (`0x01`) | the only digest this build recomputes; any other is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` before anything is hashed |
-| `payload_hash_type` | SHA2-256 (`0x01`) | covers `payload_hash`, the chain and every TOC entry hash; any other is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` when a payload is declared |
-| `signature_type_classic` | RSA-3072-PKCS#1v1.5-SHA256 (`0x01`), ECDSA-P256-SHA256 (`0x05`) | the primitive is passed to the host `verify_signature` callback; the callback owns the math |
-| `signature_encoding_classic` / `public_key_encoding_classic` | raw (`0x02`); ASN.1 DER (`0x01`) for RSA public keys and ECDSA signatures | under secure boot, every key and signature field of an enforced class must be zero past its declared size, or the manifest is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
+| `manifest_hash_type` | SHA2-256 (`0x01`) | the only digest the library recomputes; any other is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` before anything is hashed |
+| `payload_hash_type` | SHA2-256 (`0x01`) | covers `payload_hash`, the chain and every TOC entry hash; any other is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` when a payload is declared |
+| `signature_type_classic` | RSA-3072-PKCS#1v1.5-SHA256 (`0x01`), ECDSA-P256-SHA256 (`0x05`) | the primitive is passed to the host `verify_signature` callback; the callback owns the math. Under secure boot, any other algorithm the format defines is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, a reserved value with `OCA_FAIL_ALGORITHM_RESERVED` |
+| `signature_encoding_classic` / `public_key_encoding_classic` | raw (`0x02`); ASN.1 DER (`0x01`) for RSA public keys and ECDSA signatures | each DER encoding can be turned off in `[der]`, after which it is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`; DER for any other value is `OCA_FAIL_CRYPTO_FIELD_SIZE`. Under secure boot, every key and signature field of an enforced class must be zero past its declared size, or the manifest is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
 | `secure_boot_control` signature classes | classical, PQC, or both (hybrid) | under secure boot at least one class must be set, and the PQC class only on an `OCAP` manifest (else `OCA_FAIL_SIGNATURE_CLASS_CONTROL`); each enforced class's key is authorized against its own anchor family, and a hybrid manifest needs both signatures to verify |
-| `signature_type_pqc` | ML-DSA-87 (`0x33`) | pure FIPS 204 over the signed region, empty context; the host `verify_signature` callback owns the math |
-| `signature_encoding_pqc` / `public_key_encoding_pqc` | raw (`0x02`) only, with exact sizes: 4627-byte signature, 2592-byte key | any other PQC primitive, encoding or size is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
+| `signature_type_pqc` | ML-DSA-87 (`0x33`) | pure FIPS 204 over the signed region, empty context; the host `verify_signature` callback owns the math. ML-DSA-44 / -65 and SLH-DSA are refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, a reserved value (including `0x41` / `0x42`, held for FN-DSA) with `OCA_FAIL_ALGORITHM_RESERVED` |
+| `signature_encoding_pqc` / `public_key_encoding_pqc` | raw (`0x02`) only, with exact sizes: 4627-byte signature, 2592-byte key | any other encoding or size is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
 | device signature posture (`signature_class_revoke`, `signature_cohort_enforce` as committed) | per-algorithm class bits and the `0xCA` / `0xAC` group codes; the ROOT key's cohort nibble | applied at every secure boot by `oca_check_signature_posture()`: an enforced class whose algorithm the device has disabled is refused with `OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED`, and a manifest that does not enforce a cohort the device demands of the ROOT key with `OCA_FAIL_SIGNATURE_COHORT_REQUIRED` |
 | `encryption_type` | AES-128-CBC (`0x01`) or AES-256-CBC (`0x02`) + PKCS#7 | payload decryption is delegated to the host `decrypt_payload` callback; the key length follows the type |
-| `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below). Any other value on an encrypted payload is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` |
-| `input_key_source` | pre-shared secret (b001) | any other source on an encrypted payload, the KEM-unwrapped DEK included, is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` |
+| `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below). Any other value on an encrypted payload is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` |
+| `input_key_source` | pre-shared secret (b001) | any other source on an encrypted payload, the KEM-unwrapped DEK included, is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` |
 | payload `image_count` | 1 .. `toc_max_images` (default **256**) | a consumer resource limit, not a format limit — see below |
 
 **Payload TOC size limit.** The format sets no upper bound on `image_count`, so
@@ -286,8 +306,12 @@ state, so it is reproducible in every lifecycle state.
 **Not supported (rejected or not yet verified).** These are documented so an
 integrator knows the current boundary:
 
-- **PQC signature algorithms other than ML-DSA-87** — ML-DSA-44 / -65 and
-  SLH-DSA are refused with `OCA_FAIL_CRYPTO_FIELD_SIZE`.
+- **Signature algorithms other than RSA-3072-PKCS#1v1.5, ECDSA-P256 and
+  ML-DSA-87** — the library has no rules for the format's other RSA, ECDSA,
+  EdDSA, ML-DSA and SLH-DSA algorithms, so no build configuration can turn one
+  on (the generator stops the build). Manifests naming them are refused with
+  `OCA_FAIL_ALGORITHM_NOT_ENABLED`. Adding one means adding its row to
+  `lib/algorithms.c` and marking it implemented in `lib/scripts/gen_config.py`.
 - **Composite CBC-HMAC and AEAD (e.g. GCM-SIV) encryption modes**, and
   **KEM-unwrapped DEK** (`input_key_source` b010) — only plain AES-128-CBC and
   AES-256-CBC with a pre-shared secret are handled.

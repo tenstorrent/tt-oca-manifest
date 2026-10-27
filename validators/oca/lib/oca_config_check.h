@@ -42,19 +42,46 @@
 
 #if !defined(OCA_CFG_VARIANT_CLASSIC) || !defined(OCA_CFG_VARIANT_PQC) \
     || !defined(OCA_CFG_TOC_MAX_IMAGES) \
-    || !defined(OCA_CFG_RECHECK_SECURITY_VERSION)
+    || !defined(OCA_CFG_RECHECK_SECURITY_VERSION) \
+    || !defined(OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256) \
+    || !defined(OCA_CFG_SIG_ECDSA_P256_SHA256) \
+    || !defined(OCA_CFG_SIG_ML_DSA_87) \
+    || !defined(OCA_CFG_DER_RSA_PUBLIC_KEY) \
+    || !defined(OCA_CFG_DER_ECDSA_SIGNATURE)
 #error "oca_config.h is missing a setting; regenerate it"
 #endif
 
-#if (OCA_CFG_VARIANT_CLASSIC != 0 && OCA_CFG_VARIANT_CLASSIC != 1) \
-    || (OCA_CFG_VARIANT_PQC != 0 && OCA_CFG_VARIANT_PQC != 1) \
-    || (OCA_CFG_RECHECK_SECURITY_VERSION != 0 \
-        && OCA_CFG_RECHECK_SECURITY_VERSION != 1)
+/**
+ * @brief Whether a true/false setting holds 0 or 1.
+ *
+ * A switch holding anything else would read as on in one preprocessor test
+ * and off in a comparison elsewhere. Undefined again once the checks below
+ * have used it.
+ */
+#define OCA_CFG_IS_SWITCH(value) ((value) == 0 || (value) == 1)
+#if !OCA_CFG_IS_SWITCH(OCA_CFG_VARIANT_CLASSIC) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_VARIANT_PQC) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_RECHECK_SECURITY_VERSION) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_SIG_ECDSA_P256_SHA256) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_SIG_ML_DSA_87) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_DER_RSA_PUBLIC_KEY) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_DER_ECDSA_SIGNATURE)
 #error "oca_config.h holds a true/false setting that is neither 0 nor 1; regenerate it"
 #endif
+#undef OCA_CFG_IS_SWITCH
 
 #if !OCA_CFG_VARIANT_CLASSIC && !OCA_CFG_VARIANT_PQC
 #error "oca_config.h enables no manifest variant; [variants] must enable classic or pqc"
+#endif
+
+#if !OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256 && !OCA_CFG_SIG_ECDSA_P256_SHA256 \
+    && !OCA_CFG_SIG_ML_DSA_87
+#error "oca_config.h enables no signature algorithm"
+#endif
+
+#if OCA_CFG_SIG_ML_DSA_87 && !OCA_CFG_VARIANT_PQC
+#error "oca_config.h enables a PQC signature algorithm without [variants] pqc"
 #endif
 
 #if OCA_CFG_TOC_MAX_IMAGES < 1

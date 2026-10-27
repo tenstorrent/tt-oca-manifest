@@ -997,7 +997,9 @@ what `get_signature_cohort_enforce` and `get_signature_class_revoke` report:
 | `ROOT_KEY_REVOKED` | The selected PQC key is revoked in the manifest's or the device's PQC bitmap |
 | `SIGNATURE` | The PQC signature did not verify, or either half of a hybrid manifest did not |
 | `CALLBACK_UNAVAILABLE` | `verify_signature` has no backend for the manifest's PQC algorithm, the PQC revocation state could not be read, or a signature posture reader is missing or failed |
-| `CRYPTO_FIELD_SIZE` | The PQC description names an algorithm, encoding or size this library does not accept — today, anything but raw ML-DSA-87 at its exact sizes — or the PQC key or signature field is not zero past that size |
+| `ALGORITHM_NOT_ENABLED` | The PQC algorithm is one the format defines but this build does not enable — anything but ML-DSA-87, or ML-DSA-87 in a build whose configuration turns it off |
+| `ALGORITHM_RESERVED` | `signature_type_pqc` holds a value the format reserves, including `0x41` / `0x42`, held for FN-DSA |
+| `CRYPTO_FIELD_SIZE` | The PQC description names an encoding or size the algorithm does not define — anything but raw at ML-DSA-87's exact sizes — or the PQC key or signature field is not zero past that size |
 | `SIGNATURE_CLASS_CONTROL` | `secure_boot_pqc` on a Classic manifest, or secure boot with no class selected |
 | `SIGNATURE_ALGORITHM_REVOKED` | The device has disabled the PQC algorithm's class, or the whole PQC group (`0xAC`) — or, for a hybrid manifest, the classical one's |
 | `SIGNATURE_COHORT_REQUIRED` | The device demands a cohort the manifest does not enforce: PQC of a classic-only manifest, or the classical cohort of a PQC-only one |
@@ -1062,16 +1064,22 @@ Changes an existing integration should check. Most show only at run time.
   returns `OCA_FAIL_SIGNATURE_COHORT_REQUIRED` and
   `OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED`; a `switch` over `oca_result_t` with
   no `default` needs both cases.
-- **The PQC description is pinned.** The PQC class accepts raw ML-DSA-87 at its
-  exact sizes; anything else is `CRYPTO_FIELD_SIZE`.
+- **The build chooses its algorithms.** A signature algorithm the build
+  configuration does not enable — or one the library cannot yet judge — is
+  refused with the new `OCA_FAIL_ALGORITHM_NOT_ENABLED`, and a
+  `signature_type` the format reserves with the new
+  `OCA_FAIL_ALGORITHM_RESERVED`. Both used to be `CRYPTO_FIELD_SIZE`, which
+  now means only an encoding or size that does not fit the algorithm. A
+  configuration can also turn off DER RSA keys or DER ECDSA signatures. The
+  posture check reports an undefined type as `ALGORITHM_RESERVED` too.
 - **Declared algorithms are checked.** A `manifest_hash_type` or
   `payload_hash_type` other than SHA2-256, and on an encrypted payload an
   `encryption_key_derivation_function` other than SP 800-108r1 with
   HMAC-SHA-256 or an `input_key_source` other than the pre-shared secret, is
-  refused with the new `OCA_FAIL_UNSUPPORTED_ALGORITHM` before anything is
-  hashed or decrypted. Such a manifest was previously hashed or decrypted as if
-  it named the supported algorithm. A `switch` over `oca_result_t` with no
-  `default` needs the new case.
+  refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` before anything is hashed or
+  decrypted. Such a manifest was previously hashed or decrypted as if it named
+  the supported algorithm. A `switch` over `oca_result_t` with no `default`
+  needs both new cases.
 - **Padding past a declared size must be zero.** Under secure boot, a key or
   signature field of an enforced class that holds a non-zero byte past its
   declared size is `CRYPTO_FIELD_SIZE`. This packer has always written zeros

@@ -7,6 +7,7 @@
 
 #include "parser.h"
 
+#include "algorithms.h"
 #include "oca_compare.h"
 #include "oca_layout.h"
 #include "oca_layout_classic.h"
@@ -186,21 +187,6 @@ oca_result_t oca_check_signature_class_variant(const uint8_t *body)
     return OCA_OK;
 }
 
-/* Encoded lengths from the format's classic encoded-length table. Raw lengths
- * are fixed by the algorithm; a DER ECDSA signature is variable-length, so its
- * size field carries the algorithm MAXIMUM instead of an exact count. */
-
-/** Raw RSA-3072 public key: big-endian modulus (384) || big-endian exponent (4). */
-#define RAW_RSA_3072_PUBLIC_KEY_BYTES  388u
-/** Raw RSA-3072 signature: the big-endian signature integer. */
-#define RAW_RSA_3072_SIGNATURE_BYTES   384u
-/** Raw ECDSA P-256 public key: SEC1 uncompressed point, 0x04 || X || Y. */
-#define RAW_EC_P256_PUBLIC_KEY_BYTES    65u
-/** Raw ECDSA P-256 signature: r || s, each 32 bytes big-endian. */
-#define RAW_EC_P256_SIGNATURE_BYTES     64u
-/** Largest RFC 3279 ECDSA-Sig-Value a P-256 key can produce. */
-#define DER_EC_P256_SIGNATURE_MAX_BYTES 72u
-
 /**
  * @brief Whether a key or signature field holds anything past its valid bytes.
  *
@@ -217,6 +203,125 @@ oca_result_t oca_check_signature_class_variant(const uint8_t *body)
 static int padding_is_dirty(const uint8_t *field, size_t field_len, size_t valid_len)
 {
     return oca_ct_any_nonzero(field + valid_len, field_len - valid_len);
+}
+
+/**
+ * @brief The size a key or signature must declare in its stated encoding.
+ *
+ * Every encoding is matched against the ones its algorithm defines, so an
+ * unset, reserved or integrator value never falls through to another
+ * encoding's size rule.
+ *
+ * @param[in]  encoding  The value's *_encoding_* byte.
+ * @param[in]  raw       The algorithm's raw length for this value.
+ * @param[in]  der       Whether the algorithm accepts DER for this value.
+ * @param[in]  der_size  The size a DER encoding must declare.
+ * @param[out] want      Receives the required size on OCA_OK.
+ * @retval OCA_OK                          @p want holds the required size.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  DER, which the build configuration
+ *                                         turns off for this algorithm.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE      DER where the format defines none
+ *                                         for this algorithm, or an encoding
+ *                                         that is neither raw nor DER.
+ */
+static oca_result_t required_size(uint8_t encoding, uint16_t raw,
+                                  oca_der_support_t der, uint16_t der_size,
+                                  uint16_t *want)
+{
+    if (encoding == (uint8_t)OCA_ENCODING_RAW) {
+        *want = raw;
+        return OCA_OK;
+    }
+    if (encoding != (uint8_t)OCA_ENCODING_DER || der == OCA_DER_UNDEFINED) {
+        return OCA_FAIL_CRYPTO_FIELD_SIZE;
+    }
+    /* Anything but an intact ENABLED is refused, so a corrupted value fails
+     * closed. */
+    if (der != OCA_DER_ENABLED) {
+        return OCA_FAIL_ALGORITHM_NOT_ENABLED;
+    }
+    *want = der_size;
+    return OCA_OK;
+}
+
+/** @brief Where one signature class keeps its signing description. */
+typedef struct class_description {
+    oca_key_algorithm_t family;      /**< Which class's algorithm table applies. */
+    size_t off_type;                 /**< signature_type_* */
+    size_t off_signature_encoding;   /**< signature_encoding_* */
+    size_t off_public_key_encoding;  /**< public_key_encoding_* */
+    size_t off_signature_size;       /**< signature_size_* */
+    size_t off_public_key_size;      /**< public_key_size_* */
+    size_t off_signature;            /**< The signature field. */
+    size_t len_signature;            /**< Its width. */
+    size_t off_public_key;           /**< The public key field. */
+    size_t len_public_key;           /**< Its width. */
+} class_description_t;
+
+/**
+ * @brief Validate one enforced class's signing description.
+ *
+ * The algorithm is resolved first, so a manifest naming one this build does
+ * not enable, or a reserved value, is reported as that rather than as a size
+ * that happens not to fit.
+ *
+ * @param[in] body  Whole variant body.
+ * @param[in] d     Where the class's fields are.
+ * @retval OCA_OK                          The description is consistent.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  The algorithm, or a DER encoding it
+ *                                         uses, is not enabled in this build.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     The signature_type is reserved.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE      A size or encoding does not fit the
+ *                                         algorithm, or padding is not zero.
+ * @return The first failing step's result, always one of the codes above.
+ */
+static oca_result_t check_class_description(const uint8_t *body,
+                                             const class_description_t *d)
+{
+    oca_result_t status;
+    const oca_signature_algorithm_t *algorithm =
+        oca_signature_algorithm(d->family, body[d->off_type], &status);
+    if (algorithm == 0) {
+        return status;
+    }
+
+    uint16_t sig_size = oca_le_u16(body + d->off_signature_size);
+    uint16_t key_size = oca_le_u16(body + d->off_public_key_size);
+    if (sig_size == 0u || sig_size > d->len_signature
+        || key_size == 0u || key_size > d->len_public_key) {
+        return OCA_FAIL_CRYPTO_FIELD_SIZE;
+    }
+
+    /* A DER public key is PKCS#1, whose length varies with the public
+     * exponent, so its declared size is taken as exact; the field bound above
+     * is all that constrains it. A DER signature declares the algorithm's
+     * maximum DER length. */
+    uint16_t want_sig;
+    uint16_t want_key;
+    status = required_size(body[d->off_signature_encoding],
+                           algorithm->signature_raw, algorithm->signature_der,
+                           algorithm->signature_der_max, &want_sig);
+    if (status != OCA_OK) {
+        return status;
+    }
+    status = required_size(body[d->off_public_key_encoding],
+                           algorithm->public_key_raw, algorithm->public_key_der,
+                           key_size, &want_key);
+    if (status != OCA_OK) {
+        return status;
+    }
+    if (sig_size != want_sig || key_size != want_key) {
+        return OCA_FAIL_CRYPTO_FIELD_SIZE;
+    }
+
+    /* Confirm the signature and public key are zero-padded past their declared
+     * sizes. */
+    if (padding_is_dirty(body + d->off_signature, d->len_signature, sig_size)
+        || padding_is_dirty(body + d->off_public_key, d->len_public_key,
+                            key_size)) {
+        return OCA_FAIL_CRYPTO_FIELD_SIZE;
+    }
+    return OCA_OK;
 }
 
 oca_result_t oca_check_signing_description(const uint8_t *body,
@@ -254,100 +359,47 @@ oca_result_t oca_check_signing_description(const uint8_t *body,
     /* Skipped only on an exact OCA_SECURE_FALSE, so a corrupted
      * enforcement word runs a class's check rather than skipping it. */
     if (ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE) {
-        uint16_t sig_size = oca_le_u16(body + OCA_OFF_SIGNATURE_SIZE);
-        uint16_t key_size = oca_le_u16(body + OCA_OFF_PUBLIC_KEY_SIZE);
-        oca_encoding_t sig_enc = (oca_encoding_t)body[OCA_OFF_SIGNATURE_ENCODING];
-        oca_encoding_t key_enc = (oca_encoding_t)body[OCA_OFF_PUBLIC_KEY_ENCODING];
-        oca_primitive_type_t prim =
-            (oca_primitive_type_t)body[OCA_OFF_SIGNATURE_TYPE];
-
-        if (sig_size == 0u || sig_size > OCA_LEN_SIGNATURE
-            || key_size == 0u || key_size > OCA_LEN_PUBLIC_KEY) {
-            return OCA_FAIL_CRYPTO_FIELD_SIZE;
-        }
-
-        /* Every encoding is matched against the ones its primitive defines, so
-         * an unset, reserved or integrator value never falls through to
-         * another encoding's size rule. */
-        uint16_t want_sig;
-        uint16_t want_key;
-        if (prim == OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256) {
-            /* DER is not defined for an RSA signature. */
-            if (sig_enc != OCA_ENCODING_RAW) {
-                return OCA_FAIL_CRYPTO_FIELD_SIZE;
-            }
-            want_sig = RAW_RSA_3072_SIGNATURE_BYTES;
-            /* A DER RSA key is PKCS#1, whose length varies with the public
-             * exponent, so only the field bound above constrains it. */
-            if (key_enc == OCA_ENCODING_RAW) {
-                want_key = RAW_RSA_3072_PUBLIC_KEY_BYTES;
-            } else if (key_enc == OCA_ENCODING_DER) {
-                want_key = key_size;
-            } else {
-                return OCA_FAIL_CRYPTO_FIELD_SIZE;
-            }
-        } else if (prim == OCA_PRIMITIVE_ECDSA_P256_SHA256) {
-            if (sig_enc == OCA_ENCODING_RAW) {
-                want_sig = RAW_EC_P256_SIGNATURE_BYTES;
-            } else if (sig_enc == OCA_ENCODING_DER) {
-                want_sig = DER_EC_P256_SIGNATURE_MAX_BYTES;
-            } else {
-                return OCA_FAIL_CRYPTO_FIELD_SIZE;
-            }
-            /* DER is not defined for an EC public key. */
-            if (key_enc != OCA_ENCODING_RAW) {
-                return OCA_FAIL_CRYPTO_FIELD_SIZE;
-            }
-            want_key = RAW_EC_P256_PUBLIC_KEY_BYTES;
-        } else {
-            return OCA_FAIL_CRYPTO_FIELD_SIZE;
-        }
-
-        if (sig_size != want_sig || key_size != want_key) {
-            return OCA_FAIL_CRYPTO_FIELD_SIZE;
-        }
-        /* Confirm the classical signature and public key are zero-padded past
-         * their declared sizes. signature_classic is the one variant-positioned
-         * field here, so its offset comes from the descriptor. */
-        if (padding_is_dirty(body + v->off_signature, OCA_LEN_SIGNATURE, sig_size)
-            || padding_is_dirty(body + OCA_OFF_PUBLIC_KEY, OCA_LEN_PUBLIC_KEY,
-                                key_size)) {
-            return OCA_FAIL_CRYPTO_FIELD_SIZE;
+        /* signature_classic is the one variant-positioned field here, so its
+         * offset comes from the descriptor. */
+        const class_description_t classical = {
+            .family                  = OCA_KEY_ALGO_CLASSIC,
+            .off_type                = OCA_OFF_SIGNATURE_TYPE,
+            .off_signature_encoding  = OCA_OFF_SIGNATURE_ENCODING,
+            .off_public_key_encoding = OCA_OFF_PUBLIC_KEY_ENCODING,
+            .off_signature_size      = OCA_OFF_SIGNATURE_SIZE,
+            .off_public_key_size     = OCA_OFF_PUBLIC_KEY_SIZE,
+            .off_signature           = v->off_signature,
+            .len_signature           = OCA_LEN_SIGNATURE,
+            .off_public_key          = OCA_OFF_PUBLIC_KEY,
+            .len_public_key          = OCA_LEN_PUBLIC_KEY,
+        };
+        status = check_class_description(body, &classical);
+        if (status != OCA_OK) {
+            return status;
         }
     }
 
-    /* FIPS 204 defines no bare ASN.1 structure for an ML-DSA key or signature,
-     * so DER is undefined for PQC and both encodings must be raw, whose sizes
-     * the parameter set fixes exactly. */
     if (ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE) {
         /* Never read PQC offsets out of a body that has none. The confirm
          * above already refused this; it is repeated at the point of use. */
         if (ctx->manifest_is_pqc != OCA_SECURE_TRUE) {
             return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
         }
-        uint16_t pqc_sig_size = oca_le_u16(body + OCA_PQC_OFF_SIGNATURE_SIZE);
-        uint16_t pqc_key_size = oca_le_u16(body + OCA_PQC_OFF_PUBLIC_KEY_SIZE);
-        oca_encoding_t pqc_sig_enc =
-            (oca_encoding_t)body[OCA_PQC_OFF_SIGNATURE_ENCODING];
-        oca_encoding_t pqc_key_enc =
-            (oca_encoding_t)body[OCA_PQC_OFF_PUBLIC_KEY_ENCODING];
-        oca_primitive_type_t pqc_prim =
-            (oca_primitive_type_t)body[OCA_PQC_OFF_SIGNATURE_TYPE];
-
-        if (pqc_prim != OCA_PRIMITIVE_ML_DSA_87
-            || pqc_sig_enc != OCA_ENCODING_RAW
-            || pqc_key_enc != OCA_ENCODING_RAW
-            || pqc_sig_size != OCA_PQC_ML_DSA_87_SIGNATURE_BYTES
-            || pqc_key_size != OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES) {
-            return OCA_FAIL_CRYPTO_FIELD_SIZE;
-        }
-        /* Confirm the PQC signature and public key are zero-padded past their
-         * declared sizes. */
-        if (padding_is_dirty(body + OCA_PQC_OFF_SIGNATURE_PQC,
-                             OCA_PQC_LEN_SIGNATURE_PQC, pqc_sig_size)
-            || padding_is_dirty(body + OCA_PQC_OFF_PUBLIC_KEY,
-                                OCA_PQC_LEN_PUBLIC_KEY, pqc_key_size)) {
-            return OCA_FAIL_CRYPTO_FIELD_SIZE;
+        const class_description_t pqc = {
+            .family                  = OCA_KEY_ALGO_PQC,
+            .off_type                = OCA_PQC_OFF_SIGNATURE_TYPE,
+            .off_signature_encoding  = OCA_PQC_OFF_SIGNATURE_ENCODING,
+            .off_public_key_encoding = OCA_PQC_OFF_PUBLIC_KEY_ENCODING,
+            .off_signature_size      = OCA_PQC_OFF_SIGNATURE_SIZE,
+            .off_public_key_size     = OCA_PQC_OFF_PUBLIC_KEY_SIZE,
+            .off_signature           = OCA_PQC_OFF_SIGNATURE_PQC,
+            .len_signature           = OCA_PQC_LEN_SIGNATURE_PQC,
+            .off_public_key          = OCA_PQC_OFF_PUBLIC_KEY,
+            .len_public_key          = OCA_PQC_LEN_PUBLIC_KEY,
+        };
+        status = check_class_description(body, &pqc);
+        if (status != OCA_OK) {
+            return status;
         }
     }
     return OCA_OK;

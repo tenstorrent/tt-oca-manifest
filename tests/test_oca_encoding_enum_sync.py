@@ -35,7 +35,8 @@ import re
 
 import pytest
 
-from oca_fixtures.validator_source import size_check_class_blocks
+from oca_fixtures.validator_source import (encodings_required_size_accepts,
+                                            signature_table_rows)
 from tt_boot_manifest.oca import constants as oca_consts
 
 
@@ -172,14 +173,26 @@ def test_selectable_encodings_are_accepted_by_the_validator_config_path(encoding
     assert normalized["public_key_encoding"] == encoding
 
 
+def _accepted_encodings(signature_class: str) -> set[int]:
+    """The encodings the validator accepts for a class: raw for every algorithm,
+    and DER where some algorithm row of the class defines it."""
+    c_enum = _parse_oca_encoding_enum()
+    named = encodings_required_size_accepts()
+    accepted = {c_enum["OCA_ENCODING_RAW"]} if "OCA_ENCODING_RAW" in named else set()
+    defines_der = any(row["public_key_der"] != "OCA_DER_UNDEFINED"
+                      or row["signature_der"] != "OCA_DER_UNDEFINED"
+                      for row in signature_table_rows()[signature_class])
+    if defines_der and "OCA_ENCODING_DER" in named:
+        accepted.add(c_enum["OCA_ENCODING_DER"])
+    return accepted
+
+
 def test_c_classic_encoding_gate_matches_the_packer_classic_encodings():
     """The classical class's encodings the validator accepts equal the ones the
-    packer lets a config select. The block names each encoding it accepts and
-    refuses everything else, so an encoding read under another's rule would
-    have to be added here by name."""
-    c_enum = _parse_oca_encoding_enum()
-    classic_block = size_check_class_blocks()["classic"]
-    accepted = {c_enum[name] for name in re.findall(r"OCA_ENCODING_\w+", classic_block)}
+    packer lets a config select. required_size() names each encoding it accepts
+    and refuses everything else, so an encoding read under another's rule would
+    have to be added there by name."""
+    accepted = _accepted_encodings("classic")
     assert accepted == set(oca_consts.OCA_SELECTABLE_ENCODINGS), (
         f"the validator accepts classical encodings {sorted(hex(v) for v in accepted)} "
         f"but the packer's OCA_SELECTABLE_ENCODINGS is "
@@ -189,9 +202,7 @@ def test_c_classic_encoding_gate_matches_the_packer_classic_encodings():
 def test_c_pqc_encoding_gate_matches_the_packer_pqc_encodings():
     """The PQC class's encodings the validator accepts equal the ones the packer
     lets a config select: raw only, since DER is reserved for PQC."""
-    c_enum = _parse_oca_encoding_enum()
-    pqc_block = size_check_class_blocks()["pqc"]
-    accepted = {c_enum[name] for name in re.findall(r"OCA_ENCODING_\w+", pqc_block)}
+    accepted = _accepted_encodings("pqc")
     assert accepted == set(oca_consts.PQC_SELECTABLE_ENCODINGS), (
         f"the validator accepts PQC encodings {sorted(hex(v) for v in accepted)} but "
         f"the packer's PQC_SELECTABLE_ENCODINGS is "

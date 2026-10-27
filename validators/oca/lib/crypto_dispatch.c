@@ -25,7 +25,7 @@ oca_result_t oca_check_manifest_hash(const uint8_t *body,
     /* Refused before hashing: a SHA-256 compared against a digest of another
      * algorithm would report a sound manifest as corrupt. */
     if (body[OCA_OFF_MANIFEST_HASH_TYPE] != OCA_HASH_TYPE_SHA2_256) {
-        return OCA_FAIL_UNSUPPORTED_ALGORITHM;
+        return OCA_FAIL_ALGORITHM_NOT_ENABLED;
     }
     if (cb == 0 || cb->sha256 == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;

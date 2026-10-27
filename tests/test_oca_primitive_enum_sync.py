@@ -22,7 +22,7 @@ import re
 
 import pytest
 
-from oca_fixtures.validator_source import size_check_class_blocks
+from oca_fixtures.validator_source import signature_table_rows
 from tt_boot_manifest.oca import constants as oca_consts
 
 
@@ -131,12 +131,10 @@ def test_spec_only_list_names_no_value_the_packer_writes():
     assert not overlap, f"_SPEC_ONLY lists values the packer writes: {sorted(overlap)}"
 
 
-def _c_accepted_primitives_by_class() -> dict[str, set[str]]:
-    """Primitive enumerators `oca_check_signing_description()` accepts, per class."""
-    return {
-        signature_class: set(re.findall(r"OCA_PRIMITIVE_\w+", block))
-        for signature_class, block in size_check_class_blocks().items()
-    }
+def _c_accepted_primitives_by_class() -> dict[str, set[int]]:
+    """The signature_type values the library has algorithm rows for, per class."""
+    return {signature_class: {row["type"] for row in rows}
+            for signature_class, rows in signature_table_rows().items()}
 
 
 @pytest.mark.parametrize("signature_class,packer_enum", [
@@ -145,12 +143,14 @@ def _c_accepted_primitives_by_class() -> dict[str, set[str]]:
 ])
 def test_validator_accepts_exactly_the_primitives_the_packer_writes(
         signature_class, packer_enum):
-    """For each signature class, the primitives the validator's size check admits
-    equal the ones the packer can write: a primitive the packer signs with but
-    the validator refuses, or one the validator admits that no producer makes,
-    is a silent divergence either way."""
+    """For each signature class, the algorithms the validator has rows for equal
+    the ones the packer can write: a primitive the packer signs with but the
+    validator refuses, or one the validator admits that no producer makes, is a
+    silent divergence either way. Each row's value must also be an enumerator
+    of oca_primitive_type_t, which the blob hands to the verify callback."""
     c_enum = _parse_oca_primitive_enum()
-    accepted = {c_enum[name] for name in _c_accepted_primitives_by_class()[signature_class]}
+    accepted = _c_accepted_primitives_by_class()[signature_class]
+    assert accepted <= set(c_enum.values()), "a table row has no oca_primitive_type_t enumerator"
     packer = {member.value for member in packer_enum}
     assert accepted == packer, (
         f"{signature_class}: the validator accepts "
