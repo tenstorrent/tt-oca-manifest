@@ -37,8 +37,8 @@ them for keywords — a partial read costs far more time than a full one.
 | Document | What it answers |
 |---|---|
 | `README.md` | The manifest variants, installation, packing, YAML config field reference, signing authorities, secure boot, test organization |
-| `validators/oca/README.md` | Validator layout, build targets, compile-time gates, the producer/consumer lock-step gates and what to do when you add a field |
-| `validators/oca/INTEGRATION.md` | Building a consumer on the library: vendoring, the callback table, entry points, the staged boot flow, reaching the plaintext payload, walking the TOC, secure-boot device state, enabling PQC secure boot, upgrading to 0.7 |
+| `validators/oca/README.md` | Validator layout, build targets, the build configuration and its settings, the producer/consumer lock-step gates and what to do when you add a field |
+| `validators/oca/INTEGRATION.md` | Building a consumer on the library: vendoring, configuring the build, the callback table, entry points, the staged boot flow, reaching the plaintext payload, walking the TOC, secure-boot device state, enabling PQC secure boot, upgrading to 0.7 |
 | [OCA boot manifest specification](https://www.openchipletatlas.org/specifications/oca/latest) | The format specification itself — the authority the producer and validator both implement. Owned and published by the Open Chiplet Atlas project, not maintained in this repository |
 | `validators/oca/lib/oca_validator.h` | The sole public C header; the API contract and every result code |
 | `src/oca/constants.py` | OCA offsets, lengths and enums — the **source of truth** the C layout headers mirror |
@@ -81,7 +81,7 @@ future variants slot in under `lib/` without a build-system fork.
 | `src/oca/` | The OCA producer: `entry.py` (`pack_oca_bundle`), `constants.py` (layout source of truth), `validators.py` (config validation), `combined.py` (multi-bank assembly), plus manifest/TOC/payload/encryption/constraint builders |
 | `src/manifest_signing.py` | The signing abstraction — `local`, `aws`, `hsm` — that every signing operation goes through |
 | `validators/oca/lib/` | The freestanding C validator library. **This is the directory a target firmware project vendors** |
-| `validators/oca/lib/scripts/` | The drift and documentation checkers pytest drives: `sync_layout.py`, `check_doc_comments.py`, `check_retval_docs.py`, `check_object_equivalence.py` |
+| `validators/oca/lib/scripts/` | `gen_config.py`, which generates the build configuration header, and the drift and documentation checkers pytest drives: `sync_layout.py`, `check_doc_comments.py`, `check_retval_docs.py`, `check_object_equivalence.py` |
 | `validators/oca/test/` | Host harness — the `oca-validate` CLI, the in-tree C unit tests, and the fixture configs. **Never shipped to silicon** |
 | `tests/` | The pytest suite: OCA producer, signing, and the C-validator integration and drift gates |
 | `tests/signing_keys/` | Development test keys **only**. Never production |
@@ -218,27 +218,40 @@ root-key and storage-image flags — read it rather than guessing. Fixture confi
 `validators/oca/test/fixtures/configs/` pair each `<name>.yaml` with a `<name>.flags` file
 holding the CLI flags that fixture needs.
 
-### Compile-time gates
+### Build configuration
 
-`EXTRA_CFLAGS` is the single hook for feature gates:
+Every compile-time setting of the library comes from one TOML file. `lib/oca_config.toml` is
+the default; `CONFIG` names another:
 
 ```bash
-make -C validators/oca EXTRA_CFLAGS="-DOCA_TOC_MAX_IMAGES=32" test
+make -C validators/oca CONFIG=path/to/board.toml test
 ```
 
-A consumer that must **never** accept a variant compiles the other out. `classic-only` builds
-with `-DOCA_SUPPORT_PQC=0`, `pqc-only` with `-DOCA_SUPPORT_CLASSIC=0`, and `both` (identical
-to the default) accepts everything; each lands in its own build directory. An excluded variant
-is then reported as an unsupported-variant failure rather than validated. This is the only
-build-time variant choice — there is no per-variant source fork, and all three configurations
-must keep building.
+`lib/scripts/gen_config.py` generates `build/gen/oca_config.h` from it before anything
+compiles, and `lib/oca_config_check.h` refuses a header that is missing, hand-edited or from
+another library version. A configuration **replaces** the default: every setting must be
+stated, unknown keys are errors, and the settings' former `-D` forms
+(`-DOCA_TOC_MAX_IMAGES=32`, `-DOCA_SUPPORT_PQC=0`) fail the compile naming the key that
+replaced each. To add a setting, add it to `SETTINGS` in `gen_config.py`, to every file that
+states settings (`lib/oca_config.toml` and `test/build_configs/*.toml`), and to the
+missing-setting guard in `oca_config_check.h`; `tests/test_oca_build_config.py` fails until all
+three agree and a library source reads it. `README.md`, "Build configuration", lists the
+settings.
 
-Changing `EXTRA_CFLAGS` does force a rebuild. Make decides what to recompile from timestamps,
-never from the last command line, so the Makefile records the flags in a stamp file
-(`build/lib/.cflags`) that every object depends on. That stamp is rewritten only when the
-flags actually differ, so unchanged builds stay incremental. Without it, a changed gate
-silently reuses objects compiled with the previous value — which has produced wrong test
-verdicts before.
+A consumer that must **never** accept a variant turns the other off in `[variants]`.
+`classic-only` builds from `test/build_configs/classic_only.toml`, `pqc-only` from
+`pqc_only.toml`, and `both` from the default, which accepts everything; each lands in its own
+build directory. An excluded variant is then reported as an unsupported-variant failure rather
+than validated. This is the only build-time variant choice — there is no per-variant source
+fork, and all three configurations must keep building.
+
+`EXTRA_CFLAGS` remains for compiler flags only. Changing it, or the configuration, forces a
+rebuild. Make decides what to recompile from timestamps, never from the last command line, so
+the Makefile records the flags in a stamp file (`build/lib/.cflags`) that every object depends
+on, and regenerates `oca_config.h` on every build but rewrites it only when its content
+changes. Both stay untouched when nothing changed, so unchanged builds stay incremental.
+Without them, a changed setting silently reuses objects compiled with the previous value —
+which has produced wrong test verdicts before.
 
 ### Integrating the library
 
@@ -499,8 +512,9 @@ the `aws-sso` console script.
 
 1. **Mass failures are environmental.** If tests your change never touched are failing,
    suspect the toolchain and the state of your tree before the code.
-2. **A stale-object failure looks like a logic bug.** After changing `EXTRA_CFLAGS`, confirm
-   the flag stamp at `validators/oca/build/lib/.cflags` holds what you expect. When in doubt,
+2. **A stale-object failure looks like a logic bug.** After changing `EXTRA_CFLAGS` or the
+   configuration, confirm the flag stamp at `validators/oca/build/lib/.cflags` and the
+   generated `validators/oca/build/gen/oca_config.h` hold what you expect. When in doubt,
    `make -C validators/oca clean`.
 3. **Read the gate's own message.** The drift, completeness, doc-comment and retval checkers
    all report the exact symbol or line at fault, and `sync_layout.py` emits a fixup suggestion.
@@ -588,7 +602,9 @@ Keep pull requests focused; unrelated changes belong in separate ones. Branch na
 | `pytest -m aws` skips every test | The `aws` extra is not installed, or the `AWS_KMS_TEST_*` key-id variables are unset. `-rs` prints which |
 | A green run with far fewer tests than expected | A missing toolchain turned gates into skips. Confirm `make`, `pkg-config` and a non-1.9.8 doxygen are present |
 | `make check` succeeds but validated nothing | A "nothing to build" path. Look for `skipping archive`, `skipping link`, `no fixtures yet`, and for two `N/N passed` summaries |
-| A gate change has no effect on the built binary | Objects were reused across an `EXTRA_CFLAGS` change. Check `build/lib/.cflags`, or clean |
+| A setting change has no effect on the built binary | Objects were reused across the change. Check `build/lib/.cflags` and `build/gen/oca_config.h`, or clean. GNU Make 3.81 compares timestamps to the whole second, so a script that switches configurations within one second can hit this; use GNU Make 4 |
+| The library fails to compile with `oca_config.h: No such file`, or an `#error` naming a configuration key | The build configuration header was not generated, or a setting was passed with `-D`. Build through the Makefile, or run `lib/scripts/gen_config.py` and put its output directory on the include path; set the key in the configuration file instead of the `-D` |
+| `gen_config.py needs Python 3.11 or later` | The generator uses `tomllib`. The Makefile runs `$PYTHON` when set, else `python3`; point `CONFIG_PYTHON` at a 3.11+ interpreter |
 | `make check` cannot import the packer | The Makefile's interpreter search found a Python without the editable install. Pass `PYTHON=<path>` explicitly |
 | A new manifest field passes Python tests but the validator ignores it | The completeness gate was satisfied with an allowlist entry instead of a decoder, or the check was composed into `oca_validate()` where the staged flow skips it |
 | `oca-combined` treated as a third manifest variant | It is a packaging mode that places already-built bundles; only `oca-classic` and `oca-pqc` are formats |

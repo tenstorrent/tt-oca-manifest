@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import time
+import tomllib
 
 import pytest
 
@@ -348,7 +349,7 @@ def test_secure_boot_device_state_example_builds_and_validates():
 
 
 # ---------------------------------------------------------------------------
-# Build-time variant gate: OCA_SUPPORT_CLASSIC / OCA_SUPPORT_PQC
+# Build-time variant gate: [variants] in the build configuration
 # ---------------------------------------------------------------------------
 
 
@@ -1165,7 +1166,7 @@ def test_cli_decrypt_in_place_is_inert_for_cleartext_bundles():
 
 
 # ---------------------------------------------------------------------------
-# image_count cap (OCA_TOC_MAX_IMAGES)
+# image_count cap (OCA_TOC_MAX_IMAGES, [limits] toc_max_images)
 #
 # The format puts no upper bound on image_count, so the only structural limit is
 # that the TOC fit inside the payload -- which grows with the input, while the
@@ -1242,14 +1243,46 @@ def _craft_oversized_toc_bundle(template_path: str, image_count: int, out_path):
     return out_path
 
 
-def _c_toc_max_images() -> int:
-    """Read OCA_TOC_MAX_IMAGES out of the public header."""
-    header = os.path.join(VALIDATOR_DIR, "lib", "oca_validator.h")
-    with open(header) as handle:
-        match = re.search(r"^#define\s+OCA_TOC_MAX_IMAGES\s+(\d+)u?\s*$",
-                          handle.read(), re.MULTILINE)
-    assert match, "OCA_TOC_MAX_IMAGES not found in oca_validator.h"
-    return int(match.group(1))
+def _default_toc_max_images() -> int:
+    """toc_max_images from the default build configuration, which the CLI is built with."""
+    with open(os.path.join(VALIDATOR_DIR, "lib", "oca_config.toml"), "rb") as handle:
+        return tomllib.load(handle)["limits"]["toc_max_images"]
+
+
+def _configured_cli(build_dir, config_text: str) -> str:
+    """Build the CLI from a build configuration of its own; return its path."""
+    config = os.path.join(build_dir, "build_config.toml")
+    os.makedirs(build_dir, exist_ok=True)
+    with open(config, "w") as handle:
+        handle.write(config_text)
+    result = subprocess.run(
+        ["make", "-C", VALIDATOR_DIR, f"BUILD={build_dir}", f"CONFIG={config}", "test"],
+        cwd=PROJECT_ROOT, capture_output=True, text=True,
+        env={**os.environ, "PYTHON": sys.executable},
+    )
+    if result.returncode != 0:
+        pytest.fail(f"configured build failed:\nstdout:\n{result.stdout}\n"
+                    f"stderr:\n{result.stderr}")
+    return os.path.join(build_dir, "test", "oca-validate")
+
+
+def _assert_toc_cap_is(cli: str, cap: int, tmp_path) -> None:
+    """One image over the cap is refused on the count; exactly at it is not.
+
+    At the cap the bundle fails later, on the hash chain, which is exactly the
+    proof that the count check let it through.
+    """
+    template = _pack_fixture("basic")
+    over = _craft_oversized_toc_bundle(template, cap + 1, tmp_path / "over.bin")
+    result = _run_cli_at(cli, ["--manifest", str(over)])
+    assert re.match(rb"^FAIL: PAYLOAD_TOO_MANY_IMAGES: ", result.stderr), result.stderr
+
+    at_cap = _craft_oversized_toc_bundle(template, cap, tmp_path / "at_cap.bin")
+    result = _run_cli_at(cli, ["--manifest", str(at_cap)])
+    assert re.match(rb"^FAIL: PAYLOAD_HASH_CHAIN: ", result.stderr), (
+        f"a TOC exactly at the cap should pass the count check and fail later; "
+        f"got {result.stderr!r}"
+    )
 
 
 def test_oversized_toc_is_rejected_on_the_count(tmp_path):
@@ -1277,23 +1310,18 @@ def test_oversized_toc_is_rejected_on_the_count(tmp_path):
 
 
 def test_toc_just_over_the_cap_is_rejected_and_just_under_is_not(tmp_path):
-    """Boundary check against the header's own value, so the test tracks the cap
-    rather than hardcoding it."""
-    cap = _c_toc_max_images()
-    template = _pack_fixture("basic")
+    """Boundary check against the default configuration's own value, so the test
+    tracks the cap rather than hardcoding it."""
+    _assert_toc_cap_is(CLI_PATH, _default_toc_max_images(), tmp_path)
 
-    over = _craft_oversized_toc_bundle(template, cap + 1, tmp_path / "over.bin")
-    result = _run_cli(["--manifest", str(over)])
-    assert re.match(rb"^FAIL: PAYLOAD_TOO_MANY_IMAGES: ", result.stderr), result.stderr
 
-    # At the cap the count is accepted; the bundle then fails later, on the hash
-    # chain, which is exactly the proof that the count check let it through.
-    at_cap = _craft_oversized_toc_bundle(template, cap, tmp_path / "at_cap.bin")
-    result = _run_cli(["--manifest", str(at_cap)])
-    assert re.match(rb"^FAIL: PAYLOAD_HASH_CHAIN: ", result.stderr), (
-        f"a TOC exactly at the cap should pass the count check and fail later; "
-        f"got {result.stderr!r}"
-    )
+def test_the_toc_cap_follows_the_build_configuration(tmp_path):
+    """A cap set in the configuration file reaches the built validator."""
+    cli = _configured_cli(str(tmp_path / "build"), (
+        "[variants]\nclassic = true\npqc = true\n"
+        "[limits]\ntoc_max_images = 3\n"
+        "[hardening]\nrecheck_security_version = true\n"))
+    _assert_toc_cap_is(cli, 3, tmp_path)
 
 
 def test_real_multi_image_fixture_is_unaffected_by_the_cap():
@@ -1303,7 +1331,7 @@ def test_real_multi_image_fixture_is_unaffected_by_the_cap():
     assert result.returncode == 0, result.stderr
     toc, images = _parse_listing(result.stdout)
     assert int(toc["images"]) == 3
-    assert 3 < _c_toc_max_images()
+    assert 3 < _default_toc_max_images()
 
 
 # ---------------------------------------------------------------------------

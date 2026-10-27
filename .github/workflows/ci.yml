@@ -219,9 +219,9 @@ jobs:
             gcc:yes)   echo "::error::-Wdocumentation reached a gcc build; the probe is not gating"; exit 1 ;;
           esac
 
-      # A consumer that must never accept a variant compiles it out via the
-      # OCA_SUPPORT_* gates. All three configurations have to keep building, or
-      # the gate has quietly stopped being an option.
+      # A consumer that must never accept a variant turns it off in [variants] of
+      # its build configuration. All three configurations have to keep building,
+      # or that setting has quietly stopped being an option.
       - name: Build the variant-gated configurations
         run: |
           for target in both classic-only pqc-only; do

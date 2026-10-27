@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+#
+# Build configuration for the OCA validator library: the default.
+#
+# Every compile-time setting of the library lives in a file like this one.
+# lib/scripts/gen_config.py turns it into oca_config.h, and the library refuses
+# to compile without that header. To configure a build, copy this file outside
+# the vendored lib/ directory, edit the copy, and generate from it. Your file
+# replaces this one entirely: every setting must be stated, and nothing here is
+# merged into it.
+
+[variants]
+# Which manifest variants this build accepts. A variant set to false is refused
+# with OCA_FAIL_UNSUPPORTED_VARIANT instead of validated. At least one must be
+# true.
+classic = true
+pqc = true
+
+[limits]
+# Most payload TOC entries this build processes, 1 to 4294967295. The format
+# sets no upper bound, and the TOC overlap check is quadratic in the count, so
+# a larger TOC is refused with OCA_FAIL_PAYLOAD_TOO_MANY_IMAGES.
+toc_max_images = 256
+
+[hardening]
+# Evaluate anti-rollback a second time, after the signature verifies. The first
+# evaluation already decides; the second catches a fault that skipped it.
+recheck_security_version = true

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+#
+# Build configuration for the `pqc-only` target: lib/oca_config.toml with
+# Classic compiled out: OCA-Classic manifests are refused with OCA_FAIL_UNSUPPORTED_VARIANT.
+
+[variants]
+classic = false
+pqc = true
+
+[limits]
+toc_max_images = 256
+
+[hardening]
+recheck_security_version = true

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -120,6 +121,42 @@ def format_report(results, baseline_ref):
     return "\n".join(lines)
 
 
+def load_generator(path):
+    """Import a tree's gen_config.py by path, under a name unique to that path.
+
+    Each tree is built with its own generator, so the baseline and the working
+    tree never share one. Registered in sys.modules before it runs, because a
+    dataclass looks its own module up there while it is being defined.
+    """
+    name = "oca_gen_config_" + hashlib.sha256(path.encode()).hexdigest()[:16]
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def generate_config_header(source_lib_dir, output_dir):
+    """Generate a tree's oca_config.h from that tree's own default configuration.
+
+    Returns the include flags the tree's sources need: none for a tree that
+    predates the generated configuration, so a baseline from before it still
+    builds. Returns an error string instead when generation fails.
+    """
+    generator_path = os.path.join(source_lib_dir, "scripts", "gen_config.py")
+    if not os.path.exists(generator_path):
+        return []
+    generator = load_generator(generator_path)
+    gen_dir = os.path.join(output_dir, "gen")
+    try:
+        generator.generate(os.path.join(source_lib_dir, "oca_config.toml"),
+                           os.path.join(gen_dir, "oca_config.h"))
+    except generator.ConfigError as exc:
+        return (f"generating {source_lib_dir}'s oca_config.h failed:\n"
+                + "\n".join(exc.problems))
+    return ["-I", gen_dir]
+
+
 def build_objects(source_lib_dir, output_dir):
     """Compile every lib/*.c into output_dir. Returns None, or an error string."""
     os.makedirs(output_dir, exist_ok=True)
@@ -129,10 +166,13 @@ def build_objects(source_lib_dir, output_dir):
     )
     if not sources:
         return f"no .c files found in {source_lib_dir}"
+    config_include = generate_config_header(source_lib_dir, output_dir)
+    if isinstance(config_include, str):
+        return config_include
     for source in sources:
         target = os.path.join(
             output_dir, os.path.basename(source)[:-2] + ".o")
-        command = ["cc"] + COMPILE_FLAGS + ["-I", source_lib_dir,
+        command = ["cc"] + COMPILE_FLAGS + ["-I", source_lib_dir, *config_include,
                                             "-c", source, "-o", target]
         completed = subprocess.run(command, capture_output=True, text=True)
         if completed.returncode != 0:

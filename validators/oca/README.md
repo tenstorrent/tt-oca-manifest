@@ -26,12 +26,16 @@ validators/oca/
 │   ├── oca_validator.h     # SOLE public header (format-agnostic API)
 │   ├── oca_validator.c     # entry point — dispatches on magic
 │   ├── oca_layout.h        # field offsets (mirrors the packer constants)
+│   ├── oca_config.toml     # the default build configuration
+│   ├── oca_config_check.h  # refuses a missing, stale or hand-edited oca_config.h
 │   ├── ...                 # per-format decoders
 │   └── scripts/
+│       ├── gen_config.py   # generates oca_config.h from a build configuration
 │       └── sync_layout.py  # drift check against src/oca/constants.py
 └── test/              # host harness (NEVER ship to silicon)
     ├── main.c           # the CLI driver
     ├── unit_test.c      # in-tree C unit tests
+    ├── build_configs/   # build configurations for the variant-gated targets
     └── fixtures/
         ├── configs/     # YAML configs that drive `make check`
         └── *.bin        # generated binaries (gitignored)
@@ -50,50 +54,72 @@ make clean
 The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic
 -ffreestanding -nostdlib`. The host CLI links OpenSSL 3.5 or later (`-lcrypto`).
 
-### Compile-time overrides
+### Build configuration
 
-`EXTRA_CFLAGS` is the single hook for the feature gates (`OCA_TOC_MAX_IMAGES`,
-`OCA_SUPPORT_PQC=0`, …):
-
-```sh
-make EXTRA_CFLAGS="-DOCA_TOC_MAX_IMAGES=32" test
-```
-
-Changing `EXTRA_CFLAGS` does force a rebuild. `make` decides what to recompile from file
-timestamps and never from the command line it last used, so the build records the
-flags in a stamp file (`build/*/.cflags`) that every object depends on. Without
-that, changing a `-D` and rebuilding into the same directory silently reused
-objects compiled with the previous value — a binary that did not match the flags
-you asked for, which has produced wrong test verdicts. The stamp is rewritten only
-when the flags actually differ, so an unchanged rebuild stays incremental. This is
-independent of your make version: **no** make tracks the command line it last used,
-so the stamp is required regardless.
-
-The `classic-only` / `pqc-only` targets use separate `BUILD` directories, so they
-never contend with the default build. Do the same for ad-hoc experiments if you
-want to keep both around:
+Every compile-time setting of the library lives in one TOML file. The build
+generates `build/gen/oca_config.h` from it before compiling anything, and the
+library does not compile without that header. `lib/oca_config.toml` is the
+default; name another with `CONFIG`:
 
 ```sh
-make BUILD=build/cap32 EXTRA_CFLAGS="-DOCA_TOC_MAX_IMAGES=32" all
+make CONFIG=path/to/board.toml test
 ```
 
-#### Available gates
+A configuration **replaces** the default rather than adjusting it. Every setting
+must be stated, an unknown or misspelled key is an error, and the generator
+reports every problem in one pass. When a library upgrade adds a setting, your
+build stops until you choose its value, instead of inheriting one nobody
+reviewed. The settings' former `-D` forms (`-DOCA_TOC_MAX_IMAGES=32` and the
+rest) are refused at compile time, naming the key that replaced each.
+`EXTRA_CFLAGS` remains for compiler flags only: sanitizers, warnings,
+optimization.
 
-| Symbol | Default | Effect |
+The generator, `lib/scripts/gen_config.py`, needs Python 3.11 or later and
+nothing beyond its standard library. The Makefile runs it with `PYTHON` when you
+set one, `python3` otherwise, and `CONFIG_PYTHON` overrides both. It rewrites
+the header only when the content changes, so an unchanged build stays
+incremental while editing the file, or switching `CONFIG`, rebuilds what
+depends on it. `INTEGRATION.md`, "Configuring the build", covers generating the
+header from another build system.
+
+Changing `EXTRA_CFLAGS` forces a rebuild too. `make` decides what to recompile
+from file timestamps and never from the command line it last used, so the build
+records the flags in a stamp file (`build/*/.cflags`) that every object depends
+on. Without that, changing a flag and rebuilding into the same directory silently
+reused objects compiled with the previous value — a binary that did not match the
+flags you asked for, which has produced wrong test verdicts. The stamp is
+rewritten only when the flags actually differ, so an unchanged rebuild stays
+incremental. This is independent of your make version: **no** make tracks the
+command line it last used, so the stamp is required regardless.
+
+The `classic-only` / `pqc-only` targets build from `test/build_configs/` into
+separate `BUILD` directories, so they never contend with the default build. Do
+the same for ad-hoc experiments if you want to keep both around:
+
+```sh
+make BUILD=build/cap32 CONFIG=path/to/cap32.toml all
+```
+
+#### Settings
+
+| Key | Default | Effect |
 |---|---|---|
-| `OCA_SUPPORT_CLASSIC` | `1` | Compile in the `OCAC` variant. |
-| `OCA_SUPPORT_PQC` | `1` | Compile in the `OCAP` variant. |
-| `OCA_TOC_MAX_IMAGES` | `256` | Cap on payload TOC entries this build will process. |
-| `OCA_RECHECK_SECURITY_VERSION` | `1` | Re-evaluate anti-rollback after the signature verifies. |
+| `[variants] classic` | `true` | Accept the `OCAC` variant. |
+| `[variants] pqc` | `true` | Accept the `OCAP` variant. |
+| `[limits] toc_max_images` | `256` | Cap on payload TOC entries this build will process (exposed to code as `OCA_TOC_MAX_IMAGES`). |
+| `[hardening] recheck_security_version` | `true` | Re-evaluate anti-rollback after the signature verifies (`OCA_RECHECK_SECURITY_VERSION`). |
 
-`OCA_RECHECK_SECURITY_VERSION` is worth understanding before turning it off. The
+At least one variant must be on. A variant turned off is refused with
+`OCA_FAIL_UNSUPPORTED_VARIANT` instead of validated.
+
+`recheck_security_version` is worth understanding before turning it off. The
 anti-rollback comparison runs *before* signature verification, so a replayed
 manifest is rejected without paying for a public-key operation. That early
 evaluation is sound in the rejection direction: the compared value is inside the
 signed region, so a manifest altered to change the outcome fails verification
 anyway.
 
-The second evaluation, which this gate controls, is therefore defence in depth
+The second evaluation, which this setting controls, is therefore defence in depth
 rather than correctness — it catches a fault that skipped or glitched past the
 first. Setting it to `0` saves one device-state read and one 16-byte compare on
 the accept path, against a signature verification that dominates both. Disable it
@@ -214,7 +240,7 @@ boot path.
 | `encryption_type` | AES-128-CBC (`0x01`) or AES-256-CBC (`0x02`) + PKCS#7 | payload decryption is delegated to the host `decrypt_payload` callback; the key length follows the type |
 | `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below). Any other value on an encrypted payload is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` |
 | `input_key_source` | pre-shared secret (b001) | any other source on an encrypted payload, the KEM-unwrapped DEK included, is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` |
-| payload `image_count` | 1 .. `OCA_TOC_MAX_IMAGES` (default **256**) | a consumer resource limit, not a format limit — see below |
+| payload `image_count` | 1 .. `toc_max_images` (default **256**) | a consumer resource limit, not a format limit — see below |
 
 **Payload TOC size limit.** The format sets no upper bound on `image_count`, so
 the only structural constraint is that the TOC fit inside the payload — a bound
@@ -229,11 +255,8 @@ far above any real boot payload) and reports
 `OCA_FAIL_PAYLOAD_TOO_MANY_IMAGES` — deliberately distinct from
 `OCA_FAIL_PAYLOAD_TOC` so a field failure distinguishes "this consumer refuses a
 manifest this large" from "this TOC is malformed". Tighten it for a smaller
-budget:
-
-```
-make EXTRA_CFLAGS="-DOCA_TOC_MAX_IMAGES=32"
-```
+budget with `toc_max_images` in the `[limits]` section of your build
+configuration.
 
 Note this is a documented *deviation*: a manifest above the cap may be entirely
 spec-legal. The spec states the principle that a Consumer may refuse what its own

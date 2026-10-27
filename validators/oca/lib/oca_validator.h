@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "oca_config_check.h"
 #include "oca_secure_bool.h"
 
 #ifdef __cplusplus
@@ -100,17 +101,16 @@ extern "C" {
  * anyone able to write flash can recompute. Left uncapped it is an availability
  * problem on non-secure parts, not merely a fuzzing artifact.
  *
- * 256 entries is far above any real boot payload (a handful of images) and
- * bounds the overlap scan at ~32k comparisons. Override at build time for a
- * tighter budget:  -DOCA_TOC_MAX_IMAGES=32
+ * The default, 256 entries, is far above any real boot payload (a handful of
+ * images) and bounds the overlap scan at ~32k comparisons. Set by
+ * `[limits] toc_max_images` in the build configuration file; lower it for a
+ * tighter budget.
  *
  * Exceeding it fails with OCA_FAIL_PAYLOAD_TOO_MANY_IMAGES — deliberately
  * distinct from OCA_FAIL_PAYLOAD_TOC so an integrator can tell "this consumer
  * refuses to process a manifest this large" from "this TOC is malformed".
  */
-#ifndef OCA_TOC_MAX_IMAGES
-#define OCA_TOC_MAX_IMAGES  256u
-#endif
+#define OCA_TOC_MAX_IMAGES  OCA_CFG_TOC_MAX_IMAGES
 
 /**
  * @brief Re-evaluate the anti-rollback comparison after the signature verified.
@@ -122,13 +122,12 @@ extern "C" {
  * is a rollback either way.
  *
  * This second evaluation is therefore defence in depth, not correctness — it
- * catches a fault that skipped, corrupted, or glitched past the first. On by
- * default; set to 0 only on a target that cannot afford one extra device-state
- * read and one 16-byte compare.
+ * catches a fault that skipped, corrupted, or glitched past the first. Set by
+ * `[hardening] recheck_security_version` in the build configuration file; on
+ * by default. Turn it off only on a target that cannot afford one extra
+ * device-state read and one 16-byte compare.
  */
-#ifndef OCA_RECHECK_SECURITY_VERSION
-#define OCA_RECHECK_SECURITY_VERSION  1
-#endif
+#define OCA_RECHECK_SECURITY_VERSION  OCA_CFG_RECHECK_SECURITY_VERSION
 
 /* ------------------------------------------------------------------ */
 /* Result enum                                                        */
@@ -170,7 +169,7 @@ typedef enum oca_result {
     OCA_FAIL_CALLBACK_UNAVAILABLE       = 15, /**< A callback required by this check is NULL or reported unavailable. */
     OCA_FAIL_INVALID_ARG                = 16, /**< A NULL pointer or otherwise unusable argument was passed. */
     /** The manifest's magic names a format variant this build was not compiled
-     *  to support (see the OCA_SUPPORT_* build gates). Distinct from
+     *  to support (see `[variants]` in the build configuration). Distinct from
      *  OCA_FAIL_MAGIC, which means the magic matches no known variant. */
     OCA_FAIL_UNSUPPORTED_VARIANT        = 17,
     /** The hash over the stored payload did not match — the ciphertext when
@@ -565,8 +564,9 @@ typedef struct oca_manifest_peek {
     uint16_t    version_major;   /**< Manifest format major version, as read. */
     uint16_t    version_minor;   /**< Manifest format minor version, as read. */
     /** "OCA-Classic" / "OCA-PQC". Static lifetime, never NULL. For logging; a
-     *  consumer that must refuse a variant uses the OCA_SUPPORT_* gates, after
-     *  which this reports OCA_FAIL_UNSUPPORTED_VARIANT instead. */
+     *  consumer that must refuse a variant turns it off in `[variants]` of the
+     *  build configuration, after which this reports
+     *  OCA_FAIL_UNSUPPORTED_VARIANT instead. */
     const char *variant_name;
     /** NUL-terminated, trailing NULs and spaces trimmed, non-printable bytes
      *  replaced with '?' — unauthenticated data headed for a log. */

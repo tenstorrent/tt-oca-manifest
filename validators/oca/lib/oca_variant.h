@@ -13,9 +13,9 @@
  * code path.
  *
  * The variant is resolved from the manifest's magic bytes at validation time;
- * integrators never select one at build time. The only build-time knob is the
- * optional OCA_SUPPORT_* gate, which compiles a variant out entirely (e.g., a
- * pre-PQC ROM that must never accept a PQC manifest).
+ * integrators never select one at build time. The only build-time choice is
+ * `[variants]` in the build configuration, which compiles a variant out
+ * entirely (e.g., a pre-PQC ROM that must never accept a PQC manifest).
  *
  * This is an internal header — it is not part of the public library API.
  */
@@ -27,34 +27,7 @@
 #include <stdint.h>
 
 #include "oca_layout.h"
-#include "oca_validator.h"   /* oca_result_t */
-
-/* ------------------------------------------------------------------ */
-/* Build-time variant gates                                           */
-/* ------------------------------------------------------------------ */
-
-/**
- * @brief Whether OCA-Classic manifests are honored by this build.
- *
- * On by default. A consumer that will only ever see one variant can compile
- * the other out with -DOCA_SUPPORT_CLASSIC=0; the resolver then reports
- * OCA_FAIL_UNSUPPORTED_VARIANT for the excluded magic instead of validating it.
- */
-#ifndef OCA_SUPPORT_CLASSIC
-#define OCA_SUPPORT_CLASSIC 1
-#endif
-/**
- * @brief Whether OCA-PQC manifests are honored by this build.
- *
- * On by default; -DOCA_SUPPORT_PQC=0 compiles the variant out on the same
- * terms as @c OCA_SUPPORT_CLASSIC.
- */
-#ifndef OCA_SUPPORT_PQC
-#define OCA_SUPPORT_PQC 1
-#endif
-#if !OCA_SUPPORT_CLASSIC && !OCA_SUPPORT_PQC
-#error "at least one OCA variant must be compiled in"
-#endif
+#include "oca_validator.h"   /* oca_result_t; the build configuration */
 
 /* ------------------------------------------------------------------ */
 /* Variant descriptor                                                 */
@@ -112,9 +85,9 @@ typedef struct oca_variant {
 /**
  * @brief Layout descriptor for the OCA-Classic variant.
  *
- * Always defined, even when @c OCA_SUPPORT_CLASSIC is 0, so the resolver can
- * match the magic regardless of the gates; the gate only decides whether a
- * match is honored or reported unsupported.
+ * Always defined, even when the build configuration turns Classic off, so the
+ * resolver can match the magic regardless; the configuration only decides
+ * whether a match is honored or reported unsupported.
  */
 extern const oca_variant_t OCA_VARIANT_CLASSIC;
 

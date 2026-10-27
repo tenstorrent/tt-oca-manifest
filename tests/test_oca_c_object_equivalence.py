@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
+
+import pytest
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -95,3 +98,54 @@ def test_equivalence_gate_rejects_an_unknown_baseline_ref():
         [sys.executable, EQUIVALENCE, "--baseline", "no-such-ref-exists"],
         cwd=PROJECT_ROOT, capture_output=True, text=True)
     assert completed.returncode == 2
+
+
+LIB_DIR = os.path.dirname(SCRIPTS_DIR)
+
+
+def make_lib_tree(directory, config_text=None):
+    """A stand-in lib/ directory: the real generator, and optionally a default config."""
+    scripts = directory / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy(os.path.join(SCRIPTS_DIR, "gen_config.py"), scripts / "gen_config.py")
+    if config_text is not None:
+        (directory / "oca_config.toml").write_text(config_text)
+    return directory
+
+
+def test_a_tree_without_a_generator_needs_no_config_include(tmp_path):
+    """A baseline from before the generated configuration still builds."""
+    (tmp_path / "lib").mkdir()
+    assert equivalence.generate_config_header(
+        str(tmp_path / "lib"), str(tmp_path / "out")) == []
+
+
+def test_a_tree_with_a_generator_builds_from_its_own_default(tmp_path):
+    with open(os.path.join(LIB_DIR, "oca_config.toml")) as handle:
+        lib = make_lib_tree(tmp_path / "lib", handle.read())
+    include = equivalence.generate_config_header(str(lib), str(tmp_path / "out"))
+    assert include == ["-I", str(tmp_path / "out" / "gen")]
+    assert (tmp_path / "out" / "gen" / "oca_config.h").exists()
+
+
+def test_a_tree_whose_default_config_is_invalid_reports_the_failure(tmp_path):
+    lib = make_lib_tree(tmp_path / "lib", "[variants]\nclassic = 1\n")
+    error = equivalence.generate_config_header(str(lib), str(tmp_path / "out"))
+    assert isinstance(error, str)
+    assert "variants.classic must be true or false" in error
+
+
+def test_a_failed_config_generation_stops_the_build(tmp_path):
+    lib = make_lib_tree(tmp_path / "lib", "not toml at all [")
+    (lib / "unit.c").write_text("int unit;\n")
+    error = equivalence.build_objects(str(lib), str(tmp_path / "out"))
+    assert error is not None and "oca_config.h failed" in error
+    assert not (tmp_path / "out" / "unit.o").exists()
+
+
+@pytest.mark.skipif(shutil.which("cc") is None, reason="needs a C compiler")
+def test_the_library_builds_with_its_generated_configuration(tmp_path):
+    assert equivalence.build_objects(LIB_DIR, str(tmp_path)) is None
+    sources = [n for n in os.listdir(LIB_DIR) if n.endswith(".c")]
+    built = [n for n in os.listdir(tmp_path) if n.endswith(".o")]
+    assert len(built) == len(sources)
