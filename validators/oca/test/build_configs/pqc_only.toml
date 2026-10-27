@@ -15,6 +15,9 @@ toc_max_images = 256
 [hardening]
 recheck_security_version = true
 
+[hash]
+sha2_256 = true
+
 [signature_classic]
 rsa_3072_pkcs1v15_sha256 = true
 ecdsa_p256_sha256 = true

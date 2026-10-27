@@ -108,6 +108,7 @@ make BUILD=build/cap32 CONFIG=path/to/cap32.toml all
 | `[variants] pqc` | `true` | Accept the `OCAP` variant. |
 | `[limits] toc_max_images` | `256` | Cap on payload TOC entries this build will process (exposed to code as `OCA_TOC_MAX_IMAGES`). |
 | `[hardening] recheck_security_version` | `true` | Re-evaluate anti-rollback after the signature verifies (`OCA_RECHECK_SECURITY_VERSION`). |
+| `[hash] sha2_256` | `true` | Compute SHA2-256 for `manifest_hash_type` and `payload_hash_type`. At least one hash must be on. |
 
 | `[signature_classic] rsa_3072_pkcs1v15_sha256` | `true` | Verify RSA-3072, RSASSA-PKCS1-v1_5, SHA-256. |
 | `[signature_classic] ecdsa_p256_sha256` | `true` | Verify ECDSA P-256, SHA-256. |
@@ -256,8 +257,8 @@ upon on the current boot path is rejected too.
 | Manifest field | Supported value(s) | Notes |
 |----------------|--------------------|-------|
 | manifest format (magic) | `OCAC` (classic), `OCAP` (PQC) | one library parses both; magic selects the path |
-| `manifest_hash_type` | SHA2-256 (`0x01`) | the only digest the library recomputes; any other is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` before anything is hashed |
-| `payload_hash_type` | SHA2-256 (`0x01`) | covers `payload_hash`, the chain and every TOC entry hash; any other is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` when a payload is declared |
+| `manifest_hash_type` | SHA2-256 (`0x01`) | computed by the host `hash` callback; any other digest the format defines is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` before anything is hashed, a reserved value with `OCA_FAIL_ALGORITHM_RESERVED` |
+| `payload_hash_type` | SHA2-256 (`0x01`) | covers `payload_hash`, the chain and every TOC entry hash; refused like `manifest_hash_type` when a payload is declared |
 | `signature_type_classic` | RSA-3072-PKCS#1v1.5-SHA256 (`0x01`), ECDSA-P256-SHA256 (`0x05`) | the primitive is passed to the host `verify_signature` callback; the callback owns the math. Under secure boot, any other algorithm the format defines is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, a reserved value with `OCA_FAIL_ALGORITHM_RESERVED` |
 | `signature_encoding_classic` / `public_key_encoding_classic` | raw (`0x02`); ASN.1 DER (`0x01`) for RSA public keys and ECDSA signatures | each DER encoding can be turned off in `[der]`, after which it is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`; DER for any other value is `OCA_FAIL_CRYPTO_FIELD_SIZE`. Under secure boot, every key and signature field of an enforced class must be zero past its declared size, or the manifest is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
 | `secure_boot_control` signature classes | classical, PQC, or both (hybrid) | under secure boot at least one class must be set, and the PQC class only on an `OCAP` manifest (else `OCA_FAIL_SIGNATURE_CLASS_CONTROL`); each enforced class's key is authorized against its own anchor family, and a hybrid manifest needs both signatures to verify |
@@ -290,7 +291,7 @@ spec-legal. The spec states the principle that a Consumer may refuse what its ow
 portfolio cannot support, and a resource ceiling is the same kind of declaration —
 which is why it is recorded here rather than left implicit in a buffer size.
 
-Cryptography itself is never performed inside the library — SHA-256, signature
+Cryptography itself is never performed inside the library — hashing, signature
 verification, and payload decryption are all host-supplied callbacks (see
 `oca_validator.h`). This table describes which manifest-declared algorithm
 *values* the library is prepared to route to those callbacks.
@@ -313,6 +314,9 @@ state, so it is reproducible in every lifecycle state.
 **Not supported (rejected or not yet verified).** These are documented so an
 integrator knows the current boundary:
 
+- **Digests other than SHA2-256** — the format's SHA2-384/-512, SHA3 and
+  SHAKE256 digests are listed in `[hash]` but not implemented, so a manifest
+  naming one is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`.
 - **Signature algorithms other than RSA-3072-PKCS#1v1.5, ECDSA-P256 and
   ML-DSA-87** — the library has no rules for the format's other RSA, ECDSA,
   EdDSA, ML-DSA and SLH-DSA algorithms, so no build configuration can turn one

@@ -28,6 +28,13 @@ toc_max_images = 256
 # evaluation already decides; the second catches a fault that skipped it.
 recheck_security_version = true
 
+[hash]
+# Digests this build computes, for both manifest_hash_type and
+# payload_hash_type. Every manifest carries a manifest_hash, so at least one
+# must be on. The format also defines the other SHA2 and SHA3 lengths and
+# SHAKE256, not implemented yet.
+sha2_256 = true
+
 [signature_classic]
 # Classical signature algorithms this build verifies. Any algorithm not listed
 # here as true is refused with OCA_FAIL_ALGORITHM_NOT_ENABLED. The format also

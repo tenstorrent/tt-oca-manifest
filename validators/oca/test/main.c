@@ -509,7 +509,7 @@ int main(int argc, char **argv)
 
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof(cb));
-    cb.sha256              = openssl_sha256;
+    cb.hash                = openssl_hash;
     cb.verify_signature    = openssl_verify_signature;
     cb.decrypt_payload     = openssl_decrypt_payload;
     cb.is_key_authorized   = cli_is_key_authorized;

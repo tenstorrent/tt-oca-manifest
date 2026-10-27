@@ -145,7 +145,6 @@ MAPPING: dict[str, tuple[str, str]] = {
     # The declared algorithms of manifest_hash and of the payload digests.
     "OCA_OFF_MANIFEST_HASH_TYPE":          ("OFF_MANIFEST_HASH_TYPE", "dec"),
     "OCA_OFF_PAYLOAD_HASH_TYPE":           ("OFF_PAYLOAD_HASH_TYPE", "dec"),
-    "OCA_HASH_TYPE_SHA2_256":              ("OcaClassicHashType.SHA2_256", "hex"),
     "OCA_OFF_PAYLOAD_HASH":                ("OFF_PAYLOAD_HASH", "dec"),
     "OCA_OFF_PAYLOAD_HASH_CHAIN":          ("OFF_PAYLOAD_HASH_CHAIN", "dec"),
     "OCA_OFF_PAYLOAD_HASHED_LENGTH":       ("OFF_PAYLOAD_HASHED_LENGTH", "dec"),

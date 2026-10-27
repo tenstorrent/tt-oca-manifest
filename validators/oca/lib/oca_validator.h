@@ -339,7 +339,7 @@ typedef enum oca_result {
      *  chosen in the build configuration; everything outside it is refused
      *  with this code. It covers a signature_type of an enforced class, a DER
      *  encoding the configuration turns off, a manifest_hash_type or
-     *  payload_hash_type other than SHA2-256, and, for an encrypted payload,
+     *  payload_hash_type, and, for an encrypted payload,
      *  an encryption_type, encryption_key_derivation_function or
      *  input_key_source the build does not enable.
      *
@@ -349,9 +349,10 @@ typedef enum oca_result {
      *  OCA_FAIL_ALGORITHM_RESERVED, which no Consumer accepts. */
     OCA_FAIL_ALGORITHM_NOT_ENABLED      = 39,
     /** The manifest names an algorithm value the format reserves: a
-     *  signature_type of an enforced class, or for an encrypted payload an
-     *  encryption_type, encryption_key_derivation_function or
-     *  input_key_source, that the format assigns to nothing and does not leave
+     *  signature_type of an enforced class, a manifest_hash_type or
+     *  payload_hash_type, or for an encrypted payload an encryption_type,
+     *  encryption_key_derivation_function or input_key_source, that the format
+     *  assigns to nothing and does not leave
      *  to integrators. No Consumer can accept it,
      *  so unlike OCA_FAIL_ALGORITHM_NOT_ENABLED it says the manifest is
      *  malformed rather than outside this build's portfolio. */
@@ -814,6 +815,21 @@ typedef struct oca_crypto_blob {
 } oca_crypto_blob_t;
 
 /* ------------------------------------------------------------------ */
+/* Digest algorithm                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Digest algorithm named by manifest_hash_type or payload_hash_type.
+ *
+ * As with the other on-disk enums here, the values ARE the field's values. Only
+ * the algorithms a build can enable are listed; the hash callback is never asked
+ * for any other.
+ */
+typedef enum oca_hash_type {
+    OCA_HASH_TYPE_SHA2_256 = 0x01  /**< SHA2-256, a 32-byte digest. */
+} oca_hash_type_t;
+
+/* ------------------------------------------------------------------ */
 /* Payload decryption descriptor                                      */
 /* ------------------------------------------------------------------ */
 
@@ -953,22 +969,33 @@ typedef struct oca_callbacks oca_callbacks_t;
  */
 struct oca_callbacks {
     /**
-     * @brief Compute SHA-256 over a message.
+     * @brief Compute a digest with the algorithm the manifest names.
      *
-     * Called for the manifest hash, the payload hash, the payload hash chain,
-     * and every TOC entry hash, so it is by far the hottest callback in the
+     * Called for the manifest hash (manifest_hash_type), and for the payload
+     * hash, the payload hash chain and every TOC entry hash
+     * (payload_hash_type), so it is by far the hottest callback in the
      * library. It must be re-entrant with respect to the library, which keeps
      * no state between calls.
      *
+     * The library asks only for a hash its build enables, and @p digest_len is
+     * always that algorithm's digest size. A backend that implements fewer
+     * hashes than the build enables reports the rest with
+     * OCA_FAIL_CALLBACK_UNAVAILABLE.
+     *
+     * @param[in]  type        Which digest to compute: the manifest's
+     *                         manifest_hash_type or payload_hash_type.
      * @param[in]  msg         Bytes to digest.
      * @param[in]  msg_len     Length of @p msg. May be zero.
-     * @param[out] out_digest  Receives the 32-byte digest.
+     * @param[out] out_digest  Receives exactly @p digest_len bytes.
+     * @param[in]  digest_len  The digest size of @p type.
      * @retval OCA_OK                        Digest written.
-     * @retval OCA_FAIL_CALLBACK_UNAVAILABLE No real implementation is wired.
+     * @retval OCA_FAIL_CALLBACK_UNAVAILABLE No implementation is wired for
+     *                                       @p type.
      */
-    oca_result_t (*sha256)(
+    oca_result_t (*hash)(
+        oca_hash_type_t type,
         const uint8_t *msg, size_t msg_len,
-        uint8_t out_digest[32]);
+        uint8_t *out_digest, size_t digest_len);
 
     /**
      * @brief Verify a signature over the manifest's signed region.
@@ -1960,15 +1987,16 @@ oca_result_t oca_check_demotion_control(const uint8_t *body);
  * not spent on it.
  *
  * @param[in] body  Whole variant body. See the length contract above.
- * @param[in] cb    Callback table; cb->sha256 is required.
+ * @param[in] cb    Callback table; cb->hash is required.
  * @retval OCA_OK                          Recomputed digest matches.
  * @retval OCA_FAIL_INVALID_ARG            @p body or @p cb was NULL.
  * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  manifest_hash_type names a digest
- *                                         other than SHA2-256, the only one a
- *                                         build can enable. Refused before
- *                                         hashing.
+ *                                         this build does not enable. Refused
+ *                                         before hashing.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     manifest_hash_type holds a value the
+ *                                         format reserves, refused likewise.
  * @retval OCA_FAIL_MANIFEST_HASH          Digest mismatch.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   cb->sha256 is NULL or unavailable.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   cb->hash is NULL or unavailable.
  * @return Otherwise the magic or variant failure from resolving @p body.
  *
  * @warning NOT a trust boundary. The expected digest lives in the manifest's
@@ -2377,7 +2405,7 @@ oca_result_t oca_check_payload_encryption_policy(
  * @param[in] body         Manifest body with its payload immediately after it,
  *                         in one buffer.
  * @param[in] body_length  Total size of @p body, validated internally.
- * @param[in] cb           Callback table; cb->sha256 always, cb->decrypt_payload
+ * @param[in] cb           Callback table; cb->hash always, cb->decrypt_payload
  *                         when the payload is encrypted.
  * @param[in] ctx          Validation context, read for the encryption policy.
  * @param[out] out_plaintext     Receives the validated plaintext location and
@@ -2546,7 +2574,7 @@ typedef struct oca_image_info {
      *  check guarantees the stored uint64 fits. */
     size_t         length;
     /** The entry's 64-byte hash field. Its leading
-     *  OCA_MANIFEST_HASH_DIGEST_SIZE bytes are the digest, the remainder
+     *  bytes, the payload_hash_type's digest size, are the digest, the remainder
      *  padding. oca_check_payload() has ALREADY verified this digest against
      *  @c bytes, so a Consumer re-checking it gains nothing. */
     const uint8_t *hash;
@@ -2685,7 +2713,7 @@ oca_result_t oca_locate_payload(const uint8_t *body,
  * @param[in] body         Whole variant body, already authenticated.
  * @param[in] payload      The staged payload bytes. Need not adjoin @p body.
  * @param[in] payload_len  Length of @p payload.
- * @param[in] cb           Callback table; cb->sha256 always,
+ * @param[in] cb           Callback table; cb->hash always,
  *                         cb->decrypt_payload when the payload is encrypted.
  * @param[in] ctx          Validation context, read for the encryption policy.
  * @param[out] out_plaintext  Receives the validated plaintext location and

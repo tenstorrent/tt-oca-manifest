@@ -205,7 +205,7 @@ static void build_minimal_manifest(uint8_t buf[OCA_CLASSIC_BODY_SIZE])
     memset(buf + OCA_CLASSIC_OFF_TRAILER,
            OCA_CLASSIC_TRAILER_BYTE, OCA_CLASSIC_TRAILER_LEN);
     /* manifest_hash: set to a recognizable sentinel and have the stub
-     * sha256 callback below return the same bytes. */
+     * hash callback below return the same bytes. */
     for (unsigned i = 0; i < 32; ++i) {
         buf[OCA_CLASSIC_OFF_MANIFEST_HASH + i] = (uint8_t)i;
     }
@@ -528,12 +528,14 @@ void test_fixture_reset(void)
 /* Tautological SHA-256: copy the manifest's embedded manifest_hash bytes
  * back out as the "computed" digest. Lets dispatch tests succeed without
  * a real SHA-256 implementation. */
-static oca_result_t stub_sha256_pass(const uint8_t *msg, size_t msg_len,
-                                     uint8_t out[32])
+static oca_result_t stub_hash_pass(oca_hash_type_t type,
+                                   const uint8_t *msg, size_t msg_len,
+                                   uint8_t *out, size_t digest_len)
 {
     size_t hash_off = g_fx.sha_hash_off != 0u
         ? g_fx.sha_hash_off : OCA_CLASSIC_OFF_MANIFEST_HASH;
-    (void)msg; (void)msg_len;    memcpy(out, g_fx.sha_body + hash_off, 32);
+    (void)type; (void)msg; (void)msg_len;
+    memcpy(out, g_fx.sha_body + hash_off, digest_len);
     return OCA_OK;
 }
 
@@ -583,10 +585,12 @@ static oca_result_t authorize_capture_cb(const oca_crypto_blob_t *public_key,
 
 /* Real SHA-256-like behavior for the tamper test: returns a different
  * digest if any byte in msg differs from a baseline. */
-static oca_result_t stub_sha256_fail(const uint8_t *msg, size_t msg_len,
-                                     uint8_t out[32])
+static oca_result_t stub_hash_fail(oca_hash_type_t type,
+                                   const uint8_t *msg, size_t msg_len,
+                                   uint8_t *out, size_t digest_len)
 {
-    (void)msg; (void)msg_len;    memset(out, 0xFF, 32);
+    (void)type; (void)msg; (void)msg_len;
+    memset(out, 0xFF, digest_len);
     return OCA_OK;
 }
 
@@ -901,7 +905,7 @@ static void build_full_cb(oca_callbacks_t *cb, const uint8_t *body)
     g_fx.identity_present   = true;
     g_fx.lifecycle_present  = true;
     g_fx.version_present    = true;
-    cb->sha256              = stub_sha256_pass;
+    cb->hash              = stub_hash_pass;
     cb->verify_signature    = pass_signature_cb;
     cb->is_key_authorized = authorize_any_cb;
     cb->is_secure_boot_active = sb_inactive_cb;  /* this pipeline manifest is non-secure */
@@ -921,7 +925,7 @@ TEST(test_permissive_manifest_passes_with_only_sha_callback)
     g_fx.sha_body = buf;
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof(cb));
-    cb.sha256 = stub_sha256_pass;
+    cb.hash = stub_hash_pass;
     cb.is_secure_boot_active = sb_inactive_cb;  /* non-secure manifest */
     ASSERT_EQ_INT(oca_validate(buf, OCA_CLASSIC_BODY_SIZE, &cb, NULL, NULL), OCA_OK);
 }
@@ -970,7 +974,7 @@ TEST(test_omitting_a_device_value_fails_rather_than_inheriting_one)
     /* identity_present deliberately left false — this is the omission. */
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof(cb));
-    cb.sha256                = stub_sha256_pass;
+    cb.hash                = stub_hash_pass;
     cb.get_identity_bytes    = fixed_identity_cb;
     cb.is_secure_boot_active = sb_inactive_cb;
 
@@ -1040,7 +1044,7 @@ TEST(test_a_full_integration_needs_no_caller_defined_state)
 
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof(cb));
-    cb.sha256                = stub_sha256_pass;
+    cb.hash                = stub_hash_pass;
     cb.get_identity_bytes    = fixed_identity_cb;
     cb.is_secure_boot_active = sb_inactive_cb;
 
@@ -1337,7 +1341,7 @@ TEST(test_reserved_bits_ignored_end_to_end)
     g_fx.sha_body = buf;
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof(cb));
-    cb.sha256 = stub_sha256_pass;
+    cb.hash = stub_hash_pass;
     cb.is_secure_boot_active = sb_inactive_cb;  /* non-secure manifest */
     ASSERT_EQ_INT(oca_validate(buf, OCA_CLASSIC_BODY_SIZE, &cb, NULL, NULL), OCA_OK);
 }
@@ -1353,7 +1357,7 @@ TEST(test_manifest_hash_match_passes)
     g_fx.sha_body = buf;
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof(cb));
-    cb.sha256 = stub_sha256_pass;
+    cb.hash = stub_hash_pass;
     ASSERT_EQ_INT(oca_check_manifest_hash(buf, &cb), OCA_OK);
 }
 
@@ -1363,25 +1367,45 @@ TEST(test_manifest_hash_mismatch_fails)
     build_minimal_manifest(buf);
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof(cb));
-    cb.sha256 = stub_sha256_fail; /* returns 0xFFs — doesn't match buf */
+    cb.hash = stub_hash_fail; /* returns 0xFFs — doesn't match buf */
     ASSERT_EQ_INT(oca_check_manifest_hash(buf, &cb),
                   OCA_FAIL_MANIFEST_HASH);
 }
 
-/* Digests requested of counting_sha256(), for checks refused before hashing. */
+/* Digests requested of counting_hash(), for checks refused before hashing, and
+ * the type and length of the last request. */
 static int g_sha_calls;
+static oca_hash_type_t g_hash_type;
+static size_t g_hash_len;
 
-static oca_result_t counting_sha256(const uint8_t *msg, size_t msg_len, uint8_t out[32])
+static oca_result_t counting_hash(oca_hash_type_t type,
+                                  const uint8_t *msg, size_t msg_len,
+                                  uint8_t *out, size_t digest_len)
 {
     (void)msg; (void)msg_len;
     g_sha_calls++;
-    memset(out, 0, 32);
+    g_hash_type = type;
+    g_hash_len = digest_len;
+    memset(out, 0, digest_len);
     return OCA_OK;
 }
 
-/* Hash-type values other than SHA2-256: unset, the other digests the format
- * defines, and a reserved value. */
-static const uint8_t UNSUPPORTED_HASH_TYPES[] = { 0x00u, 0x02u, 0x04u, 0x08u, 0x09u, 0xFFu };
+/* Hash-type values other than SHA2-256, with the code each draws: the other
+ * digests the format defines are not enabled; unset and the values past them
+ * are reserved. */
+static const struct {
+    uint8_t      type;
+    oca_result_t code;
+} UNSUPPORTED_HASH_TYPES[] = {
+    { 0x00u, OCA_FAIL_ALGORITHM_RESERVED },
+    { 0x02u, OCA_FAIL_ALGORITHM_NOT_ENABLED },
+    { 0x04u, OCA_FAIL_ALGORITHM_NOT_ENABLED },
+    { 0x08u, OCA_FAIL_ALGORITHM_NOT_ENABLED },
+    { 0x09u, OCA_FAIL_ALGORITHM_RESERVED },
+    { 0xFFu, OCA_FAIL_ALGORITHM_RESERVED },
+};
+static const size_t UNSUPPORTED_HASH_TYPE_COUNT =
+    sizeof UNSUPPORTED_HASH_TYPES / sizeof UNSUPPORTED_HASH_TYPES[0];
 
 TEST(test_result_string_covers_the_algorithm_codes)
 {
@@ -1428,7 +1452,7 @@ TEST(test_corruption_outranks_a_field_level_violation)
                   OCA_FAIL_CHIPLET_ID);
 
     /* ...but not once the bytes are also damaged. */
-    cb.sha256 = stub_sha256_fail;                /* digests to a fixed wrong value */
+    cb.hash = stub_hash_fail;                /* digests to a fixed wrong value */
     ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, NULL),
                   OCA_FAIL_MANIFEST_HASH);
 }
@@ -1441,7 +1465,7 @@ TEST(test_manifest_hash_dirty_padding_fails)
     g_fx.sha_body = buf;
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof(cb));
-    cb.sha256 = stub_sha256_pass;
+    cb.hash = stub_hash_pass;
     ASSERT_EQ_INT(oca_check_manifest_hash(buf, &cb),
                   OCA_FAIL_MANIFEST_HASH);
 }
@@ -1543,13 +1567,15 @@ static void toc_put_u64(uint8_t *p, uint64_t v);
 /* Ciphertext-aware SHA-256 stub: returns `ct_digest` when hashing the
  * ciphertext (matched by pointer + length), all-zero for every other input —
  * so the plaintext hash-chain recomputes to a known all-zero value. */
-static oca_result_t payload_sha256(const uint8_t *msg, size_t msg_len,
-                                   uint8_t out[32])
+static oca_result_t payload_hash_stub(oca_hash_type_t type,
+                                      const uint8_t *msg, size_t msg_len,
+                                      uint8_t *out, size_t digest_len)
 {
+    (void)type;
     if (g_fx.return_ct_digest && msg == g_fx.ciphertext && msg_len == g_fx.ciphertext_len) {
-        memcpy(out, g_fx.ct_digest, 32);
+        memcpy(out, g_fx.ct_digest, digest_len);
     } else {
-        memset(out, 0, 32);
+        memset(out, 0, digest_len);
     }
     return OCA_OK;
 }
@@ -1563,7 +1589,7 @@ static void build_plaintext_toc(void)
     /* ENC_CT_LEN exceeds this plaintext by less than one AES block, as PKCS#7
      * padding would. */
     toc_put_u64(g_fx.plaintext_toc + OCA_TOC_OFF_PAYLOAD_LENGTH, sizeof g_fx.plaintext_toc);
-    /* One 8-byte image straight after the TOC. The stub sha256 digests
+    /* One 8-byte image straight after the TOC. The stub hash digests
      * everything to all-zero, so the zeroed hash field still matches. */
     toc_put_u64(g_fx.plaintext_toc + OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_OFF_OFFSET,
                 OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE);
@@ -1717,7 +1743,7 @@ static void payload_cb(oca_callbacks_t *cb,
                                                const uint8_t **, size_t *))
 {
     memset(cb, 0, sizeof(*cb));
-    cb->sha256 = payload_sha256;
+    cb->hash = payload_hash_stub;
     cb->decrypt_payload = decrypt;
 }
 
@@ -1772,7 +1798,7 @@ TEST(test_payload_null_decrypt_callback_unavailable)
 
 /* A declared payload with no digest to check it by fails closed, whether the
  * hash is unwired or the whole table is missing, and nothing is decrypted. */
-TEST(test_payload_without_sha256_is_unavailable)
+TEST(test_payload_without_a_hash_callback_is_unavailable)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN];
     uint8_t ph[32]; memset(ph, 0x5A, 32);
@@ -1782,7 +1808,7 @@ TEST(test_payload_without_sha256_is_unavailable)
 
     oca_callbacks_t cb;
     payload_cb(&cb, decrypt_ok);
-    cb.sha256 = 0;
+    cb.hash = 0;
     g_fx.decrypt_calls = 0;
     ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL),
                   OCA_FAIL_CALLBACK_UNAVAILABLE);
@@ -2012,7 +2038,7 @@ static void toc_set_entry(uint8_t *pt, uint64_t idx, uint64_t off, uint64_t len)
 /* Run oca_check_payload over an encrypted bundle whose ciphertext hash
  * matches and whose decryption yields (pt, pt_len) with its TOC payload_length
  * set to @p toc_len. The ciphertext is pt_len plus one PKCS#7 pad. The embedded
- * payload_hash_chain is all-zero and the stub sha256 recomputes all-zero for
+ * payload_hash_chain is all-zero and the stub hash recomputes all-zero for
  * any non-ciphertext input, so a structurally-valid TOC reaches OCA_OK. */
 static oca_result_t run_struct_payload_toc_len(const uint8_t *pt, size_t pt_len,
                                                uint64_t toc_len)
@@ -2192,7 +2218,7 @@ TEST(test_payload_encrypted_toc_length_more_than_one_block_short_rejected)
                   OCA_FAIL_PAYLOAD_TOC);
 }
 
-/* Per-entry image hash. The stub sha256 digests everything to all-zero, so a
+/* Per-entry image hash. The stub hash digests everything to all-zero, so a
  * zero-filled TOC is self-consistent and any non-zero byte in an entry's stored
  * `hash` field is a mismatch the per-entry check must catch. The chain check
  * runs first and passes, which is the point: the chain hashes the stored `hash`
@@ -2240,7 +2266,7 @@ TEST(test_payload_toc_entry_hash_padding_ignored)
 /* A non-encrypted payload is validated in place: payload_hash over   */
 /* the TOC region, the payload_hashed_length / payload_length         */
 /* agreement rules, structural validation, the chain, and the         */
-/* per-entry hashes. The stub sha256 digests everything to all-zero,  */
+/* per-entry hashes. The stub hash digests everything to all-zero,  */
 /* so a zero-filled manifest hash field matches and each test         */
 /* isolates one rule.                                                 */
 /* ------------------------------------------------------------------ */
@@ -2265,12 +2291,12 @@ static void build_cleartext_bundle(uint8_t *buf)
     toc_set_entry(pt, 0u, CLEAR_IMG_OFF, CLEAR_IMG_LEN);
 }
 
-/* Callbacks for the cleartext path: sha256 only — no ciphertext, no decrypt. */
+/* Callbacks for the cleartext path: hash only — no ciphertext, no decrypt. */
 static void cleartext_cb(oca_callbacks_t *cb)
 {
     payload_sha_ctx_init(0, false, 0x00);  /* always digests to all-zero */
     memset(cb, 0, sizeof(*cb));
-    cb->sha256 = payload_sha256;
+    cb->hash = payload_hash_stub;
 }
 
 TEST(test_cleartext_payload_happy_path)
@@ -2289,7 +2315,7 @@ static oca_result_t check_encrypted_algorithms(uint8_t *buf, size_t len)
 {
     oca_callbacks_t cb;
     payload_cb(&cb, decrypt_ok);
-    cb.sha256 = counting_sha256;
+    cb.hash = counting_hash;
     g_sha_calls = 0;
     g_fx.decrypt_calls = 0;
     return oca_check_payload(buf, len, &cb, &g_authenticated, NULL);
@@ -2363,11 +2389,11 @@ TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
         set_key_source(buf, sources_reserved[i]);
         assert_refused_before_hashing(buf, sizeof buf, OCA_FAIL_ALGORITHM_RESERVED);
     }
-    for (size_t i = 0u; i < sizeof UNSUPPORTED_HASH_TYPES; ++i) {
+    for (size_t i = 0u; i < UNSUPPORTED_HASH_TYPE_COUNT; ++i) {
         build_encrypted_bundle(buf, ph, chain);
-        buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
+        buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i].type;
         ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
-                      OCA_FAIL_ALGORITHM_NOT_ENABLED);
+                      UNSUPPORTED_HASH_TYPES[i].code);
         ASSERT_EQ_INT(g_sha_calls, 0);
     }
 }
@@ -2416,14 +2442,14 @@ TEST(test_cleartext_payload_judges_only_its_hash_type)
     uint8_t buf[OCA_CLASSIC_BODY_SIZE + CLEAR_PAYLOAD_LEN];
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof(cb));
-    cb.sha256 = counting_sha256;
+    cb.hash = counting_hash;
 
-    for (size_t i = 0u; i < sizeof UNSUPPORTED_HASH_TYPES; ++i) {
+    for (size_t i = 0u; i < UNSUPPORTED_HASH_TYPE_COUNT; ++i) {
         build_cleartext_bundle(buf);
-        buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
+        buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i].type;
         g_sha_calls = 0;
         ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL),
-                      OCA_FAIL_ALGORITHM_NOT_ENABLED);
+                      UNSUPPORTED_HASH_TYPES[i].code);
         ASSERT_EQ_INT(g_sha_calls, 0);
     }
 
@@ -2628,8 +2654,8 @@ TEST(test_cleartext_payload_missing_bytes_truncated)
                   OCA_FAIL_TRUNCATED);
 }
 
-/* A cleartext payload needs sha256; without it the stage cannot proceed. */
-TEST(test_cleartext_payload_requires_sha256_callback)
+/* A cleartext payload needs a hash callback; without it the stage cannot proceed. */
+TEST(test_cleartext_payload_requires_a_hash_callback)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE + CLEAR_PAYLOAD_LEN];
     build_cleartext_bundle(buf);
@@ -2807,7 +2833,7 @@ TEST(test_check_payload_rejects_short_buffer_without_reading_past_it)
     };
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof cb);
-    cb.sha256 = payload_sha256;
+    cb.hash = payload_hash_stub;
 
     for (unsigned i = 0u; i < sizeof short_lengths / sizeof short_lengths[0]; ++i) {
         uint8_t buf[OCA_CLASSIC_BODY_SIZE];
@@ -3161,7 +3187,7 @@ static void build_inplace_bundle(uint8_t *buf, const uint8_t payload_hash[32])
     toc_put_u64(buf + OCA_OFF_PAYLOAD_HASHED_LENGTH, INPLACE_CT_LEN);
     toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, INPLACE_CT_LEN);
     memcpy(buf + OCA_OFF_PAYLOAD_HASH, payload_hash, 32);
-    /* payload_hash_chain stays all-zero — what the stub sha256 recomputes. */
+    /* payload_hash_chain stays all-zero — what the stub hash recomputes. */
     memset(buf + OCA_CLASSIC_BODY_SIZE, 0xABu, INPLACE_CT_LEN);      /* ciphertext */
 }
 
@@ -3190,7 +3216,7 @@ static void inplace_cb(oca_callbacks_t *cb,
     g_fx.return_ct_digest = true;
     memset(g_fx.ct_digest, 0x5A, 32);
     memset(cb, 0, sizeof(*cb));
-    cb->sha256 = payload_sha256;
+    cb->hash = payload_hash_stub;
     cb->decrypt_payload = decrypt_over_ciphertext;
 }
 
@@ -3812,7 +3838,7 @@ TEST(test_check_payload_at_accepts_a_noncontiguous_payload)
     ASSERT_EQ_INT(oca_check_payload_at(body, payload, sizeof payload, &cb, &g_authenticated, NULL), OCA_OK);
 
     /* A defect in the detached payload is still caught. Corrupt the TOC's own
-     * payload_length rather than image bytes: this harness's sha256 stub digests
+     * payload_length rather than image bytes: this harness's hash stub digests
      * everything to all-zero, so CONTENT tampering is invisible here by design.
      * Content tampering is covered end-to-end by the CLI integration tests,
      * which use a real SHA-256. */
@@ -4056,34 +4082,81 @@ static void build_minimal_pqc_manifest(uint8_t buf[OCA_PQC_BODY_SIZE])
     memset(buf + OCA_PQC_OFF_CLASSIC_TRAILER_SLOT,
            OCA_PQC_CLASSIC_TRAILER_SLOT_BYTE, OCA_PQC_CLASSIC_TRAILER_SLOT_LEN);
     memset(buf + OCA_PQC_OFF_TRAILER, OCA_PQC_TRAILER_BYTE, OCA_PQC_TRAILER_LEN);
-    /* manifest_hash sentinel, mirrored back by stub_sha256_pass when the test
+    /* manifest_hash sentinel, mirrored back by stub_hash_pass when the test
      * sets g_fx.sha_hash_off to this variant's hash position. */
     for (unsigned i = 0; i < 32; ++i) {
         buf[OCA_PQC_OFF_MANIFEST_HASH + i] = (uint8_t)i;
     }
 }
 
-/* manifest_hash_type names the digest; SHA2-256 is the only one this library
- * computes, so any other is refused before anything is hashed, in both
- * variants, rather than reported as a corrupt manifest. */
+/* manifest_hash_type names the digest; one this build does not enable, or a
+ * reserved value, is refused before anything is hashed, in both variants,
+ * rather than reported as a corrupt manifest. */
 TEST(test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing)
 {
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof(cb));
-    cb.sha256 = counting_sha256;
-    for (size_t i = 0u; i < sizeof UNSUPPORTED_HASH_TYPES; ++i) {
+    cb.hash = counting_hash;
+    for (size_t i = 0u; i < UNSUPPORTED_HASH_TYPE_COUNT; ++i) {
         uint8_t buf[OCA_CLASSIC_BODY_SIZE];
         build_minimal_manifest(buf);
-        buf[OCA_OFF_MANIFEST_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
+        buf[OCA_OFF_MANIFEST_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i].type;
         g_sha_calls = 0;
-        ASSERT_EQ_INT(oca_check_manifest_hash(buf, &cb), OCA_FAIL_ALGORITHM_NOT_ENABLED);
+        ASSERT_EQ_INT(oca_check_manifest_hash(buf, &cb), UNSUPPORTED_HASH_TYPES[i].code);
         ASSERT_EQ_INT(g_sha_calls, 0);
 
         static uint8_t pqc[OCA_PQC_BODY_SIZE];
         build_minimal_pqc_manifest(pqc);
-        pqc[OCA_OFF_MANIFEST_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
-        ASSERT_EQ_INT(oca_check_manifest_hash(pqc, &cb), OCA_FAIL_ALGORITHM_NOT_ENABLED);
+        pqc[OCA_OFF_MANIFEST_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i].type;
+        ASSERT_EQ_INT(oca_check_manifest_hash(pqc, &cb), UNSUPPORTED_HASH_TYPES[i].code);
         ASSERT_EQ_INT(g_sha_calls, 0);
+    }
+}
+
+/* The hash callback is asked for the digest the manifest names, at that
+ * digest's size: the manifest hash and every payload digest alike. */
+TEST(test_the_hash_callback_is_asked_for_the_named_digest)
+{
+    oca_callbacks_t cb;
+    memset(&cb, 0, sizeof(cb));
+    cb.hash = counting_hash;
+
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(buf);
+    g_hash_type = (oca_hash_type_t)0;
+    g_hash_len = 0u;
+    (void)oca_check_manifest_hash(buf, &cb);
+    ASSERT_EQ_INT(g_hash_type, OCA_HASH_TYPE_SHA2_256);
+    ASSERT_EQ_INT(g_hash_len, 32);
+
+    uint8_t bundle[OCA_CLASSIC_BODY_SIZE + CLEAR_PAYLOAD_LEN];
+    build_cleartext_bundle(bundle);
+    g_hash_type = (oca_hash_type_t)0;
+    g_hash_len = 0u;
+    (void)oca_check_payload(bundle, sizeof bundle, &cb, &g_authenticated, NULL);
+    ASSERT_EQ_INT(g_hash_type, OCA_HASH_TYPE_SHA2_256);
+    ASSERT_EQ_INT(g_hash_len, 32);
+}
+
+/* Every hash-type value resolves to exactly one outcome, checked against the
+ * format's eight digests; the format leaves no range to integrators here. Every
+ * row's digest fits the library's buffers and the 64-byte hash fields. */
+TEST(test_every_hash_type_resolves_against_the_format_and_the_build)
+{
+    for (unsigned type = 0u; type <= 0xFFu; ++type) {
+        oca_result_t status = OCA_OK;
+        const oca_hash_algorithm_t *row = oca_hash_algorithm((uint8_t)type, &status);
+        if (type == 0x01u) {
+            ASSERT_EQ_INT(status, OCA_OK);
+            ASSERT_TRUE(row != NULL && row->digest_size == 32u);
+            ASSERT_TRUE(row->digest_size <= OCA_HASH_MAX_DIGEST_SIZE);
+            ASSERT_TRUE(OCA_HASH_MAX_DIGEST_SIZE <= OCA_LEN_MANIFEST_HASH);
+        } else {
+            ASSERT_TRUE(row == NULL);
+            ASSERT_EQ_INT(status, (type >= 0x02u && type <= 0x08u)
+                                  ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                  : OCA_FAIL_ALGORITHM_RESERVED);
+        }
     }
 }
 
@@ -4128,7 +4201,7 @@ static void build_devstate_cb(oca_callbacks_t *cb,
 {
     memset(cb, 0, sizeof(*cb));
     g_fx.sha_body = body;
-    cb->sha256                  = stub_sha256_pass;
+    cb->hash                  = stub_hash_pass;
     cb->verify_signature        = counting_signature_cb;
     cb->is_key_authorized = authorize_any_cb;
     cb->get_root_key_revocation = dev_get_revoke;
@@ -4230,7 +4303,7 @@ static void build_gate_case(uint8_t *buf, oca_callbacks_t *cb,
     build_encrypted_bundle(buf, zero, zero);
     g_fx.sha_body = buf;
     memset(cb, 0, sizeof(*cb));
-    cb->sha256 = stub_sha256_pass;
+    cb->hash = stub_hash_pass;
     cb->decrypt_payload = counting_decrypt_cb;
     cb->verify_signature = counting_signature_cb;
     cb->is_key_authorized = authorize_any_cb;
@@ -4315,7 +4388,7 @@ TEST(test_cleartext_payload_unaffected_at_either_secure_boot_state)
         g_fx.sha_body = buf;
         oca_callbacks_t cb;
         memset(&cb, 0, sizeof cb);
-        cb.sha256 = stub_sha256_pass;
+        cb.hash = stub_hash_pass;
         cb.verify_signature = counting_signature_cb;
         cb.is_key_authorized = authorize_any_cb;
         cb.is_secure_boot_active = secure ? sb_active_cb : sb_off_cb;
@@ -7054,7 +7127,7 @@ TEST(test_the_determination_runs_after_the_manifest_hash)
 
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
-    cb.sha256                  = stub_sha256_fail;
+    cb.hash                  = stub_hash_fail;
     cb.is_secure_boot_disabled = sb_disabled_false_cb;
     cb.is_secure_boot_active   = sb_active_counting_cb;
 
@@ -8049,6 +8122,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_manifest_hash_match_passes);
     RUN_TEST(test_manifest_hash_mismatch_fails);
     RUN_TEST(test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing);
+    RUN_TEST(test_the_hash_callback_is_asked_for_the_named_digest);
+    RUN_TEST(test_every_hash_type_resolves_against_the_format_and_the_build);
     RUN_TEST(test_result_string_covers_the_algorithm_codes);
     RUN_TEST(test_deprecated_check_names_reach_the_renamed_checks);
     RUN_TEST(test_corruption_outranks_a_field_level_violation);
@@ -8109,7 +8184,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_payload_no_payload_declared_is_noop);
     RUN_TEST(test_payload_hash_mismatch_before_decrypt);
     RUN_TEST(test_payload_null_decrypt_callback_unavailable);
-    RUN_TEST(test_payload_without_sha256_is_unavailable);
+    RUN_TEST(test_payload_without_a_hash_callback_is_unavailable);
     RUN_TEST(test_payload_decrypt_failure);
     RUN_TEST(test_payload_chain_mismatch);
     RUN_TEST(test_payload_happy_path);
@@ -8148,7 +8223,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_no_report_when_an_entry_hash_mismatches);
     RUN_TEST(test_declining_the_report_changes_no_verdict);
     RUN_TEST(test_cleartext_payload_missing_bytes_truncated);
-    RUN_TEST(test_cleartext_payload_requires_sha256_callback);
+    RUN_TEST(test_cleartext_payload_requires_a_hash_callback);
     RUN_TEST(test_cleartext_payload_hash_mismatch);
     RUN_TEST(test_cleartext_payload_chain_mismatch);
     RUN_TEST(test_cleartext_payload_entry_hash_mismatch);

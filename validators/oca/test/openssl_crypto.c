@@ -57,6 +57,16 @@
 #error "oca-validate needs OpenSSL 3.5 or later, the first release with ML-DSA"
 #endif
 
+oca_result_t openssl_hash(oca_hash_type_t type,
+                          const uint8_t *msg, size_t msg_len,
+                          uint8_t *out_digest, size_t digest_len)
+{
+    if (type != OCA_HASH_TYPE_SHA2_256 || digest_len != 32u) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    return openssl_sha256(msg, msg_len, out_digest);
+}
+
 oca_result_t openssl_sha256(const uint8_t *msg, size_t msg_len,
                             uint8_t out_digest[32])
 {

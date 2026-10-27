@@ -1261,6 +1261,7 @@ def _build_config_text(toc_max_images=256, rsa=True, ecdsa=True, ml_dsa=True,
         "[variants]\nclassic = true\npqc = true\n"
         f"[limits]\ntoc_max_images = {toc_max_images}\n"
         "[hardening]\nrecheck_security_version = true\n"
+        "[hash]\nsha2_256 = true\n"
         f"[signature_classic]\nrsa_3072_pkcs1v15_sha256 = {_toml_bool(rsa)}\n"
         f"ecdsa_p256_sha256 = {_toml_bool(ecdsa)}\n"
         f"[signature_pqc]\nml_dsa_87 = {_toml_bool(ml_dsa)}\n"
@@ -3050,13 +3051,13 @@ def test_cli_refuses_a_der_ecdsa_signature_with_bytes_past_its_maximum(tmp_path)
 
 
 # ---------------------------------------------------------------------------
-# Declared algorithms the library cannot compute
+# Declared algorithms the build does not enable
 #
 # manifest_hash_type and payload_hash_type name the digests, and an encrypted
-# payload names its key derivation and input-key source. This build computes
-# SHA2-256 and derives from the pre-shared secret through SP 800-108r1 with
-# HMAC-SHA-256; anything else is refused by name rather than hashed or
-# decrypted as if it were.
+# payload names its cipher, key derivation and input-key source. The default
+# build enables SHA2-256 and derives from the pre-shared secret through
+# SP 800-108r1 with HMAC-SHA-256; anything else is refused by name rather than
+# hashed or decrypted as if it were.
 # ---------------------------------------------------------------------------
 
 _SHA2_384 = 0x02
@@ -3075,18 +3076,20 @@ def test_cli_refuses_digests_it_does_not_compute_even_when_resealed_as_sha256(tm
                     "ALGORITHM_NOT_ENABLED")
 
 
-@pytest.mark.parametrize("fixture,offset,value", [
-    ("basic", oca_constants.OFF_MANIFEST_HASH_TYPE, _SHA2_384),
-    ("pqc_basic", oca_constants.OFF_MANIFEST_HASH_TYPE, _SHA2_384),
-    ("basic", oca_constants.OFF_PAYLOAD_HASH_TYPE, _SHAKE256_512),
-    ("pqc_basic", oca_constants.OFF_PAYLOAD_HASH_TYPE, 0x00),
-], ids=["manifest-classic", "manifest-pqc", "payload-classic", "payload-pqc-unset"])
-def test_cli_refuses_an_unsupported_hash_type(tmp_path, fixture, offset, value):
+@pytest.mark.parametrize("fixture,offset,value,code", [
+    ("basic", oca_constants.OFF_MANIFEST_HASH_TYPE, _SHA2_384, "ALGORITHM_NOT_ENABLED"),
+    ("pqc_basic", oca_constants.OFF_MANIFEST_HASH_TYPE, _SHA2_384, "ALGORITHM_NOT_ENABLED"),
+    ("basic", oca_constants.OFF_PAYLOAD_HASH_TYPE, _SHAKE256_512, "ALGORITHM_NOT_ENABLED"),
+    ("pqc_basic", oca_constants.OFF_PAYLOAD_HASH_TYPE, 0x00, "ALGORITHM_RESERVED"),
+    ("basic", oca_constants.OFF_MANIFEST_HASH_TYPE, 0x09, "ALGORITHM_RESERVED"),
+], ids=["manifest-classic", "manifest-pqc", "payload-classic", "payload-pqc-unset",
+         "manifest-reserved"])
+def test_cli_refuses_an_unsupported_hash_type(tmp_path, fixture, offset, value, code):
     data = _fixture_bytes(fixture)
     data[offset] = value
     _reseal_manifest_hash(data)
     result = _run_bundle(tmp_path, data, f"{fixture}_hash_type_{offset}", flags=())
-    _assert_refused(result, "ALGORITHM_NOT_ENABLED")
+    _assert_refused(result, code)
     assert not result.stderr.rstrip().endswith(b": ok"), result.stderr
 
 

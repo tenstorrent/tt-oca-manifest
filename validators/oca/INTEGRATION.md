@@ -25,7 +25,7 @@ cp -r validators/oca/lib your-project/third_party/oca_validator
 
 `oca_validator.h` is the only header your code includes. Generate the build
 configuration header (next section), provide implementations of the callbacks
-declared at the top of that header (SHA-256, signature verify,
+declared at the top of that header (hash, signature verify,
 hardware-identity readers), populate an `oca_callbacks_t`, and call one of the
 two entry points below. The library reads the magic bytes itself and routes to
 the appropriate format handler; the integrator never picks a variant.
@@ -116,9 +116,9 @@ not need a callback never touch it, and a check that *does* need one fails with
 
 | Field | What it is | Prototype | Purpose, and why it is a callback | System resources it reaches for you |
 |---|---|---|---|---|
-| `sha256` | Message digest | `oca_result_t (*)(const uint8_t *msg, size_t msg_len, uint8_t out_digest[32])` | Every integrity check in the library is built on this one primitive — `manifest_hash`, `payload_hash`, `payload_hash_chain`, per-image entry hashes. The library ships no hash implementation, so the target can use its accelerator instead of paying for a software SHA-256 in ROM. **Required on every path**; `manifest_hash` runs unconditionally and early, so a NULL here fails immediately. | SHA-256 engine or accelerator; whatever DMA/clock/power gating it needs. Software SHA-256 if there is no engine. |
+| `hash` | Message digest | `oca_result_t (*)(oca_hash_type_t type, const uint8_t *msg, size_t msg_len, uint8_t *out_digest, size_t digest_len)` | Every integrity check in the library is built on this one primitive — `manifest_hash` with the manifest's `manifest_hash_type`; `payload_hash`, `payload_hash_chain` and per-image entry hashes with its `payload_hash_type`. The library asks only for a digest its build enables (SHA2-256, `OCA_HASH_TYPE_SHA2_256`, is the one that can be enabled today), and `digest_len` is always that digest's size; a backend without one returns `OCA_FAIL_CALLBACK_UNAVAILABLE`. The library ships no hash implementation, so the target can use its accelerator instead of paying for a software one in ROM. **Required on every path**; `manifest_hash` runs unconditionally and early, so a NULL here fails immediately. | SHA-2 engine or accelerator; whatever DMA/clock/power gating it needs. Software SHA-256 if there is no engine. |
 | `verify_signature` | Signature verification | `oca_result_t (*)(const oca_crypto_blob_t *signature, const oca_crypto_blob_t *public_key, const uint8_t *signed_region, size_t signed_region_len)` | The library's only authenticity primitive — it establishes trust in the signed region, and transitively in every digest that region carries. Invoked once per signature class the manifest enforces: a hybrid manifest produces one classical call and one PQC call, and both must verify. This library composes and enforces the AND result of the two signatures. Algorithm and encoding vary (classical: RSA-3072 PKCS#1 v1.5 or ECDSA P-256, DER or raw; PQC: ML-DSA-87 today, raw only) so the `oca_crypto_blob_t` descriptors tell you which, and `key_algorithm` names the family. Each blob's `length` is its validated size; read no further than it, and parse a DER value within it — a DER public key must occupy exactly `length` bytes, and a DER ECDSA signature, whose `length` is the 72-byte maximum, may be followed only by zero bytes up to it. For ML-DSA-87 the contract is pure FIPS 204 ML-DSA.Verify over `signed_region` exactly as given, with the empty context: no pre-hash and no HashML-DSA (an engine that takes μ computes it as [Enabling PQC secure boot](#enabling-pqc-secure-boot) shows). The key is the raw 2592-byte FIPS 204 public-key encoding and the signature the raw 4627-byte signature encoding. The library performs none of this cryptography. A backend without a PQC implementation returns `OCA_FAIL_CALLBACK_UNAVAILABLE` for `OCA_KEY_ALGO_PQC` and the manifest fails closed. Required under secure boot. | Public-key accelerator or bignum unit; constant-time modular arithmetic; any key-format parsing (DER) you need; a PQC signature engine or software implementation (ML-DSA today) for the PQC class. |
-| `decrypt_payload` | Payload key derivation + decryption | `oca_result_t (*)(const oca_decrypt_input_t *in, const uint8_t **out_plaintext, size_t *out_plaintext_len)` | Resolves `in->secret_select` against your key store, runs the SP 800-108r1 CTR-HMAC-SHA-256 KDF over `in->kdf_input`, and AES-CBC-decrypts with the result, stripping PKCS#7. It is a callback because **the provisioned secret is**: the library must never hold key material. Everything the operation reads is a named field on `in` — including the cipher and the secret index — so it never re-reads the manifest. The selector is an INDEX, never a secret: no key material crosses this boundary in either direction. Invoked only after the ciphertext's `payload_hash` verifies. Required only for encrypted payloads. | AES engine (CBC, 128/256-bit); HMAC-SHA-256 for the KDF; the **key store** holding the pre-shared secret — fuses, OTP, a key vault, or a derived-key slot the CPU cannot read. |
+| `decrypt_payload` | Payload key derivation + decryption | `oca_result_t (*)(const oca_decrypt_input_t *in, const uint8_t **out_plaintext, size_t *out_plaintext_len)` | Takes the input key from `in->key_source` — for the pre-shared source, resolving `in->secret_select` against your key store — derives the payload key over `in->kdf_input` with `in->kdf`, and decrypts with `in->cipher`; today the SP 800-108r1 CTR-HMAC-SHA-256 KDF and AES-CBC, stripping PKCS#7. It is a callback because **the provisioned secret is**: the library must never hold key material. Everything the operation reads is a named field on `in` — including the cipher and the secret index — so it never re-reads the manifest. The selector is an INDEX, never a secret: no key material crosses this boundary in either direction. Invoked only after the ciphertext's `payload_hash` verifies. Required only for encrypted payloads. | AES engine (CBC, 128/256-bit); HMAC-SHA-256 for the KDF; the **key store** holding the pre-shared secret — fuses, OTP, a key vault, or a derived-key slot the CPU cannot read. |
 | `get_identity_bytes` | Silicon identity readback | `oca_hw_result_t (*)(oca_id_kind_t field, uint8_t out[32])` | Supplies the chiplet / package / system ID the manifest is checked against, per `selector_bits`. The library holds no device state, so these can only come from silicon. Returning `OCA_HW_UNAVAILABLE` is a hard failure, never a silent pass. Required when the matching selector bit is set. | Identity fuses, OTP, ID ROM, or an ID register block. |
 | `get_lifecycle_state` | Lifecycle readback | `oca_hw_result_t (*)(oca_lifecycle_level_t level, oca_lifecycle_token_t *out_state)` | Reports the device's current lifecycle state so the manifest's permitted-state mask can be enforced. Same reasoning as identity: device state the library cannot see. Required when the lifecycle selector bit is set. | Lifecycle-state fuses or the lifecycle controller. |
 | `get_version` | Version readback | `oca_hw_result_t (*)(oca_version_level_t level, uint16_t *out_major, uint16_t *out_minor)` | Reports the hardware version per level for the manifest's min/max range check. Required when the version selector bit is set. | Version fuses or revision-ID registers. |
@@ -167,7 +167,7 @@ exactly one entry:
 ```c
 oca_callbacks_t cb;
 memset(&cb, 0, sizeof cb);
-cb.sha256 = my_sha256;
+cb.hash = my_hash;
 cb.is_secure_boot_active = my_secure_boot_state;  /* else secure-by-default */
 ```
 
@@ -198,10 +198,14 @@ would:
 /* In your image. The library neither holds nor forwards this. */
 static my_engine_t *g_sha_engine;
 
-oca_result_t my_sha256(const uint8_t *msg, size_t len, uint8_t out[32])
+oca_result_t my_hash(oca_hash_type_t type, const uint8_t *msg, size_t len,
+                     uint8_t *out, size_t out_len)
 {
-    return my_engine_digest(g_sha_engine, msg, len, out) ? OCA_OK
-                                                        : OCA_FAIL_CALLBACK_UNAVAILABLE;
+    if (type != OCA_HASH_TYPE_SHA2_256) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    return my_engine_sha256(g_sha_engine, msg, len, out, out_len)
+               ? OCA_OK : OCA_FAIL_CALLBACK_UNAVAILABLE;
 }
 ```
 
@@ -638,7 +642,8 @@ decode structure, and well-formed structure is not a trust statement.
 
 **Integrity comes from the payload check.** `oca_check_payload()` in the
 whole-bundle flow, `oca_check_payload_at()` in the staged one: both verify
-SHA-256 digests through your `sha256` callback — `payload_hash` over the
+digests through your `hash` callback, with the manifest's `payload_hash_type` —
+`payload_hash` over the
 ciphertext when the payload is encrypted (before any decryption) or over the TOC
 region when it is not, then `payload_hash_chain` across the TOC and every image,
 then each TOC entry's own `hash` against the bytes it describes. That is
@@ -1089,6 +1094,11 @@ Changes an existing integration should check. Most show only at run time.
   decrypted as if it named the supported algorithm, and an unsupported cipher
   reported `OCA_FAIL_DECRYPT` after the payload hash. A `switch` over
   `oca_result_t` with no `default` needs both new cases.
+- **The hash callback names its digest.** `sha256` is replaced by `hash`, which
+  takes the `oca_hash_type_t` the manifest names and the digest length to
+  write. Today the library only ever asks for `OCA_HASH_TYPE_SHA2_256` at 32
+  bytes, so an existing SHA-256 implementation needs only the new signature,
+  and a refusal of any other type.
 - **The decryption input names the derivation.** `oca_decrypt_input_t` gains
   `kdf` and `key_source` (new enums `oca_kdf_t`, `oca_key_source_t`), so a
   backend dispatches on what the manifest declares instead of assuming it.

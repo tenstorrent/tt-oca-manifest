@@ -7,6 +7,7 @@
 
 #include "oca_validator.h"
 
+#include "algorithms.h"
 #include "oca_compare.h"
 #include "oca_layout.h"
 #include "oca_layout_pqc.h"
@@ -22,29 +23,31 @@ oca_result_t oca_check_manifest_hash(const uint8_t *body,
     if (v == 0) {
         return status;
     }
-    /* Refused before hashing: a SHA-256 compared against a digest of another
+    /* Refused before hashing: a digest compared against one of another
      * algorithm would report a sound manifest as corrupt. */
-    if (body[OCA_OFF_MANIFEST_HASH_TYPE] != OCA_HASH_TYPE_SHA2_256) {
-        return OCA_FAIL_ALGORITHM_NOT_ENABLED;
+    const oca_hash_algorithm_t *hash =
+        oca_hash_algorithm(body[OCA_OFF_MANIFEST_HASH_TYPE], &status);
+    if (hash == 0) {
+        return status;
     }
-    if (cb == 0 || cb->sha256 == 0) {
+    if (cb == 0 || cb->hash == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    uint8_t digest[OCA_MANIFEST_HASH_DIGEST_SIZE];
-    oca_result_t r = cb->sha256(body, v->signed_region_end,
-                                digest);
+    uint8_t digest[OCA_HASH_MAX_DIGEST_SIZE];
+    oca_result_t r = cb->hash((oca_hash_type_t)hash->type, body,
+                              v->signed_region_end, digest, hash->digest_size);
     if (r != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     /* Fixed-time compare (see oca_compare.h): both the digest match and the
      * trailing-padding check fold every byte before deciding. */
     const uint8_t *embedded = body + v->off_manifest_hash;
-    if (oca_ct_diff(embedded, digest, OCA_MANIFEST_HASH_DIGEST_SIZE) != 0) {
+    if (oca_ct_diff(embedded, digest, hash->digest_size) != 0) {
         return OCA_FAIL_MANIFEST_HASH;
     }
-    /* The trailing 32 bytes of the 64-byte field must be zero. */
-    if (oca_ct_any_nonzero(embedded + OCA_MANIFEST_HASH_DIGEST_SIZE,
-                           OCA_LEN_MANIFEST_HASH - OCA_MANIFEST_HASH_DIGEST_SIZE) != 0) {
+    /* The rest of the 64-byte field, past the digest, must be zero. */
+    if (oca_ct_any_nonzero(embedded + hash->digest_size,
+                           OCA_LEN_MANIFEST_HASH - hash->digest_size) != 0) {
         return OCA_FAIL_MANIFEST_HASH;
     }
     return OCA_OK;

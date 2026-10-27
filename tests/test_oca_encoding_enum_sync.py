@@ -373,3 +373,12 @@ def test_c_key_source_enum_matches_the_packer():
         f"oca_key_source_t holds {sorted(hex(v) for v in c_values)} but the "
         f"packer writes {sorted(hex(v) for v in packer)}")
 
+
+def test_c_hash_type_enum_matches_the_packer():
+    """The hash callback receives manifest_hash_type and payload_hash_type typed
+    as oca_hash_type_t, so each enumerator must be a value the packer writes."""
+    c_values = set(_parse_header_enum("oca_hash_type").values())
+    packer = {hash_type.value for hash_type in oca_consts.OcaClassicHashType}
+    assert c_values == packer, (
+        f"oca_hash_type_t holds {sorted(hex(v) for v in c_values)} but the packer "
+        f"writes {sorted(hex(v) for v in packer)}")

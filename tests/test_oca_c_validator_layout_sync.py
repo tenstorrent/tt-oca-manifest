@@ -82,10 +82,13 @@ def test_sync_gate_pins_a_c_value_to_an_enum_member(monkeypatch):
     sync_layout = _load_sync_layout()
     assert sync_layout.python_value(oca_consts, "OcaClassicHashType.SHA2_256") == 0x01
     assert sync_layout.python_value(oca_consts, "OFF_MANIFEST_HASH_TYPE") == 2067
+    # The pairing exercises the resolution only: any C layout value equal to the
+    # member's passes, and one that differs fails.
     assert _sync_passes(monkeypatch, {
-        "OCA_HASH_TYPE_SHA2_256": ("OcaClassicHashType.SHA2_256", "hex")})
+        "OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT": ("OcaClassicHashType.SHA2_256", "hex")})
     assert not _sync_passes(monkeypatch, {
-        "OCA_HASH_TYPE_SHA2_256": ("OcaClassicSignatureType.ECDSA_P256_SHA256", "hex")})
+        "OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT":
+            ("OcaClassicSignatureType.ECDSA_P256_SHA256", "hex")})
 
 
 @pytest.mark.parametrize("py_name", ["NO_SUCH_CONSTANT", "OcaClassicHashType.NO_SUCH_MEMBER"])

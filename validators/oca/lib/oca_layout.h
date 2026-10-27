@@ -218,7 +218,6 @@
 #define OCA_LEN_MANIFEST_HASH               64u  /* manifest-hash digest + zero pad; digest type per manifest_hash_type */
 #define OCA_MANIFEST_HASH_DIGEST_SIZE       32u  /* digest size the library validates (SHA-256, manifest_hash_type=0x01) */
 #define OCA_OFF_MANIFEST_HASH_TYPE        2067u  /* u8; the algorithm manifest_hash is computed with */
-#define OCA_HASH_TYPE_SHA2_256            0x01u  /* the one manifest_hash_type / payload_hash_type this library computes */
 
 /* ------------------------------------------------------------------ */
 /* Payload encryption + payload-hash fields (shared offsets)          */

@@ -70,6 +70,30 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
                                                          uint8_t type,
                                                          oca_result_t *status);
 
+/** @brief The largest digest any hash a build can enable produces. */
+#define OCA_HASH_MAX_DIGEST_SIZE 32u
+
+/** @brief The format's rules for one digest algorithm. */
+typedef struct oca_hash_algorithm {
+    uint8_t type;         /**< The manifest_hash_type / payload_hash_type value. */
+    uint8_t digest_size;  /**< Digest length in bytes; the leading part of the
+                               64-byte hash fields it is stored in. */
+} oca_hash_algorithm_t;
+
+/**
+ * @brief Resolve a manifest_hash_type or payload_hash_type value.
+ *
+ * Both fields draw on the same list of digests, and one build configuration
+ * section governs both.
+ *
+ * @param[in]  type    The hash-type value.
+ * @param[out] status  Receives OCA_OK, OCA_FAIL_ALGORITHM_NOT_ENABLED or
+ *                     OCA_FAIL_ALGORITHM_RESERVED.
+ * @return The digest's row when this build enables it; NULL when the format
+ *         defines it but this build does not enable it, or reserves the value.
+ */
+const oca_hash_algorithm_t *oca_hash_algorithm(uint8_t type, oca_result_t *status);
+
 /**
  * @brief The format's rules for one payload cipher.
  *

@@ -142,6 +142,18 @@ PQC_SIGNATURES = (
                "FIPS 205 SLH-DSA-SHAKE-256s"),
 )
 
+# manifest_hash_type and payload_hash_type draw on one list, governed together.
+HASHES = (
+    _algorithm("hash", "sha2_256", 0x01, "SHA2-256", "OCA_CFG_HASH_SHA2_256"),
+    _algorithm("hash", "sha2_384", 0x02, "SHA2-384"),
+    _algorithm("hash", "sha2_512", 0x03, "SHA2-512"),
+    _algorithm("hash", "sha3_256", 0x04, "SHA3-256"),
+    _algorithm("hash", "sha3_384", 0x05, "SHA3-384"),
+    _algorithm("hash", "sha3_512", 0x06, "SHA3-512"),
+    _algorithm("hash", "shake256_256", 0x07, "SHAKE256-256"),
+    _algorithm("hash", "shake256_512", 0x08, "SHAKE256-512"),
+)
+
 CIPHERS = (
     _algorithm("encryption_cipher", "aes_128_cbc", 0x01, "AES-128-CBC",
                "OCA_CFG_CIPHER_AES_128_CBC"),
@@ -224,6 +236,7 @@ SETTINGS = (
     Setting("hardening", "recheck_security_version",
             "OCA_CFG_RECHECK_SECURITY_VERSION", "bool",
             "Evaluate anti-rollback again after the signature verifies"),
+    *HASHES,
     *CLASSICAL_SIGNATURES,
     *PQC_SIGNATURES,
     *ENCODINGS,
@@ -331,6 +344,9 @@ def _cross_setting_problems(values: dict[str, int], enabled: set[str]) -> list[s
     if (values.get("OCA_CFG_VARIANT_CLASSIC") == 0
             and values.get("OCA_CFG_VARIANT_PQC") == 0):
         problems.append("[variants] must enable at least one of classic and pqc")
+    if not any(s.name in enabled for s in HASHES):
+        problems.append("no hash is enabled: [hash] must enable at least one, "
+                        "since every manifest carries a manifest_hash")
     signatures = [s.name for s in (*CLASSICAL_SIGNATURES, *PQC_SIGNATURES)
                   if s.name in enabled]
     if not signatures:

@@ -96,6 +96,31 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
     return 0;
 }
 
+/** The digests this build enables, for manifest_hash_type and payload_hash_type. */
+static const oca_hash_algorithm_t HASHES[] = {
+#if OCA_CFG_HASH_SHA2_256
+    { 0x01u, 32u },
+#endif
+    { 0x00u, 0u },
+};
+
+const oca_hash_algorithm_t *oca_hash_algorithm(uint8_t type, oca_result_t *status)
+{
+    if (type != 0x00u) {
+        for (const oca_hash_algorithm_t *row = HASHES; row->type != 0x00u; ++row) {
+            if (row->type == type) {
+                *status = OCA_OK;
+                return row;
+            }
+        }
+    }
+    /* The SHA2, SHA3 and SHAKE256 digests; the format leaves no range to
+     * integrators here. */
+    *status = (type >= 0x01u && type <= 0x08u) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                               : OCA_FAIL_ALGORITHM_RESERVED;
+    return 0;
+}
+
 /** The payload ciphers this build enables. */
 static const oca_cipher_algorithm_t CIPHERS[] = {
 #if OCA_CFG_CIPHER_AES_128_CBC

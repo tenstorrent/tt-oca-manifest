@@ -43,6 +43,7 @@
 #if !defined(OCA_CFG_VARIANT_CLASSIC) || !defined(OCA_CFG_VARIANT_PQC) \
     || !defined(OCA_CFG_TOC_MAX_IMAGES) \
     || !defined(OCA_CFG_RECHECK_SECURITY_VERSION) \
+    || !defined(OCA_CFG_HASH_SHA2_256) \
     || !defined(OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256) \
     || !defined(OCA_CFG_SIG_ECDSA_P256_SHA256) \
     || !defined(OCA_CFG_SIG_ML_DSA_87) \
@@ -66,6 +67,7 @@
 #if !OCA_CFG_IS_SWITCH(OCA_CFG_VARIANT_CLASSIC) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_VARIANT_PQC) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_RECHECK_SECURITY_VERSION) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_HASH_SHA2_256) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_SIG_ECDSA_P256_SHA256) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_SIG_ML_DSA_87) \
@@ -81,6 +83,10 @@
 
 #if !OCA_CFG_VARIANT_CLASSIC && !OCA_CFG_VARIANT_PQC
 #error "oca_config.h enables no manifest variant; [variants] must enable classic or pqc"
+#endif
+
+#if !OCA_CFG_HASH_SHA2_256
+#error "oca_config.h enables no hash; every manifest carries a manifest_hash"
 #endif
 
 #if !OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256 && !OCA_CFG_SIG_ECDSA_P256_SHA256 \

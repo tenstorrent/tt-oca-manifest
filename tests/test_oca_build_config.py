@@ -63,6 +63,7 @@ DEFAULT_VALUES = {
     "OCA_CFG_VARIANT_PQC": 1,
     "OCA_CFG_TOC_MAX_IMAGES": 256,
     "OCA_CFG_RECHECK_SECURITY_VERSION": 1,
+    "OCA_CFG_HASH_SHA2_256": 1,
     "OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256": 1,
     "OCA_CFG_SIG_ECDSA_P256_SHA256": 1,
     "OCA_CFG_SIG_ML_DSA_87": 1,
@@ -76,7 +77,7 @@ DEFAULT_VALUES = {
 
 
 def config_text(classic="true", pqc="true", toc_max_images="256",
-                recheck_security_version="true", rsa="true", ecdsa="true",
+                recheck_security_version="true", sha2_256="true", rsa="true", ecdsa="true",
                 ml_dsa_87="true", der_rsa="true", der_ecdsa="true",
                 aes_128="true", aes_256="true", kdf="true", preshared="true",
                 extra=""):
@@ -89,6 +90,8 @@ def config_text(classic="true", pqc="true", toc_max_images="256",
         f"toc_max_images = {toc_max_images}\n"
         "\n[hardening]\n"
         f"recheck_security_version = {recheck_security_version}\n"
+        "\n[hash]\n"
+        f"sha2_256 = {sha2_256}\n"
         "\n[signature_classic]\n"
         f"rsa_3072_pkcs1v15_sha256 = {rsa}\n"
         f"ecdsa_p256_sha256 = {ecdsa}\n"
@@ -171,8 +174,8 @@ def test_every_setting_is_required(setting):
 
 
 def test_an_empty_configuration_names_every_setting():
-    """Every required setting, and that no signature algorithm is enabled."""
-    assert len(problems_for("")) == len(REQUIRED) + 1
+    """Every required setting, and that no hash or signature algorithm is enabled."""
+    assert len(problems_for("")) == len(REQUIRED) + 2
 
 
 def test_an_unknown_section_is_refused():
@@ -263,7 +266,8 @@ def test_an_algorithm_the_library_has_no_rules_for_may_be_stated_off(setting):
 def test_every_algorithm_is_listed_by_its_format_code():
     """Each class lists the format's algorithms once each, so a configuration can
     name every one."""
-    for group in (gen_config.CLASSICAL_SIGNATURES, gen_config.PQC_SIGNATURES,
+    for group in (gen_config.HASHES, gen_config.CLASSICAL_SIGNATURES,
+                  gen_config.PQC_SIGNATURES,
                   gen_config.CIPHERS, gen_config.KDFS, gen_config.KEY_SOURCES,
                   gen_config.KEMS):
         codes = [setting.code for setting in group]
@@ -272,12 +276,19 @@ def test_every_algorithm_is_listed_by_its_format_code():
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0A, 0x0B}
     assert {s.code for s in gen_config.PQC_SIGNATURES} == {
         0x31, 0x32, 0x33, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56}
+    assert {s.code for s in gen_config.HASHES} == set(range(0x01, 0x09))
     assert {s.code for s in gen_config.CIPHERS} == {
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12}
     assert {s.code for s in gen_config.KDFS} == set(range(0x0000, 0x0009))
     assert {s.code for s in gen_config.KEY_SOURCES} == {0x1, 0x2}
     assert {s.code for s in gen_config.KEMS} == {
         0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0101, 0x0102}
+
+
+def test_a_build_with_no_hash_is_refused():
+    assert problems_for(config_text(sha2_256="false")) == [
+        "no hash is enabled: [hash] must enable at least one, since every "
+        "manifest carries a manifest_hash"]
 
 
 def test_a_build_with_no_signature_algorithm_is_refused():
@@ -549,7 +560,7 @@ def _table_rows():
     configuration macro: a table row, or a value a status function accepts."""
     with open(os.path.join(LIB_DIR, "algorithms.c")) as handle:
         text = handle.read()
-    rows = re.findall(r"#if (OCA_CFG_(?:SIG|CIPHER)_\w+)\n(?:\s*/\*.*?\*/\n)?"
+    rows = re.findall(r"#if (OCA_CFG_(?:HASH|SIG|CIPHER)_\w+)\n(?:\s*/\*.*?\*/\n)?"
                       r"\s*\{ (0x[0-9A-Fa-f]+)u,", text, re.S)
     accepted = re.findall(r"#if (OCA_CFG_(?:KDF|KEY_SOURCE)_\w+)\n"
                           r"\s*if \(\w+ == (0x[0-9A-Fa-f]+)u\)", text)
@@ -569,6 +580,7 @@ def test_every_algorithm_the_packer_writes_is_enabled_by_default():
         "signature_classic": oca_constants.CLASSIC_SIGNING_TYPES,
         "signature_pqc": oca_constants.PQC_SIGNING_TYPES,
     }
+    by_code["hash"] = {hash_type.value for hash_type in oca_constants.OcaClassicHashType}
     by_code["encryption_cipher"] = oca_constants.ENCRYPTION_TYPES_SUPPORTED
     by_code["encryption_kdf"] = {kdf.value for kdf in oca_constants.OcaEncryptionKdf}
     by_code["encryption_key_source"] = {oca_constants.ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED}
@@ -667,6 +679,9 @@ UNGENERATED_HEADERS = [
     pytest.param({"values": {"OCA_CFG_VARIANT_PQC": "0"}},
                  "enables a PQC signature algorithm without [variants] pqc",
                  id="pqc-signature-without-pqc"),
+    pytest.param({"values": {"OCA_CFG_HASH_SHA2_256": "0"}},
+                 "enables no hash",
+                 id="no-hash"),
     pytest.param({"values": {"OCA_CFG_KDF_SP800_108_HMAC_SHA256": "0"}},
                  "enables only part of payload encryption",
                  id="cipher-without-kdf"),
