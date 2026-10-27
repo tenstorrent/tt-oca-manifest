@@ -215,7 +215,7 @@
 /* ------------------------------------------------------------------ */
 
 #define OCA_LEN_SIGNATURE                  512u  /* classic signature_classic */
-#define OCA_LEN_MANIFEST_HASH               64u  /* manifest-hash digest + zero pad; digest type per manifest_hash_type */
+#define OCA_LEN_HASH_FIELD                  64u  /* every hash field (manifest, payload, chain, TOC entry): digest + zero pad */
 #define OCA_MANIFEST_HASH_DIGEST_SIZE       32u  /* digest size the library validates (SHA-256, manifest_hash_type=0x01) */
 #define OCA_OFF_MANIFEST_HASH_TYPE        2067u  /* u8; the algorithm manifest_hash is computed with */
 
@@ -322,7 +322,7 @@ _Static_assert(OCA_TOC_ENTRY_OFF_OFFSET + 8u == OCA_TOC_ENTRY_OFF_LENGTH
                && OCA_TOC_ENTRY_OFF_ENTRY_POINT + 8u == OCA_TOC_ENTRY_OFF_TARGET_CHIPLET_ID
                && OCA_TOC_ENTRY_OFF_TARGET_CHIPLET_ID + 8u == OCA_TOC_ENTRY_OFF_HASH,
                "TOC entry u64 fields must run back-to-back from offset to hash");
-_Static_assert(OCA_TOC_ENTRY_OFF_HASH + 64u == OCA_TOC_ENTRY_OFF_DESCRIPTION,
+_Static_assert(OCA_TOC_ENTRY_OFF_HASH + OCA_LEN_HASH_FIELD == OCA_TOC_ENTRY_OFF_DESCRIPTION,
                "TOC entry description must follow hash");
 /* The spec requires 8-byte alignment of every u64 entry field and of every
  * entry start, which holds only while the entry size is a multiple of 8. */

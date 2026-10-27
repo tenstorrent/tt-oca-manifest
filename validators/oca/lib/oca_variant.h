@@ -51,7 +51,7 @@ typedef struct oca_variant {
     uint8_t     trailer_byte;         /**< Byte the trailer is filled with. */
     unsigned    trailer_len;          /**< Trailer length in bytes. */
     size_t      off_signature;        /**< signature_classic, OCA_LEN_SIGNATURE wide. */
-    size_t      off_manifest_hash;    /**< manifest_hash, OCA_LEN_MANIFEST_HASH wide. */
+    size_t      off_manifest_hash;    /**< manifest_hash, OCA_LEN_HASH_FIELD wide. */
     /** payload_offset: signed 64-bit little-endian, in the unsigned tail. */
     size_t      off_payload_offset;
     /** Size of the verifier-key entry appended after the body when

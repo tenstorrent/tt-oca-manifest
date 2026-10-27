@@ -189,16 +189,18 @@ static oca_result_t validate_toc_structure(
 }
 
 /**
- * @brief Compare a recomputed digest against a stored 64-byte hash field.
+ * @brief Compare a recomputed digest against a stored hash field.
  *
  * Runs in time independent of the contents, via the primitives in
  * oca_compare.h. The trailing bytes of the field are padding whose width
  * depends on the configured digest type; only the leading digest bytes are
  * compared, and the remainder is not interpreted.
  *
- * @param[in] field        The stored 64-byte hash field.
+ * @param[in] field        The stored hash field, OCA_LEN_HASH_FIELD bytes.
  * @param[in] digest       The recomputed digest.
- * @param[in] digest_size  Its length, the leading part of @p field compared.
+ * @param[in] digest_size  Its length, the leading part of @p field compared:
+ *                         a hash row's digest_size, which algorithms.h holds
+ *                         within the field.
  * @param[in] on_mismatch  Result code to return when they differ, so one
  *                         comparison serves the manifest, payload, chain, and
  *                         per-entry checks while each still reports its own

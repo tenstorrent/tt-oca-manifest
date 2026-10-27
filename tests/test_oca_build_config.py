@@ -602,8 +602,8 @@ def test_every_algorithm_the_packer_writes_is_enabled_by_default():
 PROBE = '#include "oca_validator.h"\nint oca_probe;\n'
 
 
-def compile_probe(tmp_path, header_text, *defines):
-    """Compile a translation unit that includes the library's public header.
+def compile_probe(tmp_path, header_text, *defines, lib_dir=LIB_DIR, probe_text=PROBE):
+    """Compile a translation unit that includes a header of the library.
 
     header_text becomes the oca_config.h on the include path; None leaves it
     out entirely. Returns the completed compiler run.
@@ -614,10 +614,10 @@ def compile_probe(tmp_path, header_text, *defines):
     if header_text is not None:
         (gen / "oca_config.h").write_text(header_text)
     probe = tmp_path / "probe.c"
-    probe.write_text(PROBE)
+    probe.write_text(probe_text)
     return subprocess.run(
         ["cc", "-std=c99", "-Wall", "-Werror", "-pedantic", "-fsyntax-only",
-         "-I", LIB_DIR, "-I", str(gen), *defines, str(probe)],
+         "-I", str(lib_dir), "-I", str(gen), *defines, str(probe)],
         capture_output=True, text=True)
 
 
@@ -731,6 +731,35 @@ def test_a_setting_passed_with_minus_d_is_refused_naming_its_key(tmp_path, defin
     result = compile_probe(tmp_path, default_header(), define)
     assert result.returncode != 0
     assert f"set by {key} in the build configuration file, not with -D" in result.stderr
+
+
+def library_with_max_digest_size(tmp_path, size):
+    """A copy of the library's headers whose largest hash digest is size bytes."""
+    lib = tmp_path / "lib"
+    shutil.copytree(LIB_DIR, lib, ignore=shutil.ignore_patterns("scripts", "*.c"))
+    header = lib / "algorithms.h"
+    text, count = re.subn(r"^#define OCA_HASH_MAX_DIGEST_SIZE \S+$",
+                          f"#define OCA_HASH_MAX_DIGEST_SIZE {size}u",
+                          header.read_text(), flags=re.M)
+    assert count == 1
+    header.write_text(text)
+    return lib
+
+
+@pytest.mark.parametrize("size, fits", [
+    pytest.param(oca_constants.HASH_FIELD_SIZE, True, id="field-width"),
+    pytest.param(oca_constants.HASH_FIELD_SIZE + 1, False, id="wider-than-field"),
+])
+def test_no_hash_digest_may_outgrow_the_hash_fields(tmp_path, size, fits):
+    """Every digest is compared within, and padded out to, a fixed-width hash field."""
+    lib = library_with_max_digest_size(tmp_path, size)
+    result = compile_probe(tmp_path, default_header(), lib_dir=lib,
+                           probe_text='#include "algorithms.h"\nint oca_probe;\n')
+    if fits:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0
+        assert "OCA_HASH_MAX_DIGEST_SIZE exceeds OCA_LEN_HASH_FIELD" in result.stderr
 
 
 # ---------------------------------------------------------------------------

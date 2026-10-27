@@ -105,7 +105,7 @@ MAPPING: dict[str, tuple[str, str]] = {
     "OCA_CLASSIC_OFF_SIGNATURE":                   ("OFF_SIGNATURE_CLASSIC", "dec"),
     "OCA_LEN_SIGNATURE":                   ("SIGNATURE_CLASSIC_SIZE", "dec"),
     "OCA_CLASSIC_OFF_MANIFEST_HASH":               ("OFF_MANIFEST_HASH", "dec"),
-    "OCA_LEN_MANIFEST_HASH":               ("HASH_FIELD_SIZE", "dec"),
+    "OCA_LEN_HASH_FIELD":                  ("HASH_FIELD_SIZE", "dec"),
     "OCA_MANIFEST_HASH_DIGEST_SIZE":              ("MANIFEST_HASH_DIGEST_SIZE", "dec"),
     # PQC variant: its sizes, the PQC-only signing fields, the shared fields at
     # their PQC positions, signature_pqc, then the ML-DSA-87 encoded lengths.

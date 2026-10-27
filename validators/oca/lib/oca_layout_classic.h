@@ -36,7 +36,7 @@
 
 /* Unsigned-tail field offsets (Classic positions; lengths are shared). */
 #define OCA_CLASSIC_OFF_SIGNATURE         3172u   /* signature_classic, OCA_LEN_SIGNATURE */
-#define OCA_CLASSIC_OFF_MANIFEST_HASH     3684u   /* OCA_LEN_MANIFEST_HASH */
+#define OCA_CLASSIC_OFF_MANIFEST_HASH     3684u   /* OCA_LEN_HASH_FIELD */
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(
@@ -46,7 +46,7 @@ _Static_assert(
     OCA_CLASSIC_OFF_SIGNATURE == OCA_CLASSIC_SIGNED_REGION_END,
     "signature_classic must begin at the signed-region boundary");
 _Static_assert(
-    OCA_LEN_MANIFEST_HASH >= OCA_MANIFEST_HASH_DIGEST_SIZE,
+    OCA_LEN_HASH_FIELD >= OCA_MANIFEST_HASH_DIGEST_SIZE,
     "manifest_hash field must accommodate the manifest-hash digest");
 #endif
 

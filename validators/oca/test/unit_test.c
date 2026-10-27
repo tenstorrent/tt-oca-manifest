@@ -2256,7 +2256,7 @@ TEST(test_payload_toc_entry_hash_padding_ignored)
     toc_set_entry(pt, 0u, OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE, 8u);
     uint8_t *entry = pt + OCA_TOC_HEADER_SIZE;
     memset(entry + OCA_TOC_ENTRY_OFF_HASH + OCA_MANIFEST_HASH_DIGEST_SIZE, 0xA5u,
-           OCA_LEN_MANIFEST_HASH - OCA_MANIFEST_HASH_DIGEST_SIZE);
+           OCA_LEN_HASH_FIELD - OCA_MANIFEST_HASH_DIGEST_SIZE);
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_OK);
 }
 
@@ -4140,17 +4140,20 @@ TEST(test_the_hash_callback_is_asked_for_the_named_digest)
 
 /* Every hash-type value resolves to exactly one outcome, checked against the
  * format's eight digests; the format leaves no range to integrators here. Every
- * row's digest fits the library's buffers and the 64-byte hash fields. */
+ * row the build compiles in fits the library's digest buffers, which
+ * algorithms.h holds within the hash fields. */
 TEST(test_every_hash_type_resolves_against_the_format_and_the_build)
 {
     for (unsigned type = 0u; type <= 0xFFu; ++type) {
         oca_result_t status = OCA_OK;
         const oca_hash_algorithm_t *row = oca_hash_algorithm((uint8_t)type, &status);
+        if (row != NULL) {
+            ASSERT_TRUE(row->digest_size >= 1u
+                        && row->digest_size <= OCA_HASH_MAX_DIGEST_SIZE);
+        }
         if (type == 0x01u) {
             ASSERT_EQ_INT(status, OCA_OK);
             ASSERT_TRUE(row != NULL && row->digest_size == 32u);
-            ASSERT_TRUE(row->digest_size <= OCA_HASH_MAX_DIGEST_SIZE);
-            ASSERT_TRUE(OCA_HASH_MAX_DIGEST_SIZE <= OCA_LEN_MANIFEST_HASH);
         } else {
             ASSERT_TRUE(row == NULL);
             ASSERT_EQ_INT(status, (type >= 0x02u && type <= 0x08u)

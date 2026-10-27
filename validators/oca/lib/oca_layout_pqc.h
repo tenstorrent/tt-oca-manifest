@@ -49,7 +49,7 @@
 /* Unsigned-tail field offsets (PQC positions; shifted down vs Classic;
  * lengths are shared — see OCA_LEN_* in oca_layout.h). */
 #define OCA_PQC_OFF_SIGNATURE               5903u   /* signature_classic, OCA_LEN_SIGNATURE */
-#define OCA_PQC_OFF_MANIFEST_HASH           6415u   /* OCA_LEN_MANIFEST_HASH */
+#define OCA_PQC_OFF_MANIFEST_HASH           6415u   /* OCA_LEN_HASH_FIELD */
 #define OCA_PQC_OFF_PAYLOAD_OFFSET          6479u   /* i64 LE */
 
 /* Appended-entry sizes for this variant (34816 B PQC). */

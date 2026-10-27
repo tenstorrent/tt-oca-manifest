@@ -20,6 +20,7 @@
 
 #include <stdint.h>
 
+#include "oca_layout.h"
 #include "oca_validator.h"
 
 /**
@@ -73,11 +74,18 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
 /** @brief The largest digest any hash a build can enable produces. */
 #define OCA_HASH_MAX_DIGEST_SIZE 32u
 
+/* A digest is compared within its hash field, and the field is padded past it,
+ * so no digest may be wider than the field. */
+#if OCA_HASH_MAX_DIGEST_SIZE > OCA_LEN_HASH_FIELD
+#error "OCA_HASH_MAX_DIGEST_SIZE exceeds OCA_LEN_HASH_FIELD, the width of the hash fields digests are stored in"
+#endif
+
 /** @brief The format's rules for one digest algorithm. */
 typedef struct oca_hash_algorithm {
     uint8_t type;         /**< The manifest_hash_type / payload_hash_type value. */
-    uint8_t digest_size;  /**< Digest length in bytes; the leading part of the
-                               64-byte hash fields it is stored in. */
+    uint8_t digest_size;  /**< Digest length in bytes, at most
+                               OCA_HASH_MAX_DIGEST_SIZE; the leading part of
+                               the hash field it is stored in. */
 } oca_hash_algorithm_t;
 
 /**

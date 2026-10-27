@@ -47,7 +47,7 @@ oca_result_t oca_check_manifest_hash(const uint8_t *body,
     }
     /* The rest of the 64-byte field, past the digest, must be zero. */
     if (oca_ct_any_nonzero(embedded + hash->digest_size,
-                           OCA_LEN_MANIFEST_HASH - hash->digest_size) != 0) {
+                           OCA_LEN_HASH_FIELD - hash->digest_size) != 0) {
         return OCA_FAIL_MANIFEST_HASH;
     }
     return OCA_OK;
