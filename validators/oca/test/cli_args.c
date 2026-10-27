@@ -6,6 +6,8 @@
 
 #include "cli_args.h"
 
+#include "oca_layout.h"
+
 #include <ctype.h>
 #include <getopt.h>
 #include <stdio.h>
@@ -37,6 +39,59 @@ static int parse_hex32(const char *s, uint8_t out[32])
             return -1;
         }
         out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return 0;
+}
+
+/* Select slots an anchor can be held for: the used bits of the bitmap. */
+#define CLI_ROOT_KEY_SLOTS (OCA_ROOT_KEY_BITMAP_USED_BYTES * 8u)
+
+/* Split an optional decimal "<slot>:" prefix off an anchor argument. Sets
+ * *slot (default 0) and returns the digest that follows, or NULL when the
+ * prefix names no select slot (one of the 112 used bits). */
+static const char *split_anchor_slot(const char *arg, unsigned *slot)
+{
+    *slot = 0u;
+    const char *colon = strchr(arg, ':');
+    if (colon == NULL) {
+        return arg;
+    }
+    if (colon == arg) {
+        return NULL;
+    }
+    unsigned long v = 0u;
+    for (const char *p = arg; p < colon; ++p) {
+        if (*p < '0' || *p > '9') {
+            return NULL;
+        }
+        v = v * 10u + (unsigned long)(*p - '0');
+        if (v >= CLI_ROOT_KEY_SLOTS) {
+            return NULL;
+        }
+    }
+    *slot = (unsigned)v;
+    return colon + 1;
+}
+
+/* Parse a bitmap written as a hex number (optional 0x prefix, 1 to 2 * len
+ * digits) into its len-byte little-endian form, the layout of the manifest
+ * field it stands in for. Returns 0 on success, -1 on malformed input. */
+static int parse_bitmap(const char *s, uint8_t *out, size_t len)
+{
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        s += 2;
+    }
+    size_t n = strlen(s);
+    if (n == 0u || n > 2u * len) {
+        return -1;
+    }
+    memset(out, 0, len);
+    for (size_t i = 0u; i < n; ++i) {
+        int nibble = hex_nibble((unsigned char)s[n - 1u - i]);  /* least significant first */
+        if (nibble < 0) {
+            return -1;
+        }
+        out[i / 2u] |= (uint8_t)(nibble << (4u * (i % 2u)));
     }
     return 0;
 }
@@ -188,8 +243,27 @@ void cli_print_help(void)
         "                              memory; what a constrained ROM does)\n"
         "  --trust-any-root-key        authorize whatever ROOT key the manifest\n"
         "                              carries (structural checks only)\n"
-        "  --root-key-digest HEX64     authorize only a key whose modulus has\n"
-        "                              this SHA-256\n"
+        "  --root-key-digest [<slot>:]HEX64\n"
+        "                              authorize only a classical key whose\n"
+        "                              public_key_size bytes, as encoded, have\n"
+        "                              this SHA-256, held for select slot <slot>\n"
+        "                              (default 0): raw RSA-3072 (modulus and\n"
+        "                              exponent), PKCS#1 DER RSA-3072, or a raw\n"
+        "                              P-256 point\n"
+        "  --root-key-digest-pqc [<slot>:]HEX64\n"
+        "                              the same for a raw PQC key\n"
+        "  --revoked-root-keys HEX     report this 128-bit bitmap as the device's\n"
+        "                              classical ROOT-key revocation state\n"
+        "  --revoked-root-keys-pqc HEX report this 128-bit bitmap as the device's\n"
+        "                              PQC ROOT-key revocation state\n"
+        "  --signature-cohort-enforce HEX\n"
+        "                              report this as the device's signature\n"
+        "                              cohort enforcement register (b[3:0] for\n"
+        "                              ROOT: bit0 classical, bit1 PQC required)\n"
+        "  --signature-class-revoke HEX\n"
+        "                              report this as the device's signature\n"
+        "                              class revocation register (per-algorithm\n"
+        "                              bits; 0xCA / 0xAC group codes)\n"
         "  --secure-boot-active        report the part as ENFORCING secure\n"
         "                              boot (device fuse/life-cycle state).\n"
         "  --secure-boot-disabled      report the part as definitively NOT a\n"
@@ -199,7 +273,10 @@ void cli_print_help(void)
         "                              is still verified and still decrypts its\n"
         "                              payload; a manifest with the bit clear now\n"
         "                              boots unverified\n"
-        "\n"
+        "\n",
+        stdout);
+    /* Two literals: one would exceed the 4095 characters C99 guarantees. */
+    fputs(
         "Storage-image mode (the staged flow a boot ROM runs):\n"
         "  --manifest-addr <hex>       treat --manifest as a whole storage image and\n"
         "                              read the manifest from this address; the\n"
@@ -218,7 +295,8 @@ void cli_print_help(void)
         "  --quiet                     suppress the PASS line on stdout\n"
         "  --help                      print this help and exit 0\n"
         "\n"
-        "Exit codes: 0 = PASS, 1 = FAIL, 2 = usage error.\n",
+        "Exit codes: 0 = PASS, 1 = FAIL, 2 = usage error,\n"
+        "            3 = manifest variant not supported by this build.\n",
         stdout);
 }
 
@@ -231,7 +309,9 @@ enum {
     LO_LIST_IMAGES, LO_DECRYPT_IN_PLACE, LO_SECURE_BOOT_DISABLED,
     LO_SECURE_BOOT_ACTIVE,
     LO_TRUST_ANY_ROOT_KEY,
-    LO_ROOT_KEY_DIGEST,
+    LO_ROOT_KEY_DIGEST, LO_ROOT_KEY_DIGEST_PQC,
+    LO_REVOKED_ROOT_KEYS, LO_REVOKED_ROOT_KEYS_PQC,
+    LO_SIGNATURE_COHORT_ENFORCE, LO_SIGNATURE_CLASS_REVOKE,
     LO_MANIFEST_ADDR, LO_REGION_BASE, LO_REGION_LIMIT,
     LO_QUIET, LO_HELP,
 };
@@ -254,6 +334,11 @@ static struct option long_opts[] = {
     {"secure-boot-active",   no_argument,   NULL, LO_SECURE_BOOT_ACTIVE},
     {"trust-any-root-key",   no_argument,       NULL, LO_TRUST_ANY_ROOT_KEY},
     {"root-key-digest",      required_argument, NULL, LO_ROOT_KEY_DIGEST},
+    {"root-key-digest-pqc",  required_argument, NULL, LO_ROOT_KEY_DIGEST_PQC},
+    {"revoked-root-keys",    required_argument, NULL, LO_REVOKED_ROOT_KEYS},
+    {"revoked-root-keys-pqc", required_argument, NULL, LO_REVOKED_ROOT_KEYS_PQC},
+    {"signature-cohort-enforce", required_argument, NULL, LO_SIGNATURE_COHORT_ENFORCE},
+    {"signature-class-revoke",   required_argument, NULL, LO_SIGNATURE_CLASS_REVOKE},
     {"manifest-addr",    required_argument, NULL, LO_MANIFEST_ADDR},
     {"region-base",      required_argument, NULL, LO_REGION_BASE},
     {"region-limit",     required_argument, NULL, LO_REGION_LIMIT},
@@ -379,12 +464,49 @@ int cli_parse_args(int argc, char **argv, cli_options_t *opt)
             case LO_TRUST_ANY_ROOT_KEY:
                 opt->trust_any_root_key = true;
                 break;
-            case LO_ROOT_KEY_DIGEST:
-                if (parse_hex32(optarg, opt->root_key_digest) != 0) {
-                    fprintf(stderr, "usage: --root-key-digest wants 64 hex digits\n");
-                    return false;
+            case LO_ROOT_KEY_DIGEST: {
+                const char *hex = split_anchor_slot(optarg, &opt->root_key_slot);
+                if (hex == NULL || parse_hex32(hex, opt->root_key_digest) != 0) {
+                    fprintf(stderr, "usage: --root-key-digest wants [<slot>:]<64 hex "
+                                    "digits>, slot 0..%u\n", CLI_ROOT_KEY_SLOTS - 1u);
+                    return 2;
                 }
                 opt->root_key_digest_present = true;
+                break;
+            }
+            case LO_ROOT_KEY_DIGEST_PQC: {
+                const char *hex = split_anchor_slot(optarg, &opt->root_key_slot_pqc);
+                if (hex == NULL || parse_hex32(hex, opt->root_key_digest_pqc) != 0) {
+                    fprintf(stderr, "usage: --root-key-digest-pqc wants [<slot>:]<64 "
+                                    "hex digits>, slot 0..%u\n", CLI_ROOT_KEY_SLOTS - 1u);
+                    return 2;
+                }
+                opt->root_key_digest_pqc_present = true;
+                break;
+            }
+            case LO_REVOKED_ROOT_KEYS:
+                if (parse_bitmap(optarg, opt->revoked_root_keys, 16u) != 0) {
+                    fprintf(stderr, "usage: --revoked-root-keys wants 1 to 32 hex digits\n");
+                    return 2;
+                }
+                break;
+            case LO_REVOKED_ROOT_KEYS_PQC:
+                if (parse_bitmap(optarg, opt->revoked_root_keys_pqc, 16u) != 0) {
+                    fprintf(stderr, "usage: --revoked-root-keys-pqc wants 1 to 32 hex digits\n");
+                    return 2;
+                }
+                break;
+            case LO_SIGNATURE_COHORT_ENFORCE:
+                if (parse_bitmap(optarg, opt->signature_cohort_enforce, 8u) != 0) {
+                    fprintf(stderr, "usage: --signature-cohort-enforce wants 1 to 16 hex digits\n");
+                    return 2;
+                }
+                break;
+            case LO_SIGNATURE_CLASS_REVOKE:
+                if (parse_bitmap(optarg, opt->signature_class_revoke, 8u) != 0) {
+                    fprintf(stderr, "usage: --signature-class-revoke wants 1 to 16 hex digits\n");
+                    return 2;
+                }
                 break;
             case LO_SECURE_BOOT_ACTIVE:
                 opt->secure_boot_active = true;

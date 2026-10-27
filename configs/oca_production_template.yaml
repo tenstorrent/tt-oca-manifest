@@ -5,6 +5,11 @@
 # placeholder that will fail loudly rather than quietly producing a manifest
 # signed with repository key material.
 #
+# The template is classical (RSA-3072 through AWS KMS). ML-DSA-87, the
+# post-quantum algorithm supported today, signs through the `local` authority
+# only, so PQC signing has no managed-key production path yet; see
+# configs/oca_pqc_hybrid_example.yaml for the PQC fields.
+#
 # Replace, in order:
 #   1. signing_key_id    — the KMS key this program signs with.
 #   2. manifest_identifier / description / payload_images

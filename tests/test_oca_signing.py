@@ -30,6 +30,7 @@ from oca_fixtures import (
     ECC_P256_KEY_PATH,
     RSA_3072_KEY_PATH,
     RSA_EXPONENT_KEYS,
+    unsigned_config,
 )
 from oca_fixtures.manifest_reader import (
     load_public_key,
@@ -119,8 +120,8 @@ def test_signed_region_tamper_detection(tmp_path):
 # Redundant with the manifest-body test that also covers this — the signing
 # tests reassert it at the signing contract boundary.
 def test_signature_field_all_zero_when_secure_boot_disabled(tmp_path):
-    cfg = _secure_config(tmp_path, sig_type_oca=0x01, key_file=RSA_3072_KEY_PATH)
-    cfg["secure_boot"] = 0
+    cfg = unsigned_config(
+        _secure_config(tmp_path, sig_type_oca=0x01, key_file=RSA_3072_KEY_PATH))
     bundle = pack_oca_bundle(cfg)
     manifest = bundle[: oca_consts.OCA_CLASSIC_BODY_SIZE]
     sig = manifest[oca_consts.OFF_SIGNATURE_CLASSIC : oca_consts.OFF_SIGNATURE_CLASSIC + oca_consts.SIGNATURE_CLASSIC_SIZE]
@@ -278,6 +279,22 @@ def test_der_signature_rejected_for_rsa(tmp_path):
     assert exc.value.field_name == "signature_encoding"
 
 
+@pytest.mark.parametrize("field", ["signature_encoding", "public_key_encoding"])
+@pytest.mark.parametrize("value,deferred", [
+    (0x03, None),                                # reserved
+    (0xEF, None),                                # reserved
+    (0xF0, "integrator-defined encoding"),
+    (0xFF, "integrator-defined encoding"),
+])
+def test_classic_encodings_beyond_der_and_raw_are_refused(tmp_path, field, value, deferred):
+    cfg = _secure_config(tmp_path, sig_type_oca=0x01, key_file=RSA_3072_KEY_PATH)
+    cfg[field] = value
+    with pytest.raises(OcaConfigError) as exc:
+        pack_oca_bundle(cfg)
+    assert exc.value.field_name == field
+    assert exc.value.deferred_feature == deferred
+
+
 def test_der_ecdsa_signature_size_field_carries_the_maximum(tmp_path):
     """The one place a size field is a maximum rather than an exact count.
 
@@ -345,8 +362,8 @@ def test_manifest_security_control_out_of_range_rejected(tmp_path):
 
 
 def test_security_control_and_revoke_zeroed_when_secure_boot_disabled(tmp_path):
-    cfg = _secure_config(tmp_path, sig_type_oca=0x01, key_file=RSA_3072_KEY_PATH)
-    cfg["secure_boot"] = 0
+    cfg = unsigned_config(
+        _secure_config(tmp_path, sig_type_oca=0x01, key_file=RSA_3072_KEY_PATH))
     cfg["manifest_security_control"] = 0x3F
     cfg["public_key_classic_revoke"] = 1 << 5
     bundle = pack_oca_bundle(cfg)
@@ -395,8 +412,8 @@ def test_signature_posture_registers_round_trip(tmp_path):
 
 
 def test_signature_posture_registers_zeroed_when_secure_boot_disabled(tmp_path):
-    cfg = _secure_config(tmp_path, sig_type_oca=0x01, key_file=RSA_3072_KEY_PATH)
-    cfg["secure_boot"] = 0
+    cfg = unsigned_config(
+        _secure_config(tmp_path, sig_type_oca=0x01, key_file=RSA_3072_KEY_PATH))
     cfg["signature_cohort_enforce"] = 0x01
     cfg["signature_class_revoke"] = 1 << 0
     manifest = pack_oca_bundle(cfg)[: oca_consts.OCA_CLASSIC_BODY_SIZE]
@@ -411,6 +428,12 @@ def test_signature_posture_registers_zeroed_when_secure_boot_disabled(tmp_path):
     0xAC << 32,                             # PQC group disabled
     (0xCA << 8) | (0xAC << 32),             # both — legal, and bricks the device
     (1 << 0) | (0xCA << 8),                 # per-class bit alongside its group code
+    0x7F,                                   # every classical class but one
+    0xFF | (0xCA << 8),                     # every classical class, with its code
+    0x77 << 24,                             # every PQC class but b31
+    0xF3 << 24,                             # every PQC class but b26 (ML-DSA-87)
+    (0xF7 << 24) | (0xAC << 32),            # every PQC class, with its code
+    1 << 27,                                # b27 alone: reserved for FN-DSA
 ])
 def test_signature_class_revoke_accepts_intact_group_codes(tmp_path, value):
     cfg = _secure_config(tmp_path, sig_type_oca=0x01, key_file=RSA_3072_KEY_PATH)
@@ -433,6 +456,25 @@ def test_signature_class_revoke_rejects_partial_group_codes(tmp_path, value, gro
     the device-side register accumulates by OR: fragments from separate
     manifests would otherwise add up to an intact code that no single manifest
     ever declared."""
+    cfg = _secure_config(tmp_path, sig_type_oca=0x01, key_file=RSA_3072_KEY_PATH)
+    cfg["signature_class_revoke"] = value
+    with pytest.raises(OcaConfigError) as exc:
+        pack_oca_bundle(cfg)
+    assert exc.value.field_name == "signature_class_revoke"
+    assert group in str(exc.value)
+
+
+@pytest.mark.parametrize("value,group", [
+    (0xFF, "classical"),                    # every classical class, no group code
+    (0xF7 << 24, "PQC"),                    # every defined PQC class, no group code
+    (0xFF << 24, "PQC"),                    # the same with b27, which is not a class
+    (0xFF | (0xAC << 32), "classical"),     # the other group's code does not count
+])
+def test_signature_class_revoke_rejects_a_group_disabled_by_its_class_bits(tmp_path, value,
+                                                                           group):
+    """A group whose every defined class bit is set disables the whole group, so
+    it needs that group's code: disabling a group is the explicit act the code
+    records."""
     cfg = _secure_config(tmp_path, sig_type_oca=0x01, key_file=RSA_3072_KEY_PATH)
     cfg["signature_class_revoke"] = value
     with pytest.raises(OcaConfigError) as exc:

@@ -34,7 +34,9 @@ cryptography transition.
 
 Key features:
 - **Manifest-based packaging**: YAML config files define the bundle; `manifest_format` picks the variant
-- **Secure boot / signing**: RSA-3072 and ECDSA P-256, via local keys, AWS KMS, or HSM (future)
+- **Secure boot / signing**: RSA-3072 and ECDSA P-256 via local keys or AWS KMS, and post-quantum
+  signatures (ML-DSA-87 today) via local keys, alone or alongside a classical signature
+  (hybrid); HSM is reserved
 - **Payload encryption**: AES-256-CBC (default) or AES-128-CBC, keyed by a
   NIST SP 800-108r1 KDF over a 192-byte structured input block
 - **Usage constraints**: chiplet/package/system-ID, lifecycle, version-range, and demotion gating
@@ -50,15 +52,19 @@ Project documents: [CONTRIBUTING.md](CONTRIBUTING.md) ·
 
 For the Python packer:
 
-- **Python 3.9+**
+- **Python 3.11+**
 - **pip** (Python package installer)
 
 Additionally, for building and running the OCA C validator (and the test suite's
 validator integration tests, which skip without it):
 
 - A host **C toolchain** with `-std=c99` support (gcc 12+ or clang 16+)
-- **OpenSSL 3** development headers, discovered via **pkg-config**
-  (macOS: `brew install openssl@3`; Debian/Ubuntu: `apt install libssl-dev pkg-config`)
+- **OpenSSL 3.5 or later** development headers, discovered via **pkg-config**
+  (macOS: `brew install openssl@3`; Debian 13+ or Ubuntu 26.04+:
+  `apt install libssl-dev pkg-config`). The validator CLI verifies ML-DSA-87,
+  which OpenSSL provides from 3.5; with an older OpenSSL its build stops with the
+  reason, and the integration tests skip saying so. Ubuntu 24.04's `libssl-dev`
+  is 3.0.
 - **doxygen**, for the documentation gate test, which skips without it. Any
   current release works **except 1.9.8** — the version Ubuntu 24.04 LTS currently
   packages — which falsely reports documented functions as undocumented
@@ -73,7 +79,8 @@ validator integration tests, which skip without it):
 The package is configured via `pyproject.toml` with the following dependencies:
 
 **Core dependencies:**
-- `cryptography>=41.0.0` - Cryptographic operations (RSA, ECDSA, AES, hashing)
+- `cryptography>=48.0.0` - Cryptographic operations (RSA, ECDSA, ML-DSA, AES, hashing);
+  48.0.0 is the first release whose wheels provide ML-DSA
 - `ruamel.yaml>=0.17.0` - YAML configuration parsing (preserves comments and formatting)
 
 **Optional dependencies:**
@@ -208,28 +215,82 @@ the same offset.
 | `oca-classic` | `OCAC` | 4096 bytes | Classical-crypto manifest. |
 | `oca-pqc` | `OCAP` | 36864 bytes | Post-Quantum manifest — a **superset** of Classic: every shared field keeps its Classic offset, with the PQC-only fields inserted ahead of the unsigned tail. |
 
-A PQC manifest may be signed today with a classic RSA-3072 / ECC P-256 key —
-the same signing path covers both variants, computing the signature over each
-variant's signed region. PQC-native signing (ML-DSA / FN-DSA / SLH-DSA) and
-KEM (ML-KEM) are deferred and rejected fast (see the table below).
+A secure-boot manifest carries one or two signatures, each over the variant's
+signed region. `secure_boot_classic` and `secure_boot_pqc` choose which:
+
+| Signed with | Variant | `secure_boot_classic` | `secure_boot_pqc` | `secure_boot_control` |
+|---|---|---|---|---|
+| RSA-3072 or ECC P-256 | `oca-classic` or `oca-pqc` | 1 (the default) | 0 (the default) | `0x03` |
+| Classical **and** PQC (hybrid) | `oca-pqc` | 1 | 1 | `0x07` |
+| PQC only | `oca-pqc` | 0 | 1 | `0x05` |
+
+A classically signed manifest needs only the classical fields, and they are the
+same on either variant:
+
+```yaml
+manifest_format: oca-classic        # or oca-pqc
+secure_boot: 1
+signature_type: 0x01                # RSA-3072 PKCS#1 v1.5 / SHA-256; 0x05 for ECC P-256
+signing_authority: local            # or aws
+signing_key_file: "<path to classical private key>"
+public_key_select_classic: 0x01     # authorize classical key slot 0
+```
+
+A hybrid manifest adds the PQC class alongside them. The PQC class supports
+ML-DSA-87 today: pure FIPS 204 over the signed region with the empty context,
+signed through the `local` authority:
+
+```yaml
+manifest_format: oca-pqc
+secure_boot: 1
+secure_boot_classic: 1              # the default, stated for clarity
+secure_boot_pqc: 1
+
+# Classical class
+signature_type: 0x01
+signing_authority: local
+signing_key_file: "<path to classical private key>"
+public_key_select_classic: 0x01
+
+# PQC class
+signature_type_pqc: 0x33            # FIPS 204 ML-DSA-87
+signing_authority_pqc: local
+signing_key_file_pqc: "<path to ML-DSA-87 private key>"
+public_key_select_pqc: 0x01         # authorize PQC key slot 0
+```
+
+A consumer verifies a hybrid manifest as a logical AND: both signatures must
+verify against authorized, unrevoked keys. For a PQC-only manifest, set
+`secure_boot_classic: 0` and remove the classical fields; the packer rejects a
+signing field whose class is off, whatever its value — `0`, an empty string or an
+empty YAML value still names the field. With `secure_boot: 0` both classes are
+off, so an unsigned build names no signing field at all.
+
+ML-DSA signing is hedged, so the 4627-byte ML-DSA-87 signature value differs from
+one build to the next; every other byte of the bundle is reproducible. Other PQC
+signature algorithms and KEM (ML-KEM) are deferred and rejected fast (see the
+table below).
 
 See [examples/oca_classic_basic/](examples/oca_classic_basic/) for a runnable
-Classic demo, and [configs/oca_pqc_example.yaml](configs/oca_pqc_example.yaml)
-for a runnable non-secure PQC example.
+Classic demo; [configs/oca_pqc_example.yaml](configs/oca_pqc_example.yaml) for a
+non-secure PQC example; and
+[configs/oca_pqc_signed_example.yaml](configs/oca_pqc_signed_example.yaml) and
+[configs/oca_pqc_hybrid_example.yaml](configs/oca_pqc_hybrid_example.yaml) for
+PQC-only and hybrid signing.
 
 ### Supported / deferred OCA features (beta release)
 
 | Area | Supported | Deferred to a future feature pass |
 |------|-----------|-----------------------------------|
 | Format selector | `oca-classic`, `oca-pqc`, `oca-combined` | — |
-| Signature algorithm | RSA-3072 PKCS#1 v1.5 + SHA-256 (`0x01`), ECC P-256 + SHA-256 (`0x05`) — for both variants | RSA-PSS, RSA-4096, ECC P-384, Ed25519; PQC-native signing (ML-DSA, FN-DSA, SLH-DSA) and KEM (ML-KEM) |
+| Signature algorithm | Classical class: RSA-3072 PKCS#1 v1.5 + SHA-256 (`0x01`), ECC P-256 + SHA-256 (`0x05`), for both variants. PQC class (`oca-pqc`): ML-DSA-87 (`signature_type_pqc: 0x33`). PQC-only and hybrid signing | RSA-PSS, RSA-4096, ECC P-384, Ed25519; ML-DSA-44 / -65, FN-DSA, SLH-DSA; KEM (ML-KEM) |
 | Hash algorithm | SHA-256 (`0x01`) | All others (`manifest_hash_type` / `payload_hash_type` ≠ `0x01`) |
-| Signing authority | `local`, `aws` | `hsm` |
+| Signing authority | `local`, `aws` for the classical class; `local` for ML-DSA-87 | `hsm`; `aws` for ML-DSA-87 |
 | Payload encryption | AES-256-CBC (`0x02`, the default) and AES-128-CBC (`0x01`), key derived from a pre-shared secret via SP 800-108r1 CTR-HMAC-SHA-256 over the 192-byte input block (`local` authority) | KEM-wrapped keys, any other cipher or KDF identifier, `aws` / `hsm` encryption authority |
 | Multi-image payload | Yes (`PTOC` TOC of 280-byte entries; images 8-byte aligned) | — |
-| ROOT-key revocation & anti-rollback | Classic `public_key_classic_revoke`, `manifest_security_version` (128 posture flags), and `manifest_security_control` update controls — the validator enforces revoke-before-key-use, bit-superset anti-rollback, and a post-verify device-state commit | PQC ROOT-key revocation (lands with PQC signature verification) |
-| Signature posture registers | `signature_cohort_enforce` and `signature_class_revoke` — validated (including the `0xCA` / `0xAC` group-code interlock) and folded into device state by the post-verify commit | Consulting the accumulated state at boot to reject a revoked algorithm class or an unmet cohort — needs multi-cohort signature support |
-| Public key / signature encodings | Raw bytes (`0x02`, the default) for every algorithm; ASN.1 DER (`0x01`) for RSA public keys (PKCS#1 `RSAPublicKey`) and ECDSA signatures. Each value is bounded by its `*_size_classic` field | Vendor-defined encodings (`0x03`) |
+| ROOT-key revocation & anti-rollback | Classic `public_key_classic_revoke`, `manifest_security_version` (128 posture flags), and `manifest_security_control` update controls — the validator enforces revoke-before-key-use, bit-superset anti-rollback, and a post-verify device-state commit, per signature class, and `public_key_pqc_revoke` on a PQC manifest | — |
+| Signature posture registers | `signature_cohort_enforce` and `signature_class_revoke` — validated (including the `0xCA` / `0xAC` group-code interlock), folded into device state by the post-verify commit, and the accumulated device state applied at every secure boot: a disabled algorithm class or an unmet ROOT-key cohort is refused | Cohort enforcement for the verifier-key and co-signer entities, which are not verified |
+| Public key / signature encodings | Raw bytes (`0x02`, the default) for every algorithm, and the only PQC encoding; ASN.1 DER (`0x01`) for RSA public keys (PKCS#1 `RSAPublicKey`) and ECDSA signatures. Each value is bounded by its size field | Integrator-defined encodings (`0xF0`–`0xFF`) |
 | Verifier-key entry | — | `use_verifier_key` and every `verifier_*` field |
 | Co-signer entries | — | `co_signers: [...]` and every `co_signer_*` field |
 
@@ -272,8 +333,7 @@ context is the manifest's full 64-byte `encryption_kdf_input` field, and the
 entropy region is zero. The PRF stream is
 `HMAC-SHA-256(secret, be16(i) ‖ block ‖ be16(L))` truncated to `L/8` bytes, with
 the 16-bit counter `i` starting at 1 and `L` the derived-key length in bits (256
-for AES-256-CBC, 128 for AES-128-CBC). This reproduces the OCA Key Manager
-`PREPARE_BL_DECRYPT_KEY` flow byte-for-byte; a producer and consumer that do not
+for AES-256-CBC, 128 for AES-128-CBC). A producer and consumer that do not
 assemble these bytes identically cannot exchange an encrypted payload. The
 derivation binds no device state, so it is reproducible in every lifecycle state.
 Known-answer vectors are locked down in
@@ -304,8 +364,8 @@ Supply one secret per provisioned slot with `--payload-secret <slot>:<hex>`
 `encryption_shared_secret_select`.
 
 Where the key material comes from is an *encryption authority* abstraction
-(`encryption_authority`, default `local`); `aws` and `hsm` are reserved for a
-future pass and rejected today rather than shipping a partial implementation.
+(`encryption_authority`, default `local`); `aws` and `hsm` are reserved and
+rejected today rather than shipping a partial implementation.
 
 ### Secure-boot device state (ROOT-key revocation & anti-rollback)
 
@@ -345,9 +405,14 @@ signature_class_revoke: 0x00        # no algorithm class revoked
   and each half carries a group code — `0xCA` classical, `0xAC` PQC — that must be
   written **exactly** or left `0x00`; a fragment is rejected, because these updates
   accumulate by OR and fragments from separate manifests would otherwise add up to
-  a group-wide revocation no single manifest declared. Neither register affects the
-  boot that carries it: both take effect from the next boot onward. Setting both
-  group codes under enforced secure boot bricks the device.
+  a group-wide revocation no single manifest declared. Setting every algorithm
+  bit of a group without its group code is rejected too — b[7:0] for classical;
+  b[26:24], b[30:28] and b31 for PQC — since disabling a whole group takes the
+  code itself. Neither register affects the
+  boot that carries it: both take effect from the next boot onward, when the
+  validator refuses a manifest verified by a disabled algorithm class, or one whose
+  `secure_boot_control` does not enforce a cohort the device demands of the ROOT
+  key. Setting both group codes under enforced secure boot bricks the device.
 - **Device-state updates** — after a successful verification the consumer OR-s the
   manifest's revocations, security-version flags, and signature posture into its
   stored state (bits only ever turn on). The six disable bits in
@@ -358,8 +423,11 @@ signature_class_revoke: 0x00        # no algorithm class revoked
 These checks engage whenever secure boot is in force — the `secure_boot` enable
 bit **or** a device-reported signal (lifecycle/fuses), defaulting to in-force when
 neither is present — and share that determination with signature verification.
-They are validated end-to-end by [`validators/oca/`](validators/oca/);
-PQC ROOT-key revocation is reserved for the PQC signature-verification pass.
+They are validated end-to-end by [`validators/oca/`](validators/oca/). ROOT-key
+revocation is per signature class: a PQC manifest's `public_key_pqc_revoke` is
+checked and committed against the device's PQC state, separately from the
+classic state. Either bitmap is carried and committed whichever class signs the
+manifest, so a PQC-only manifest can still revoke classical keys.
 
 ### Usage-constraints control plane
 
@@ -419,7 +487,7 @@ integrity comes from the payload check (`oca_check_payload()` /
 [`validators/oca/INTEGRATION.md`](validators/oca/INTEGRATION.md) is the authority
 on the staged boot flow and on which guarantee each step actually buys.
 
-The library itself is freestanding; the host CLI (`oca-validate`) wires OpenSSL 3
+The library itself is freestanding; the host CLI (`oca-validate`) wires OpenSSL 3.5+
 in for cryptography and takes hardware-identity values via command-line flags. One
 library and one binary handle every variant: the manifest magic selects Classic
 or PQC at runtime and integrators never pick a variant when calling the library.
@@ -516,7 +584,9 @@ Key properties:
   and no output file is written.
 - **Isolated assembly**: a bank built on its own is byte-identical to that same bank
   inside the combined image, so a single-bank build doubles as a field-update artifact.
-  Signed manifest bytes are never modified.
+  Signed manifest bytes are never modified. The one exception is a bank signed with a
+  hedged PQC algorithm (ML-DSA): each build signs afresh, so its PQC signature value
+  differs between the two, and comparisons mask it at that body's offset.
 - **The configuration is the map**: the image is a flat binary with no embedded index or
   header; this YAML describes how it is partitioned.
 
@@ -536,12 +606,16 @@ References:
 
 - [OCA Manifest Generation](#oca-manifest-generation) above, and the runnable examples
   [configs/oca_classic_example.yaml](configs/oca_classic_example.yaml),
-  [configs/oca_encrypted_example.yaml](configs/oca_encrypted_example.yaml), and
-  [configs/oca_secure_boot_device_state_example.yaml](configs/oca_secure_boot_device_state_example.yaml).
+  [configs/oca_encrypted_example.yaml](configs/oca_encrypted_example.yaml),
+  [configs/oca_secure_boot_device_state_example.yaml](configs/oca_secure_boot_device_state_example.yaml),
+  [configs/oca_pqc_signed_example.yaml](configs/oca_pqc_signed_example.yaml) and
+  [configs/oca_pqc_hybrid_example.yaml](configs/oca_pqc_hybrid_example.yaml).
   To start a real build, copy
   [configs/oca_production_template.yaml](configs/oca_production_template.yaml) instead —
   the examples above are signed with development keys and will not serve as a
-  production starting point.
+  production starting point. The template is classical: ML-DSA-87, the PQC algorithm
+  supported today, signs through the `local` authority only, so PQC signing has no
+  managed-key production path yet.
 - `allow_test_signing_key: true` declares a build deliberately signed with one of the
   development keys committed to this repository. The packer **refuses to sign** with
   those keys unless it is set, so a real build cannot pick one up by accident, and the
@@ -624,7 +698,9 @@ pytest -vvv --cov=tt_boot_manifest --cov-report=html
 ```
 
 A plain `pytest` run needs no host setup beyond the Python dependencies: the OCA
-C-validator tests skip cleanly when a C toolchain, `make`, or `pkg-config` is absent.
+C-validator tests skip, with the reason, when a C toolchain, `make` or `pkg-config` is
+absent, or when the OpenSSL `pkg-config` finds is older than 3.5. Set
+`TT_BOOT_MANIFEST_REQUIRE_VALIDATOR=1` to make those skips failures, as CI does.
 
 ### Test Organization
 
@@ -638,9 +714,10 @@ Tests are grouped by the side they exercise:
 **Python producer:**
 - **`tests/test_oca_*.py`** — manifest body / TOC, signing, encryption, PQC, combined, determinism, and format dispatch
 - **`tests/test_oca_example_configs.py`** — builds each `configs/oca_*.yaml` example and validates the manifest output in pure Python (framing, `manifest_hash` recompute, signature) — no C toolchain needed; also applies the `examples/oca_classic_basic` README's signed-bundle step as written and checks the result with that example's `verify.py`
+- **`tests/test_oca_readme_signing_snippets.py`** — packs the signing snippets and the signature-class table in this README's [OCA manifest variants](#oca-manifest-variants) section as written, so the documentation fails a test when it stops matching the packer
 
 **C consumer/validator:**
-- **`tests/test_oca_c_validator_integration.py`** — packs fixtures and round-trips them through the compiled `oca-validate` CLI (skips if `make`/`pkg-config` are unavailable)
+- **`tests/test_oca_c_validator_integration.py`** — packs fixtures and round-trips them through the compiled `oca-validate` CLI (skips, with the reason, if `make` or `pkg-config` is unavailable or OpenSSL is older than 3.5)
 - **`tests/test_oca_c_validator_layout_sync.py`** — fails on any producer↔consumer layout drift
 - `make -C validators/oca check` — the validator's own C unit tests + fixture round-trips (see [validators/oca/README.md](validators/oca/README.md))
 
@@ -674,6 +751,18 @@ Secure boot ensures that only authorized firmware can execute on the device. Whe
 - SHA-256 digest
 - 64-byte signatures (32-byte r + 32-byte s Big Ints)
 - Smaller signature and key sizes, higher security
+
+**ML-DSA-87 (`signature_type_pqc: 0x33`, `oca-pqc` only)**
+- FIPS 204 ML-DSA-87, the first algorithm supported in the post-quantum signature class
+- Pure ML-DSA over the signed region itself, with the empty context: no pre-hash
+- 2592-byte public key and 4627-byte signature, both raw
+- Hedged signing: the signature value differs between builds of the same config,
+  while every other byte of the bundle is reproducible
+- Signs through the `local` authority only. There is no managed-key (AWS KMS or
+  HSM) path for ML-DSA-87 yet, and so no production template for PQC signing
+
+A PQC manifest carries the classical signature, the PQC signature, or both;
+see [OCA manifest variants](#oca-manifest-variants) for choosing between them.
 
 ## Contributing
 

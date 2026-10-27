@@ -55,7 +55,7 @@ not need a callback never touch it, and a check that *does* need one fails with
 | Field | What it is | Prototype | Purpose, and why it is a callback | System resources it reaches for you |
 |---|---|---|---|---|
 | `sha256` | Message digest | `oca_result_t (*)(const uint8_t *msg, size_t msg_len, uint8_t out_digest[32])` | Every integrity check in the library is built on this one primitive — `manifest_hash`, `payload_hash`, `payload_hash_chain`, per-image entry hashes. The library ships no hash implementation, so the target can use its accelerator instead of paying for a software SHA-256 in ROM. **Required on every path**; `manifest_hash` runs unconditionally and early, so a NULL here fails immediately. | SHA-256 engine or accelerator; whatever DMA/clock/power gating it needs. Software SHA-256 if there is no engine. |
-| `verify_signature` | Signature verification | `oca_result_t (*)(const oca_crypto_blob_t *signature, const oca_crypto_blob_t *public_key, const uint8_t *signed_region, size_t signed_region_len)` | The library's only authenticity primitive — it establishes trust in the signed region, and transitively in every digest that region carries. Invoked once per signature class the manifest enforces: a hybrid manifest produces one classical call and one PQC call, and both must verify. This library composes and enforces the AND result ofthe two signatures. Algorithm and encoding vary (RSA-3072 PKCS#1 v1.5, ECDSA P-256, ML-DSA/SLH-DSA; DER or raw) so the `oca_crypto_blob_t` descriptors tell you which, `key_algorithm` names the family. The library implements none of them cryptography. A backend without a PQC implementation returns `OCA_FAIL_CALLBACK_UNAVAILABLE` for `OCA_KEY_ALGO_PQC` and the manifest fails closed. Required under secure boot. | Public-key accelerator or bignum unit; constant-time modular arithmetic; any key-format parsing (DER) you need. |
+| `verify_signature` | Signature verification | `oca_result_t (*)(const oca_crypto_blob_t *signature, const oca_crypto_blob_t *public_key, const uint8_t *signed_region, size_t signed_region_len)` | The library's only authenticity primitive — it establishes trust in the signed region, and transitively in every digest that region carries. Invoked once per signature class the manifest enforces: a hybrid manifest produces one classical call and one PQC call, and both must verify. This library composes and enforces the AND result of the two signatures. Algorithm and encoding vary (classical: RSA-3072 PKCS#1 v1.5 or ECDSA P-256, DER or raw; PQC: ML-DSA-87 today, raw only) so the `oca_crypto_blob_t` descriptors tell you which, and `key_algorithm` names the family. Each blob's `length` is its validated size; read no further than it, and parse a DER value within it — a DER public key must occupy exactly `length` bytes, and a DER ECDSA signature, whose `length` is the 72-byte maximum, may be followed only by zero bytes up to it. For ML-DSA-87 the contract is pure FIPS 204 ML-DSA.Verify over `signed_region` exactly as given, with the empty context: no pre-hash and no HashML-DSA (an engine that takes μ computes it as [Enabling PQC secure boot](#enabling-pqc-secure-boot) shows). The key is the raw 2592-byte FIPS 204 public-key encoding and the signature the raw 4627-byte signature encoding. The library performs none of this cryptography. A backend without a PQC implementation returns `OCA_FAIL_CALLBACK_UNAVAILABLE` for `OCA_KEY_ALGO_PQC` and the manifest fails closed. Required under secure boot. | Public-key accelerator or bignum unit; constant-time modular arithmetic; any key-format parsing (DER) you need; a PQC signature engine or software implementation (ML-DSA today) for the PQC class. |
 | `decrypt_payload` | Payload key derivation + decryption | `oca_result_t (*)(const oca_decrypt_input_t *in, const uint8_t **out_plaintext, size_t *out_plaintext_len)` | Resolves `in->secret_select` against your key store, runs the SP 800-108r1 CTR-HMAC-SHA-256 KDF over `in->kdf_input`, and AES-CBC-decrypts with the result, stripping PKCS#7. It is a callback because **the provisioned secret is**: the library must never hold key material. Everything the operation reads is a named field on `in` — including the cipher and the secret index — so it never re-reads the manifest. The selector is an INDEX, never a secret: no key material crosses this boundary in either direction. Invoked only after the ciphertext's `payload_hash` verifies. Required only for encrypted payloads. | AES engine (CBC, 128/256-bit); HMAC-SHA-256 for the KDF; the **key store** holding the pre-shared secret — fuses, OTP, a key vault, or a derived-key slot the CPU cannot read. |
 | `get_identity_bytes` | Silicon identity readback | `oca_hw_result_t (*)(oca_id_kind_t field, uint8_t out[32])` | Supplies the chiplet / package / system ID the manifest is checked against, per `selector_bits`. The library holds no device state, so these can only come from silicon. Returning `OCA_HW_UNAVAILABLE` is a hard failure, never a silent pass. Required when the matching selector bit is set. | Identity fuses, OTP, ID ROM, or an ID register block. |
 | `get_lifecycle_state` | Lifecycle readback | `oca_hw_result_t (*)(oca_lifecycle_level_t level, oca_lifecycle_token_t *out_state)` | Reports the device's current lifecycle state so the manifest's permitted-state mask can be enforced. Same reasoning as identity: device state the library cannot see. Required when the lifecycle selector bit is set. | Lifecycle-state fuses or the lifecycle controller. |
@@ -67,9 +67,9 @@ not need a callback never touch it, and a check that *does* need one fails with
 | `get_security_version` | Anti-rollback state read | `oca_result_t (*)(uint8_t out[16])` | Supplies the device-stored 128-bit security-version flags for the bit-superset anti-rollback test. Same reasoning. Required under secure boot. | Non-volatile anti-rollback store — OTP, fuses, or a monotonic counter. |
 | `set_root_key_revocation` | Revocation state write | `oca_result_t (*)(oca_key_algorithm_t algo, const uint8_t in[16])` | Persists the OR-ed revocation bitmap. Separate from the read so that **validation stays read-only**: only `oca_commit_security_state()` calls the setters, and only after a manifest has passed. Required only if you commit device state. | Fuse programming / OTP burn path, with whatever voltage, timing, or unlock sequence that needs. Irreversible. |
 | `set_security_version` | Anti-rollback state write | `oca_result_t (*)(const uint8_t in[16])` | Persists the OR-ed security-version flags. Same contract; bits are only ever set, never cleared. Required only if you commit device state. | Same NV write path. Irreversible. |
-| `get_signature_cohort_enforce` | Signature posture read | `oca_result_t (*)(uint8_t out[8])` | Supplies the device-stored signature cohort enforcement register, which the commit ORs the manifest's value into. Eight bytes, not sixteen — it mirrors a u64 manifest field. Required only if you commit device state. | Non-volatile posture store — fuse bank or OTP. |
+| `get_signature_cohort_enforce` | Signature posture read | `oca_result_t (*)(uint8_t out[8])` | Supplies the device's signature cohort enforcement — the cohorts it demands of each entity's signatures. Read at every secure boot by `oca_check_signature_posture()`, which refuses a manifest that does not enforce a cohort demanded of the ROOT key, and by the commit, which ORs the manifest's value into it. Report the whole posture: the stored register, plus anything lifecycle or another fuse imposes. All zeros if the device demands nothing. Eight bytes, not sixteen — it mirrors a u64 manifest field. Required under secure boot; NULL, or a non-`OCA_OK` return, fails closed. | Non-volatile posture store — fuse bank or OTP; lifecycle state, where it widens the posture. |
 | `set_signature_cohort_enforce` | Signature posture write | `oca_result_t (*)(const uint8_t in[8])` | Persists the OR-ed cohort enforcement register. Bits are only ever set. Required only if you commit device state. | Same NV write path. Irreversible. |
-| `get_signature_class_revoke` | Class revocation read | `oca_result_t (*)(uint8_t out[8])` | Supplies the device-stored signature class revocation register. Not keyed by algorithm family: the classical and PQC halves live in one 8-byte word, and splitting them across two calls would let a group code be written in fragments. Required only if you commit device state. | Non-volatile revocation store — fuse bank or OTP. |
+| `get_signature_class_revoke` | Class revocation read | `oca_result_t (*)(uint8_t out[8])` | Supplies the device's signature class revocation — the algorithm classes it has disabled. Read at every secure boot by `oca_check_signature_posture()`, which refuses a manifest verified by a disabled algorithm, and by the commit. Report the whole posture, as for cohort enforcement; all zeros if nothing is disabled. Not keyed by algorithm family: the classical and PQC halves live in one 8-byte word, and splitting them across two calls would let a group code be written in fragments. Required under secure boot; NULL, or a non-`OCA_OK` return, fails closed. | Non-volatile revocation store — fuse bank or OTP; lifecycle state, where it widens the posture. |
 | `set_signature_class_revoke` | Class revocation write | `oca_result_t (*)(const uint8_t in[8])` | Persists the OR-ed class revocation register. The library ORs the **whole** field, reserved bytes included, so a group code can never be assembled from fragments contributed by separate manifests. Required only if you commit device state. | Same NV write path. Irreversible. |
 | `describe_field` | Diagnostic naming | `const char *(*)(oca_id_kind_t field)` | Turns a field enum into a human-readable name for error messages. A callback because the library is freestanding and carries **no string tables**; it returns your pointer or NULL, and never formats anything itself. **Optional**, diagnostics only. | None. A string table in your own image. |
 
@@ -78,7 +78,11 @@ not need a callback never touch it, and a check that *does* need one fails with
 Nothing here is discovered by inspection — every unmet requirement is a distinct
 result code, and none of them is a pass:
 
-- a needed callback is NULL → `OCA_FAIL_CALLBACK_UNAVAILABLE`;
+- a needed callback is NULL → `OCA_FAIL_CALLBACK_UNAVAILABLE`. Checked in the
+  function that makes the call, not only at the entry point. NULL is the only
+  thing the library can test a function pointer for: a corrupted non-NULL
+  entry is called. Keep the table in read-only memory, so nothing at run time
+  can overwrite an entry;
 - a hardware reader returns `OCA_HW_UNAVAILABLE` → the check hard-fails rather
   than skipping;
 - secure boot cannot be determined from the reporters → treated as **active**, so
@@ -108,11 +112,14 @@ cb.is_secure_boot_active = my_secure_boot_state;  /* else secure-by-default */
 That is the whole integration — no structure of your own to declare, and nothing
 to hand the library beyond the functions themselves.
 
-Add `verify_signature`, `is_key_authorized`, `get_root_key_revocation` and `get_security_version` for
-secure boot; `decrypt_payload` for encrypted payloads; the `get_*` identity,
-lifecycle and version readers for whichever `selector_bits` your manifests set.
-If you commit device state, add the four `set_*` writers plus
-`get_signature_cohort_enforce` / `get_signature_class_revoke`.
+Add `verify_signature`, `is_key_authorized`, `get_root_key_revocation`,
+`get_security_version`, `get_signature_cohort_enforce` and
+`get_signature_class_revoke` for secure boot; `decrypt_payload` for encrypted
+payloads; the `get_*` identity, lifecycle and version readers for whichever
+`selector_bits` your manifests set. If you commit device state, add the four
+`set_*` writers. PQC secure boot uses the same callbacks, called once per
+signature family; see [Enabling PQC secure boot](#enabling-pqc-secure-boot) for
+what each must do for the PQC family.
 `test/main.c` wires all of them against OpenSSL and CLI flags, and is the
 reference for the shapes.
 
@@ -258,8 +265,11 @@ if (oca_check_payload_at(body, payload, payload_span, &cb, &vctx,
     return REFUSE;
 
 /* 6. The plaintext is wherever your callback put it — the library does not
- *    retain that pointer. Walk the TOC there, stage the images, commit. */
-oca_commit_security_state(body, &cb, &vctx);
+ *    retain that pointer. Walk the TOC there, stage the images, then commit.
+ *    A failed commit leaves the image valid but the device state un-advanced:
+ *    report it rather than ignore it. */
+if (oca_commit_security_state(body, &cb, &vctx) != OCA_OK)
+    report_commit_failure();
 ```
 
 ### Encryption requires confirmed secure boot
@@ -288,17 +298,15 @@ something else, or altered afterwards, is now refused rather than decrypted.
 
 Two things follow for your code:
 
-- **Initialise the context.** `oca_validation_context_init()` before each
-  validation. A zero-initialised context means "nothing established", which
+- **Initialize the context.** `oca_validation_context_init()` before each
+  validation. A zero-initialized context means "nothing established", which
   refuses — the safe default, and the reason a forgotten `init` fails closed
   rather than open.
 - **Carry it to the payload step.** In the staged flow the same context must
   reach `oca_check_payload_at()`. Passing a fresh one there refuses, correctly:
   from that call's point of view nothing has been authenticated.
 
-The refusal reports `OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT`, distinct from
-`OCA_FAIL_SECURE_BOOT_INVARIANT` (signing fields left non-zero on a non-secure
-manifest) — different cause, different fix.
+The refusal reports `OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT`.
 
 **Step 3 is the staged flow's advantage.** `oca_validate()` runs the manifest and
 payload stages back to back with no seam between them, so a whole-bundle consumer
@@ -401,6 +409,10 @@ a `payload_offset` that is not exactly the body size fails with
 oca_result_t r = oca_validate(bundle, bundle_len, &cb, NULL, &plaintext);  /* body + payload */
 if (r != OCA_OK) { /* refuse to boot */ }
 ```
+
+Pass an initialized `oca_validation_context_t` instead of `NULL` if you will
+commit device state afterwards: the commit reads what the validation recorded
+there.
 
 ## Reading the payload after validation
 
@@ -586,17 +598,57 @@ does the whole-bundle resolution including the encrypted substitution, and
 
 ## Secure-boot device state
 
-When secure boot is in force, three checks run ahead of signature verification:
+When secure boot is in force, five checks run ahead of signature verification:
+`oca_check_signing_description()`, `oca_check_signature_posture()`,
 `oca_check_root_key_authorized()`, `oca_check_root_key_revocation()` and
-`oca_check_security_version()`. All are composed into `oca_validate_manifest()`,
-so both entry points run them, and all are callable directly if you are
-composing checks by hand — but composing them by hand now requires the
-validation context `oca_determine_secure_boot()` produced. A fresh one is
-refused, not treated as "not in force". See "Determined once, confirmed at every
-use" below.
+`oca_check_security_version()`. All are composed into
+`oca_validate_manifest()`, so both entry points run them, and all are callable
+directly if you are composing checks by hand — but composing them by hand
+requires the validation context `oca_determine_secure_boot()` produced. A fresh
+one is refused, not treated as "not in force". See "Determined once, confirmed
+at every use" below.
 
+- **Signing description** (`oca_check_signing_description()`) — each enforced
+  class's signature type, encodings and size fields must describe a key and
+  signature this library accepts, and every byte of its key and signature
+  fields past the declared size must be zero (`CRYPTO_FIELD_SIZE` otherwise).
+  The signature fields lie outside the signed region, so a padding byte that
+  were allowed to vary would give one signed manifest many byte-distinct
+  bundles. These are
+  Secure-Boot-only fields, so the check is keyed on the determination rather
+  than on the manifest's `secure_boot_enforced` bit: a part that enforces secure
+  boot itself validates them even on a manifest that leaves the bit clear, and
+  while secure boot is not in force they are ignored, whatever they hold — a
+  manifest that does not assert secure boot is not refused for carrying them.
+- **Signature posture** (`oca_check_signature_posture()`) — the device's
+  signature class revocation and cohort enforcement, as
+  `get_signature_class_revoke` and `get_signature_cohort_enforce` report them,
+  applied to this boot. Earlier manifests OR their `signature_class_revoke` and
+  `signature_cohort_enforce` into that state when committed; the posture fields
+  of the manifest being validated play no part until it is committed in turn.
+  Two rules:
+
+  - **Algorithm revocation.** Each enforced class's `signature_type` must not
+    fall in an algorithm class the device has disabled, by that class's own bit
+    or by its group's intact group code — `0xCA` disables every classical
+    class, `0xAC` every PQC class. Refused as `SIGNATURE_ALGORITHM_REVOKED`. A
+    partly set group-code byte disables nothing.
+  - **Cohort enforcement.** Each cohort the device demands of the ROOT key's
+    signatures — bits 0 (classical) and 1 (PQC) of the low nibble — must be one
+    the manifest enforces. Refused as `SIGNATURE_COHORT_REQUIRED`. A demand for
+    a cohort whose whole group is disabled is withdrawn, since no algorithm is
+    left that could meet it. The verifier-key and co-signer nibbles are not
+    consulted, because this library verifies neither.
+
+  Both readers are required under secure boot and fail closed: a NULL reader,
+  or one that does not return `OCA_OK`, is `CALLBACK_UNAVAILABLE`. A reader that
+  returns `OCA_OK` without writing leaves the buffer as the library prefilled
+  it — every class disabled, every cohort demanded — the strictest posture. The
+  check runs before any key is authorized or used, and `oca_check_signature()`
+  refuses a context it did not vouch for (`SIGNATURE_COHORT_REQUIRED`), so a
+  hand-composed sequence that skipped it verifies nothing.
 - **ROOT-key authorization** (`oca_check_root_key_authorized()`) — the trust
-  anchor, and the first of the three. The manifest carries the key its own
+  anchor, and the first of the key checks. The manifest carries the key its own
   signature is verified against, so verification establishes only that some
   private key signed it; this is what establishes whose. Each signature class
   the manifest enforces (`secure_boot_classic` / `secure_boot_pqc`) is
@@ -605,18 +657,24 @@ use" below.
   for the class it is about to verify does not vouch
   (`ROOT_KEY_UNAUTHORIZED`) — so a hand-composed sequence that skipped
   authorization cannot verify against a key nothing vouched for, and a
-  classical vouching never unlocks a PQC verify. The decision itself is
+  classical vouching never unlocks a PQC verify. That holds for a context
+  initialized for this validation: a reused one still carries the flags an
+  earlier validation set, which is why `oca_validation_context_init()` comes
+  first every time. An enforced class whose select bitmap names no key is
+  refused before the anchor is asked. The decision itself is
   `cb->is_key_authorized`'s: the anchor may be a key in mask ROM, a digest in
-  OTP, or a store this library cannot describe.
+  OTP, or a store this library cannot describe, and it must bind both the
+  whole key and the slot the manifest selects (see the callback table).
 
-  Authorization and revocation are fundamental question questions asked about
-  key material: First we ask "was this key ever trusted? and then "is it still trusted?".
+  Authorization and revocation are two different questions asked about key
+  material: first "was this key ever trusted?", and then "is it still trusted?".
   A key can be unauthorized with no revocation bit set anywhere.
-- **ROOT-key revocation** (`oca_check_root_key_revocation()`) — before the
+- **ROOT-key revocation** (`oca_check_root_key_revocation()`) — before a
   selected ROOT key is used to verify the manifest signature, the validator
-  rejects the manifest (`ROOT_KEY_REVOKED`) if
-  the key is revoked in the manifest's `public_key_classic_revoke` bitmap **or**
-  the device-stored classic revocation state. A revoked key is never exercised.
+  rejects the manifest (`ROOT_KEY_REVOKED`) if the key is revoked in its own
+  family's manifest bitmap (`public_key_classic_revoke` or
+  `public_key_pqc_revoke`) **or** in that family's device-stored state. Each
+  enforced class's key is checked; a revoked key is never exercised.
 - **Anti-rollback** (`oca_check_security_version()`) — the validator enforces
   that the 128-bit `manifest_security_version` flag field is a **bit-superset**
   of the device-stored value (`manifest & device == device`); a manifest missing
@@ -678,9 +736,14 @@ secure boot to run unverified.
 
 **Device state is host-supplied.** The validator holds no fuse/OTP state; the
 integrator provides it through callbacks on `oca_callbacks_t`:
-`is_secure_boot_active`, `is_secure_boot_disabled`, `is_key_authorized`, `get_root_key_revocation(algo,
-…)`, and `get_security_version(…)`. Classic and PQC ROOT-key revocation state are
-kept separately (`oca_key_algorithm_t`); only the classic slot is exercised today.
+`is_secure_boot_active`, `is_secure_boot_disabled`, `is_key_authorized`,
+`get_root_key_revocation(algo, …)`, `get_security_version(…)`,
+`get_signature_cohort_enforce(…)` and `get_signature_class_revoke(…)`. Classic
+and PQC ROOT-key revocation state are kept separately (`oca_key_algorithm_t`):
+the revocation check reads the state of each family whose signature class the
+manifest enforces, and the commit writes the state of each family whose bitmap
+the manifest carries, so an implementation that ignores `algo` applies one
+family's revocations to the other's keys.
 
 **Which input decided.** `oca_validate_manifest()` calls
 `oca_determine_secure_boot()` once, early, and the determination records what it
@@ -711,9 +774,10 @@ Two consequences for your code:
 - **Escalate it; do not retry.** A retry that succeeds has not established that
   the first answer was wrong.
 
-The reporters are consulted roughly six times per validation rather than four,
-which is the price of the above. They are fuse or OTP reads; if that cost is
-material on your part, it is worth measuring rather than assuming.
+The reporters are consulted once for the determination and once per gated
+check — eight times per validation, nine when the manifest declares
+encryption — which is the price of the above. They are fuse or OTP reads; if
+that cost is material on your part, it is worth measuring rather than assuming.
 
 **A context no determination has settled is refused.** `secure_boot_determined`
 distinguishes "secure boot is not in force" from "nobody has asked yet", which
@@ -735,20 +799,223 @@ each into the stored value (setting bits only, never clearing):
 
 | Fold-in | Callbacks | Suppressed by |
 |---|---|---|
-| ROOT-key revocation | `get`/`set_root_key_revocation` | `manifest_security_control` bit 1 |
+| ROOT-key revocation — classic, and PQC on a PQC manifest | `get`/`set_root_key_revocation` | `manifest_security_control` bit 1 |
 | Security-version flags | `get`/`set_security_version` | bit 0 |
 | Signature cohort enforcement | `get`/`set_signature_cohort_enforce` | bit 4 |
 | Signature class revocation | `get`/`set_signature_class_revoke` | bit 5 |
+
+Which signature class authenticated the manifest does not limit what it
+revokes: a PQC-only manifest commits its classic revocations and a classic-only
+PQC manifest its PQC ones.
 
 Bits 2 and 3 are defined by the format and govern verifier-key device state,
 which this library does not implement — see "Not supported" in the README. They
 are accepted and ignored.
 
 Before folding in the class revocation the commit re-checks the
-`signature_class_revoke` group-code bytes, even though `oca_validate_manifest()`
-already did. This function is public and burns fuses, so it does not assume the
-caller composed the check; a fragment of a group code reaching OTP is
+`signature_class_revoke` group-code rules, even though `oca_validate_manifest()`
+already did: each code byte is 0x00 or intact, and no group sets every class bit
+without its code. This function is public and burns fuses, so it does not
+assume the caller composed the check; a fragment of a group code reaching OTP is
 irreversible. That re-check surfaces as `GROUP_CODE`.
 
 The commit returns a distinct status; a write-back failure surfaces
 as `SECURITY_STATE_UPDATE` and does not retroactively invalidate the manifest.
+
+## Enabling PQC secure boot
+
+An OCA-PQC manifest is verified by its classical signature, its PQC
+signature, or both, as the manifest's `secure_boot_classic` and
+`secure_boot_pqc` bits choose. The library already runs everything that
+follows from that choice: per-class authorization, revocation and
+verification, and the AND of a hybrid manifest. What a device adds is the
+PQC half of each callback, plus a decision the library leaves to you.
+
+**1. Keep PQC compiled in, and budget for its body.** `OCA_SUPPORT_PQC`
+defaults to 1. An OCA-PQC body is 36864 bytes against Classic's 4096, and in
+the staged flow it stays resident from authentication through the payload step.
+The verify callback reads the signed region, key and signature straight out of
+that buffer, so it needs no copy of its own.
+
+**2. Verify the PQC signature in `verify_signature`.** Dispatch on the blobs'
+`key_algorithm`, then on `primitive_type`: each PQC algorithm reaches the
+callback as `OCA_KEY_ALGO_PQC` with its own primitive type, and a primitive
+your backend does not implement returns `OCA_FAIL_CALLBACK_UNAVAILABLE`.
+ML-DSA-87 (`OCA_PRIMITIVE_ML_DSA_87`) is the PQC algorithm the library accepts
+today. Its contract:
+
+- pure FIPS 204 ML-DSA.Verify, with the empty context, over `signed_region`
+  exactly as passed — bytes `[0, 5903)` of the body. No pre-hash: a
+  HashML-DSA signature, or one made over a digest of the region, must fail;
+- read the key and the signature to their blobs' `length` — 2592 and 4627
+  bytes for ML-DSA-87, both raw FIPS 204 encodings. The library has already
+  refused any manifest whose PQC description is not raw ML-DSA-87 with exactly
+  those sizes; the rest of each field is padding;
+- an engine that takes the message representative μ rather than the message
+  computes it as FIPS 204 does: `tr = SHAKE256(pk, 64)` and
+  `μ = SHAKE256(tr ‖ 0x00 ‖ 0x00 ‖ signed_region, 64)`, where the two zero
+  bytes are pure ML-DSA's domain separator and the empty context's length;
+- return `OCA_FAIL_SIGNATURE` for a signature that does not verify, and
+  `OCA_FAIL_CALLBACK_UNAVAILABLE` only when there is no backend for the
+  primitive at all.
+
+**3. Provision a PQC anchor in `is_key_authorized`.** A call with
+`key_algorithm` `OCA_KEY_ALGO_PQC` carries the PQC key, with its
+`primitive_type` and `length`, and the manifest's `public_key_select_pqc`.
+Answer it from a PQC anchor only — a classical anchor must never authorize a
+PQC key, nor the reverse — and a hybrid manifest needs both families' anchors
+to accept. The anchor's shape is yours, but it must bind two things, for the
+classical anchor as much as the PQC one:
+
+- **the whole key** — compare or digest all `length` bytes. For a raw RSA key
+  that is the exponent as well as the modulus, and for a DER key the whole
+  PKCS#1 structure;
+- **the selected slot** — accept only a key matching the anchor of a slot whose
+  bit is set in `select`. Revocation is decided from that bitmap, so an anchor
+  that ignores it lets the holder of a revoked key select a different slot and
+  boot. The library refuses a class that selects no key before asking.
+
+The reference harness digests the whole key, as the manifest encodes it, with
+SHA-256 and holds each digest for one slot (`--root-key-digest [<slot>:]HEX64`
+for a raw or DER RSA-3072 key or a raw P-256 point,
+`--root-key-digest-pqc [<slot>:]HEX64` for an ML-DSA-87 key); the comparison
+should be constant time.
+
+**4. Give the PQC family its own revocation state.** `get_root_key_revocation`
+and `set_root_key_revocation` are called with `OCA_KEY_ALGO_PQC`. The check
+reads that state whenever the manifest enforces the PQC class. The commit,
+which runs only under secure boot, writes it for **every** OCA-PQC manifest
+unless `manifest_security_control` bit 1 suppresses it — classic-only ones
+included, because a manifest's revocations apply whichever class signed it. A
+part that verifies PQC needs a PQC revocation store. A part that verifies no
+PQC can report an all-zero bitmap and accept the write as a no-op: no PQC key
+can be authorized there, so nothing it would revoke is usable anyway. Failing
+the write instead is costly. The ROOT-key revocations are committed first, so
+every OCA-PQC commit would stop at `SECURITY_STATE_UPDATE` before the
+security-version flags and the posture registers are written, and the
+device's anti-rollback state would never advance.
+
+**5. Report the signature posture; it decides whether PQC is mandatory.** The
+library verifies the classes the manifest enforces, and the device's signature
+posture decides which classes a manifest must enforce. A manifest that
+enforces only the classical class, Classic or PQC variant, passes on a part
+whose posture demands nothing more and whose classical anchor accepts its key.
+`oca_check_signature_posture()` applies the posture at every secure boot, from
+what `get_signature_cohort_enforce` and `get_signature_class_revoke` report:
+
+- **Require PQC.** Report the PQC bit (bit 1) of the ROOT nibble in cohort
+  enforcement byte 0. A manifest that does not enforce the PQC class is then
+  refused with `SIGNATURE_COHORT_REQUIRED`. Report both bits to require a
+  hybrid manifest.
+- **Retire the classical group.** Report the group code `0xCA` in class
+  revocation byte 1. Every classical algorithm is then disabled: a manifest
+  that enforces the classical class, hybrid included, is refused with
+  `SIGNATURE_ALGORITHM_REVOKED`, and a demand for the classical cohort is
+  withdrawn. To retire one algorithm rather than the group, report its class
+  bit instead.
+- **The posture accumulates.** Committing a verified manifest ORs its
+  `signature_cohort_enforce` and `signature_class_revoke` into the stored
+  registers, so a signed manifest can move a fielded part to PQC without
+  provisioning it again. It takes effect from the next boot. Where lifecycle or
+  another fuse imposes posture of its own, report the union.
+- **Or by anchor.** Authorize no classical key: `is_key_authorized` returns
+  `OCA_FAIL_ROOT_KEY_UNAUTHORIZED` for `OCA_KEY_ALGO_CLASSIC`. Only manifests
+  that enforce the PQC class alone verify; a hybrid manifest is refused too,
+  since it needs both anchors.
+- **Compiling Classic out is not the same thing.** `OCA_SUPPORT_CLASSIC=0`
+  refuses the Classic variant, but an OCA-PQC manifest signed only
+  classically still verifies.
+
+**Reading a PQC refusal.**
+
+| Result | Meaning on the PQC path |
+|---|---|
+| `ROOT_KEY_UNAUTHORIZED` | No PQC anchor accepted the key, the PQC class selects no key, or, for a hybrid manifest, either family's anchor refused |
+| `ROOT_KEY_REVOKED` | The selected PQC key is revoked in the manifest's or the device's PQC bitmap |
+| `SIGNATURE` | The PQC signature did not verify, or either half of a hybrid manifest did not |
+| `CALLBACK_UNAVAILABLE` | `verify_signature` has no backend for the manifest's PQC algorithm, the PQC revocation state could not be read, or a signature posture reader is missing or failed |
+| `CRYPTO_FIELD_SIZE` | The PQC description names an algorithm, encoding or size this library does not accept — today, anything but raw ML-DSA-87 at its exact sizes — or the PQC key or signature field is not zero past that size |
+| `SIGNATURE_CLASS_CONTROL` | `secure_boot_pqc` on a Classic manifest, or secure boot with no class selected |
+| `SIGNATURE_ALGORITHM_REVOKED` | The device has disabled the PQC algorithm's class, or the whole PQC group (`0xAC`) — or, for a hybrid manifest, the classical one's |
+| `SIGNATURE_COHORT_REQUIRED` | The device demands a cohort the manifest does not enforce: PQC of a classic-only manifest, or the classical cohort of a PQC-only one |
+| `UNSUPPORTED_VARIANT` | This build compiled PQC out |
+
+**Testing a PQC backend.** `configs/oca_pqc_signed_example.yaml` (PQC only)
+and `configs/oca_pqc_hybrid_example.yaml` build ML-DSA-87 manifests signed with
+the committed development key — test material, never for shipped images. The
+fixtures `pqc_secure_mldsa`, `pqc_hybrid_rsa`, `pqc_hybrid_ecdsa` and
+`encrypted_aes_pqc_mldsa` under `test/fixtures/configs/` cover each
+combination. ML-DSA signing is hedged, so two builds of one config differ in
+the 4627 signature bytes and nowhere else. `verify_pqc()` in
+`test/openssl_crypto.c` and `key_matches_anchor()` in `test/cli_hwid.c` are the
+reference shapes, and `oca-validate --root-key-digest-pqc`,
+`--revoked-root-keys-pqc`, `--signature-cohort-enforce` and
+`--signature-class-revoke` exercise the anchor, the revocation state and the
+signature posture from the command line. Before trusting a new backend,
+confirm that it refuses what `tests/test_oca_c_validator_integration.py` builds
+to be refused: a signature made with a non-empty context, and one made over a
+SHA-256 or SHA-512 digest of the region. A backend that accepts either is
+verifying a different construction from the one the packer signs.
+
+## Upgrading to 0.7
+
+Changes an existing integration should check. Most show only at run time.
+
+- **Revocation is called per family.** `get_root_key_revocation` and
+  `set_root_key_revocation` are now called with `OCA_KEY_ALGO_PQC` as well as
+  `OCA_KEY_ALGO_CLASSIC`, and the commit does so for every OCA-PQC manifest. An
+  implementation that ignored `algo`, as the earlier reference harness did,
+  would OR PQC revocations into its classical state, irreversibly. Honor
+  `algo`; step 4 of [Enabling PQC secure boot](#enabling-pqc-secure-boot)
+  covers a part with no PQC store.
+- **The commit requires authentication.** `oca_commit_security_state()` returns
+  `OCA_FAIL_SIGNATURE` and writes nothing unless a signature check ran and
+  passed for the context it is given. Pass the context your validation produced.
+- **An enforced class must select a key.** A manifest whose enforced class
+  selects no key fails `ROOT_KEY_UNAUTHORIZED` before your anchor is asked.
+- **The anchor contract is explicit.** `is_key_authorized` must bind the whole
+  key and the selected slot (see the callback table). The earlier reference
+  harness bound neither.
+- **Blobs carry their length.** `oca_crypto_blob_t` gains `length`, the
+  validated size of the value. Code that only reads blobs needs no change.
+- **The signature posture is enforced at boot.** `get_signature_cohort_enforce`
+  and `get_signature_class_revoke` are now read at every secure boot, not only
+  by the commit, and are required there: a NULL reader fails every secure boot
+  with `CALLBACK_UNAVAILABLE`. A part with no posture store reports all zeros.
+  Because earlier commits have already ORed manifests' posture fields into the
+  stored registers, a device can refuse at boot a manifest it accepted before
+  upgrading — check what your fielded parts hold before shipping the update.
+- **New check and result codes.** `oca_check_signature_posture()` runs inside
+  `oca_validate_manifest()`; a hand-composed sequence must call it before
+  `oca_check_signature()`, which refuses a context it did not vouch for. It
+  returns `OCA_FAIL_SIGNATURE_COHORT_REQUIRED` and
+  `OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED`; a `switch` over `oca_result_t` with
+  no `default` needs both cases.
+- **The PQC description is pinned.** The PQC class accepts raw ML-DSA-87 at its
+  exact sizes; anything else is `CRYPTO_FIELD_SIZE`.
+- **Declared algorithms are checked.** A `manifest_hash_type` or
+  `payload_hash_type` other than SHA2-256, and on an encrypted payload an
+  `encryption_key_derivation_function` other than SP 800-108r1 with
+  HMAC-SHA-256 or an `input_key_source` other than the pre-shared secret, is
+  refused with the new `OCA_FAIL_UNSUPPORTED_ALGORITHM` before anything is
+  hashed or decrypted. Such a manifest was previously hashed or decrypted as if
+  it named the supported algorithm. A `switch` over `oca_result_t` with no
+  `default` needs the new case.
+- **Padding past a declared size must be zero.** Under secure boot, a key or
+  signature field of an enforced class that holds a non-zero byte past its
+  declared size is `CRYPTO_FIELD_SIZE`. This packer has always written zeros
+  there. A verify callback that parses DER must do so within the blob's
+  `length`: a DER key that does not fill it exactly, or a DER ECDSA signature
+  followed by non-zero bytes inside it, is a failed verification.
+- **Secure-Boot-only fields are ignored while secure boot is off.** A
+  non-secure manifest with populated signing fields now validates, and a device
+  that enforces secure boot checks a manifest's signing description even when
+  the manifest leaves its own secure-boot bit clear.
+- **Hand-composed sequences.** Two checks are renamed for what they now
+  check: `oca_check_crypto_field_sizes()` is `oca_check_signing_description()`,
+  which now takes `(body, cb, ctx)`, and `oca_check_secure_boot_invariant()` is
+  `oca_check_signature_class_variant()`. The old names remain as deprecated
+  macros until 0.8. The internal layout constant
+  `OCA_LEN_PUBLIC_KEY_CLASSIC_REVOKE` is now `OCA_LEN_ROOT_KEY_BITMAP`.
+- **The reference CLI** needs OpenSSL 3.5 or later. The library itself has no
+  OpenSSL dependency.

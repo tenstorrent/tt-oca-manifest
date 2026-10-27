@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+# OCA Post-Quantum (PQC) manifest example — signed with ML-DSA-87 alone.
+# See README.md ("OCA manifest variants") for the full guide.
+#
+# Build from the repository root:
+#   python -m tt_boot_manifest.pack_images \
+#       --config configs/oca_pqc_signed_example.yaml --out out/oca_pqc_signed.bin -v
+#
+# This is a DEMONSTRATION, signed with a development key committed to this
+# repository so it builds from a clean checkout. It is not a starting point for a
+# real build.
+#
+# secure_boot_classic: 0 and secure_boot_pqc: 1 make this a PQC-only manifest:
+# its one signature is pure FIPS 204 ML-DSA-87 over the signed region, with the
+# empty context, and the classical signing fields stay zero. ML-DSA-87 signs
+# through the `local` signing authority only. ML-DSA signing is hedged, so the
+# 4627-byte signature value differs from one build to the next; every other byte
+# is reproducible.
+
+manifest_format: oca-pqc
+manifest_identifier: "PQCSIGN1"
+description: "OCA-PQC example bundle signed with ML-DSA-87"
+
+secure_boot: 1
+secure_boot_classic: 0
+secure_boot_pqc: 1
+
+signature_type_pqc: 0x33                 # FIPS 204 ML-DSA-87
+signing_authority_pqc: local
+signing_key_file_pqc: "tests/signing_keys/mldsa87_private_key.pem"
+allow_test_signing_key: true   # committed development key — never for a real build
+public_key_select_pqc: 0x01              # authorize PQC key slot 0
+
+# Pinning the timestamp makes everything but the ML-DSA signature value
+# byte-deterministic across runs.
+timestamp: 1764633600
+
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+
+payload_images:
+  - type: "PQCSIGN1BLSTAGE1"
+    path: "tests/oca_fixtures/dummy_image.bin"

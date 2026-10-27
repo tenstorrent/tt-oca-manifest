@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
-"""Byte offsets, sizes, enums, and magic values for the OCA-classic manifest format.
+"""Byte offsets, sizes, enums, and magic values for the OCA manifest formats.
 
 Source of truth: the OCA boot manifest specification, published at
 https://www.openchipletatlas.org/specifications/oca/latest. Field offsets and
@@ -24,6 +24,8 @@ updates if the field is constraint-bearing.
 
 from collections import namedtuple
 from enum import Enum
+
+from ..pack_images_constants import ManifestSignatureType
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +103,7 @@ PUBLIC_KEY_CLASSIC_SIZE = 532
 SIGNATURE_CLASSIC_SIZE = 512
 
 # Hash field size: 64 bytes total. The configured manifest_hash_type's digest
-# occupies the leading bytes (32 for SHA-256, the type this pass emits); the
+# occupies the leading bytes (32 for SHA-256, the only type the packer emits); the
 # remainder is 0x00 padding.
 HASH_FIELD_SIZE = 64
 MANIFEST_HASH_DIGEST_SIZE = 32
@@ -109,10 +111,10 @@ MANIFEST_HASH_DIGEST_SIZE = 32
 # Payload encryption. Supported modes: AES-128-CBC (encryption_type 0x01) and
 # AES-256-CBC (0x02). For BOTH modes the key is derived via NIST SP 800-108r1
 # Counter Mode (HMAC-SHA-256) over the SAME 192-byte expanded input block (see
-# KDF_BLOCK_* below), reproducing the OCAH Key Manager PREPARE_BL_DECRYPT_KEY
-# flow; only the derived-key length and the block's out_bits field / PRF length
-# suffix track the cipher (128 vs 256 bits). The manifest's encryption_kdf_input
-# field is the 64-byte KDF context.
+# KDF_BLOCK_* below), per the payload-key derivation contract in
+# validators/oca/README.md; only the derived-key length and the block's out_bits
+# field / PRF length suffix track the cipher (128 vs 256 bits). The manifest's
+# encryption_kdf_input field is the 64-byte KDF context.
 ENCRYPTION_SECRET_SIZE = 32          # pre-shared secret (the PRF/HMAC key)
 ENCRYPTION_IV_SIZE = 16              # AES-CBC IV (low bytes of the 32-byte field)
 ENCRYPTION_KDF_INPUT_SIZE = 64       # encryption_kdf_input field == full KDF context
@@ -122,8 +124,8 @@ AES_BLOCK_SIZE = 16                  # PKCS#7 padding boundary (AES block, key-s
 # Expanded SP 800-108r1 counter-mode KDF input block (192 bytes) — the fixed
 # "input data" the PRF consumes. Layout: 32-byte header || 32-byte label ||
 # 64-byte context || 64-byte entropy. The label and entropy, and all header
-# fields EXCEPT out_bits, are fixed constants from the reference
-# PREPARE_BL_DECRYPT_KEY flow; out_bits (u16 LE at header offset 10) is the
+# fields EXCEPT out_bits, are fixed constants of the payload-key derivation
+# contract; out_bits (u16 LE at header offset 10) is the
 # derived-key bit length (128 or 256) and is set per cipher by the block builder.
 # The manifest's encryption_kdf_input field supplies the 64-byte context. PRF
 # stream: HMAC-SHA-256(key, be16(i) || block || be16(L))[:L/8] with i from 1 and
@@ -243,6 +245,39 @@ OFF_RESERVED_23 = 3776             # 320 bytes (alignment pad to 4096)
 
 
 # ---------------------------------------------------------------------------
+# Field offsets within the OCA-PQC manifest body
+# ---------------------------------------------------------------------------
+# A PQC manifest carries every field above at the same offset up to the
+# classic_manifest_trailer slot, which it fills with 0x35 rather than 0xCA. The
+# PQC-only signed fields follow, closed by the pqc_manifest_trailer, so the
+# unsigned tail starts later and gains signature_pqc. An `OFF_PQC_` name is a
+# field shared with Classic, at its PQC position.
+
+OFF_SIGNATURE_TYPE_PQC = 3172           # 1 byte
+OFF_SIGNATURE_ENCODING_PQC = 3173       # 1 byte
+OFF_SIGNATURE_SIZE_PQC = 3174           # u16 LE
+OFF_PUBLIC_KEY_SELECT_PQC = 3176        # 16 bytes
+OFF_PUBLIC_KEY_PQC = 3192               # 2624 bytes
+OFF_PUBLIC_KEY_ENCODING_PQC = 5816      # 1 byte
+OFF_PUBLIC_KEY_SIZE_PQC = 5817          # u16 LE
+OFF_PUBLIC_KEY_PQC_REVOKE = 5819        # 16 bytes
+OFF_RESERVED_PQC = 5835                 # 64 bytes
+OFF_PQC_MANIFEST_TRAILER = 5899         # 4 bytes
+
+# Unsigned tail
+OFF_PQC_SIGNATURE_CLASSIC = 5903        # 512 bytes
+OFF_PQC_MANIFEST_HASH = 6415            # 64 bytes
+OFF_PQC_PAYLOAD_OFFSET = 6479           # 8 bytes
+OFF_SIGNATURE_PQC = 6495                # 29824 bytes
+
+LEN_PUBLIC_KEY_SELECT_PQC = 16
+LEN_PUBLIC_KEY_PQC = 2624               # a 2592-byte ML-DSA-87 key, the largest the format defines
+LEN_PUBLIC_KEY_PQC_REVOKE = 16
+LEN_RESERVED_PQC = 64
+LEN_SIGNATURE_PQC = 29824               # a 29792-byte SLH-DSA-256s signature, the largest the format defines
+
+
+# ---------------------------------------------------------------------------
 # Multi-byte control-field widths (mirrored by the C validator, which reads
 # these fields as little-endian scalars rather than single bytes)
 # ---------------------------------------------------------------------------
@@ -283,7 +318,7 @@ LEN_RESERVED_23 = 320
 
 
 # ---------------------------------------------------------------------------
-# Algorithm enums (this feature pass: minimum supported set)
+# Algorithm enums (the supported set only)
 # ---------------------------------------------------------------------------
 
 class OcaClassicSignatureType(Enum):
@@ -295,7 +330,7 @@ class OcaClassicSignatureType(Enum):
 
 
 class OcaClassicHashType(Enum):
-    """OCA `*_hash_type` byte values; this feature pass supports SHA2-256 only."""
+    """OCA `*_hash_type` byte values; the packer supports SHA2-256 only."""
     SHA2_256 = 0x01
 
 
@@ -303,8 +338,9 @@ class OcaClassicSignatureEncoding(Enum):
     """OCA `signature_encoding_classic` byte values.
 
     UNSET (0x00) is what a `secure_boot = 0` bundle carries — the signing fields
-    are zeroed — and is distinct from any real encoding. Vendor-defined (0x03) is
-    deferred.
+    are zeroed — and is distinct from any real encoding. 0xF0-0xFF are
+    integrator-defined (`INTEGRATOR_ENCODINGS`) and deferred; every other value
+    is reserved.
 
     RAW_BYTES is the value as its own standard defines it, in the byte order that
     standard requires — big-endian for both RSA and ECDSA. It is not a
@@ -347,6 +383,10 @@ _ENCODING_LABELS = {
 OCA_SELECTABLE_ENCODINGS_TEXT = ", ".join(
     f"{value:#04x} ({_ENCODING_LABELS[value]})" for value in OCA_SELECTABLE_ENCODINGS
 )
+
+# Encoding values the format leaves to the system integrator, in every
+# signature class.
+INTEGRATOR_ENCODINGS = range(0xF0, 0x100)
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +442,51 @@ CLASSIC_DER_SIGNATURE_MAX_LENGTHS = {
 }
 
 
+class OcaPqcSignatureType(Enum):
+    """OCA `signature_type_pqc` byte values, restricted to the algorithms
+    supported by this packer. The spec defines more values; unsupported values
+    are rejected at config-load time.
+
+    Mirrored, with the classic values, by `oca_primitive_type_t` in the C
+    validator's `oca_validator.h`; `tests/test_oca_primitive_enum_sync.py` fails
+    if the two drift apart.
+    """
+    ML_DSA_87 = 0x33
+
+
+# The signing type each supported OCA signature type is produced as, per class.
+# These are the support tables: a type with no entry is refused at config load,
+# and the authorities each type signs through are the signing layer's
+# SIGNING_AUTHORITIES_BY_TYPE entry for its signing type. The OCA codes are not
+# the signing layer's: OCA RSA (0x01) happens to equal its value, but OCA ECDSA
+# (0x05) does not.
+CLASSIC_SIGNING_TYPES = {
+    OcaClassicSignatureType.RSA_3072_PKCS1V15_SHA256.value: ManifestSignatureType.RSA_3072.value,
+    OcaClassicSignatureType.ECDSA_P256_SHA256.value: ManifestSignatureType.ECC_P_256.value,
+}
+PQC_SIGNING_TYPES = {
+    OcaPqcSignatureType.ML_DSA_87.value: ManifestSignatureType.ML_DSA_87.value,
+}
+
+
+# FIPS 204 encodings, which are the format's raw (0x02) encoding for ML-DSA: the
+# public key is pkEncode(rho, t1) and the signature sigEncode(c~, z, h). Neither
+# has a bare ASN.1 structure, so DER (0x01) is undefined for every PQC value.
+ML_DSA_87_PUBLIC_KEY_BYTES = 2592
+ML_DSA_87_SIGNATURE_BYTES = 4627
+
+# The encodings a producer may select for the PQC class: raw only. 0x01 is
+# reserved for PQC.
+PQC_SELECTABLE_ENCODINGS = (OcaClassicSignatureEncoding.RAW_BYTES.value,)
+
+PQC_RAW_PUBLIC_KEY_LENGTHS = {
+    OcaPqcSignatureType.ML_DSA_87.value: ML_DSA_87_PUBLIC_KEY_BYTES,
+}
+PQC_RAW_SIGNATURE_LENGTHS = {
+    OcaPqcSignatureType.ML_DSA_87.value: ML_DSA_87_SIGNATURE_BYTES,
+}
+
+
 class OcaEncryptionType(Enum):
     """OCA `encryption_type` byte values. Both AES-128-CBC (0x01) and
     AES-256-CBC (0x02) are supported; both derive the key from the expanded KDF
@@ -416,12 +501,12 @@ ENCRYPTION_KEY_BITS = {
     OcaEncryptionType.AES_128_CBC.value: 128,
     OcaEncryptionType.AES_256_CBC.value: 256,
 }
-# encryption_type values this pass supports (plain AES-CBC; CBC-HMAC/AEAD deferred).
+# encryption_type values the packer supports (plain AES-CBC; CBC-HMAC/AEAD deferred).
 ENCRYPTION_TYPES_SUPPORTED = frozenset(ENCRYPTION_KEY_BITS)
 
 
 class OcaEncryptionKdf(Enum):
-    """OCA `encryption_key_derivation_function` values; this feature pass supports
+    """OCA `encryption_key_derivation_function` values; the packer supports
     NIST SP 800-108r1 Counter Mode (HMAC-SHA-256) only."""
     SP800_108_CTR_HMAC_SHA256 = 0x0001
 
@@ -431,14 +516,14 @@ class OcaEncryptionKdf(Enum):
 # ---------------------------------------------------------------------------
 
 DEFERRED_FEATURE_NAMES = frozenset({
-    "PQC manifest variant",
-    "PQC signature fields",
     "Payload encryption",
     "Verifier-key entry",
     "Co-signer entries",
     "Unsupported signature algorithm",
     "Hash algorithms beyond SHA-256",
     "HSM signing authority",
+    "AWS signing authority for ML-DSA",
+    "integrator-defined encoding",
     "KEM key wrapping",
     "Unsupported encryption algorithm",
     "Unsupported key-derivation function",
@@ -448,7 +533,7 @@ DEFERRED_FEATURE_NAMES = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# Version policy for this feature pass
+# Version policy
 # ---------------------------------------------------------------------------
 
 OCA_MANIFEST_VERSION_MAJOR = 1
@@ -468,8 +553,7 @@ PAYLOAD_IMAGE_ALIGNMENT = 8
 # parameterizes over (magic, body size, signed-region end, trailer) so both
 # manifest variants flow through one assembly path. Crypto-family field
 # offsets/sizes (the `*_CLASSIC` constants) are shared across variants and are
-# NOT part of the descriptor. The PQC variant descriptor is added in the PQC
-# support pass.
+# NOT part of the descriptor.
 
 OcaVariant = namedtuple(
     "OcaVariant",
@@ -486,26 +570,13 @@ CLASSIC_VARIANT = OcaVariant(
     payload_offset_field=OFF_PAYLOAD_OFFSET,
 )
 
-# PQC variant (OCAP, 36864-byte body). Layout verified against the OCA boot
-# manifest specification: the PQC-only signed block is inserted at the Classic
-# manifest-trailer position, shifting the unsigned tail down by its size, and a
-# `signature_pqc` field is added to the tail. Per-field PQC offsets and the
-# C-side layout mirror are added with the validator's PQC support; this pass
-# emits the PQC-only crypto regions as zero (PQC-native crypto is deferred)
-# bounded by the spec-mandated trailer/fill markers. (Sizes use non-OFF_/LEN_
-# names so the layout-sync gate stays green until the C mirror lands.)
+# PQC variant (OCAP, 36864-byte body). The field offsets are in the OCA-PQC
+# section above.
 OCA_PQC_BODY_SIZE = 36864             # exact total PQC body length
 PQC_SIGNED_REGION_END = 5903          # bytes [0, 5903) covered by manifest_hash / signatures
 PQC_TRAILER = b"\x96\x96\x96\x96"     # pqc_manifest_trailer marker (offset 5899)
 PQC_CLASSIC_TRAILER_FILL = b"\x35\x35\x35\x35"  # classic_manifest_trailer slot in a PQC manifest
-# Signed PQC-only fields between the 0x35 slot and the 0x96 trailer:
-# signature_type_pqc, signature_encoding_pqc, signature_size_pqc,
-# public_key_select_pqc, public_key_pqc, public_key_encoding_pqc,
-# public_key_size_pqc, public_key_pqc_revoke, and a 64-byte reserved region.
-PQC_SIGNED_CRYPTO_BLOCK_SIZE = 2727
-PQC_SIGNATURE_SIZE = 29824            # signature_pqc field (unsigned tail)
 PQC_TAIL_ALIGN_SIZE = 533             # final alignment pad in the PQC unsigned tail
-PQC_PAYLOAD_OFFSET_FIELD = 6479       # payload_offset field offset in the PQC unsigned tail
 
 PQC_VARIANT = OcaVariant(
     format_name="oca-pqc",
@@ -513,7 +584,7 @@ PQC_VARIANT = OcaVariant(
     body_size=OCA_PQC_BODY_SIZE,
     signed_region_end=PQC_SIGNED_REGION_END,
     trailer=PQC_TRAILER,
-    payload_offset_field=PQC_PAYLOAD_OFFSET_FIELD,
+    payload_offset_field=OFF_PQC_PAYLOAD_OFFSET,
 )
 
 
@@ -548,7 +619,7 @@ SELECTOR_BIT_VERSION_PACKAGE_MAX = 102
 SELECTOR_BIT_VERSION_SYSTEM_MIN  = 103
 SELECTOR_BIT_VERSION_SYSTEM_MAX  = 104
 
-# Bits 0..104 of selector_bits are used in this feature pass; bits 105..127
+# Bits 0..104 of selector_bits are used; bits 105..127
 # are reserved and rejected.
 SELECTOR_BITS_USED_LIMIT = 105
 SELECTOR_BITS_RESERVED_MASK = ((1 << 128) - 1) ^ ((1 << SELECTOR_BITS_USED_LIMIT) - 1)
@@ -618,6 +689,12 @@ SIGNATURE_CLASS_REVOKE_CLASSIC_GROUP_CODE = 0xCA
 SIGNATURE_CLASS_REVOKE_PQC_MASK = 0x000000FF000000         # b[31:24]
 SIGNATURE_CLASS_REVOKE_PQC_GROUP_SHIFT = 32                # b[39:32]
 SIGNATURE_CLASS_REVOKE_PQC_GROUP_CODE = 0xAC
+# The per-algorithm class bits the format defines in each group's byte. Every
+# classical bit is a class; in the PQC byte b27 is reserved for FN-DSA.
+SIGNATURE_CLASS_REVOKE_CLASSIC_CLASSES_SHIFT = 0           # b[7:0]
+SIGNATURE_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES = 0xFF      # b[7:0]
+SIGNATURE_CLASS_REVOKE_PQC_CLASSES_SHIFT = 24              # b[31:24]
+SIGNATURE_CLASS_REVOKE_PQC_DEFINED_CLASSES = 0xF7          # b[26:24], b[30:28], b31
 SIGNATURE_CLASS_REVOKE_VALID_MASK = (
     SIGNATURE_CLASS_REVOKE_CLASSIC_MASK
     | (0xFF << SIGNATURE_CLASS_REVOKE_CLASSIC_GROUP_SHIFT)

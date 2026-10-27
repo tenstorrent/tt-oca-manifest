@@ -7,10 +7,12 @@
 
 #include "parser.h"
 
+#include "oca_compare.h"
 #include "oca_layout.h"
 #include "oca_layout_classic.h"
 #include "oca_layout_pqc.h"
 #include "oca_variant.h"
+#include "secure_boot.h"
 
 oca_result_t oca_check_length(size_t actual_length)
 {
@@ -161,51 +163,25 @@ oca_result_t oca_check_reserved_bits(const uint8_t *body)
     return OCA_OK;
 }
 
-oca_result_t oca_check_secure_boot_invariant(const uint8_t *body)
+oca_result_t oca_check_signature_class_variant(const uint8_t *body)
 {
     oca_result_t status;
     const oca_variant_t *v = oca_variant_for_body(body, &status);
     if (v == 0) {
         return status;
     }
-    uint8_t secure_boot_control = body[OCA_OFF_SECURE_BOOT_CONTROL];
     /* secure_boot_pqc names a PQC signature this variant has no fields to
-     * carry — a format violation "regardless of secure-boot state", so it is
-     * checked before the enable bit is even consulted. Data-driven via the
-     * descriptor: a variant with no PQC crypto has len_pqc_signature == 0. */
-    if ((secure_boot_control & OCA_SECURE_BOOT_PQC_BIT) != 0u
+     * carry — a format violation regardless of secure-boot state. Data-driven
+     * via the descriptor: a variant with no PQC crypto has
+     * len_pqc_signature == 0.
+     *
+     * The signing fields themselves are not judged here. They are
+     * Secure-Boot-only, so a Consumer ignores them while secure boot is
+     * disabled and validates them, through oca_check_signing_description(), once
+     * the determination puts secure boot in force. */
+    if ((body[OCA_OFF_SECURE_BOOT_CONTROL] & OCA_SECURE_BOOT_PQC_BIT) != 0u
         && v->len_pqc_signature == 0u) {
         return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
-    }
-    bool secure_boot_enabled =
-        (secure_boot_control & OCA_SECURE_BOOT_ENFORCED_BIT) != 0u;
-    if (secure_boot_enabled) {
-        return OCA_OK; /* signing fields are allowed to be non-zero. */
-    }
-    /* secure_boot == 0: signature_classic, public_key_classic, and
-     * public_key_select_classic must be all zero (the packer enforces this
-     * on the producer side; we verify on the consumer side). The
-     * classic-crypto key fields are shared offsets; signature_classic sits at
-     * the variant's signature offset. */
-    for (unsigned i = 0; i < OCA_LEN_SIGNATURE; ++i) {
-        if (body[v->off_signature + i] != 0u) {
-            return OCA_FAIL_SECURE_BOOT_INVARIANT;
-        }
-    }
-    for (unsigned i = 0; i < OCA_LEN_PUBLIC_KEY; ++i) {
-        if (body[OCA_OFF_PUBLIC_KEY + i] != 0u) {
-            return OCA_FAIL_SECURE_BOOT_INVARIANT;
-        }
-    }
-    for (unsigned i = 0; i < OCA_LEN_PUBLIC_KEY_SELECT; ++i) {
-        if (body[OCA_OFF_PUBLIC_KEY_SELECT + i] != 0u) {
-            return OCA_FAIL_SECURE_BOOT_INVARIANT;
-        }
-    }
-    if (body[OCA_OFF_SIGNATURE_TYPE] != 0u
-        || body[OCA_OFF_SIGNATURE_ENCODING] != 0u
-        || body[OCA_OFF_PUBLIC_KEY_ENCODING] != 0u) {
-        return OCA_FAIL_SECURE_BOOT_INVARIANT;
     }
     return OCA_OK;
 }
@@ -225,7 +201,27 @@ oca_result_t oca_check_secure_boot_invariant(const uint8_t *body)
 /** Largest RFC 3279 ECDSA-Sig-Value a P-256 key can produce. */
 #define DER_EC_P256_SIGNATURE_MAX_BYTES 72u
 
-oca_result_t oca_check_crypto_field_sizes(const uint8_t *body)
+/**
+ * @brief Whether a key or signature field holds anything past its valid bytes.
+ *
+ * The bytes after a value's declared size are padding. They are refused unless
+ * zero: a signature field lies outside the signed region, so any other content
+ * there would make byte-distinct bundles of one signed manifest.
+ *
+ * @param[in] field       Start of the field.
+ * @param[in] field_len   Width of the field.
+ * @param[in] valid_len   The field's declared size, already held to
+ *                        @p field_len.
+ * @return Non-zero when any byte in [valid_len, field_len) is non-zero.
+ */
+static int padding_is_dirty(const uint8_t *field, size_t field_len, size_t valid_len)
+{
+    return oca_ct_any_nonzero(field + valid_len, field_len - valid_len);
+}
+
+oca_result_t oca_check_signing_description(const uint8_t *body,
+                                          const oca_callbacks_t *cb,
+                                          const oca_validation_context_t *ctx)
 {
     if (body == 0) {
         return OCA_FAIL_INVALID_ARG;
@@ -235,22 +231,29 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body)
     if (v == 0) {
         return status;
     }
-    /* Keyed on the manifest's own secure_boot bits, exactly as
-     * oca_check_secure_boot_invariant is, and for the same reason: this is a
-     * producer-side property of these bytes. The two together partition the
-     * question completely — a manifest declaring itself non-secure must zero its
-     * signing fields (that check), and one declaring itself secure must describe
-     * them consistently (this one). Neither asks what the device resolved to.
-     *
-     * Each class's description is validated only when its class bit names it:
-     * a PQC-only manifest zeroes the classical fields, and the classical rules
-     * must not fire on fields the manifest never uses. */
-    uint8_t control = body[OCA_OFF_SECURE_BOOT_CONTROL];
-    if ((control & OCA_SECURE_BOOT_ENFORCED_BIT) == 0u) {
+    /* The signing description is Secure-Boot-only: validated when secure boot
+     * is in force and ignored otherwise. In force is the determination's
+     * answer, not the manifest's own enforced bit, because a part that enforces
+     * secure boot itself uses these fields whatever that bit says. */
+    oca_secure_bool_t engaged;
+    oca_result_t confirmed = oca_secure_boot_confirm(body, cb, ctx, &engaged);
+    if (confirmed != OCA_OK) {
+        return confirmed;
+    }
+    if (engaged == OCA_SECURE_FALSE) {
         return OCA_OK;
     }
+    /* Each class's description is validated only when that class is enforced:
+     * a PQC-only manifest zeroes the classical fields, and the classical rules
+     * must not fire on fields the manifest never uses. */
+    oca_result_t classes = oca_secure_boot_confirm_classes(body, ctx);
+    if (classes != OCA_OK) {
+        return classes;
+    }
 
-    if ((control & OCA_SECURE_BOOT_CLASSIC_BIT) != 0u) {
+    /* Skipped only on an exact OCA_SECURE_FALSE, so a corrupted
+     * enforcement word runs a class's check rather than skipping it. */
+    if (ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE) {
         uint16_t sig_size = oca_le_u16(body + OCA_OFF_SIGNATURE_SIZE);
         uint16_t key_size = oca_le_u16(body + OCA_OFF_PUBLIC_KEY_SIZE);
         oca_encoding_t sig_enc = (oca_encoding_t)body[OCA_OFF_SIGNATURE_ENCODING];
@@ -263,6 +266,9 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body)
             return OCA_FAIL_CRYPTO_FIELD_SIZE;
         }
 
+        /* Every encoding is matched against the ones its primitive defines, so
+         * an unset, reserved or integrator value never falls through to
+         * another encoding's size rule. */
         uint16_t want_sig;
         uint16_t want_key;
         if (prim == OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256) {
@@ -273,13 +279,21 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body)
             want_sig = RAW_RSA_3072_SIGNATURE_BYTES;
             /* A DER RSA key is PKCS#1, whose length varies with the public
              * exponent, so only the field bound above constrains it. */
-            want_key = (key_enc == OCA_ENCODING_RAW)
-                           ? RAW_RSA_3072_PUBLIC_KEY_BYTES
-                           : key_size;
+            if (key_enc == OCA_ENCODING_RAW) {
+                want_key = RAW_RSA_3072_PUBLIC_KEY_BYTES;
+            } else if (key_enc == OCA_ENCODING_DER) {
+                want_key = key_size;
+            } else {
+                return OCA_FAIL_CRYPTO_FIELD_SIZE;
+            }
         } else if (prim == OCA_PRIMITIVE_ECDSA_P256_SHA256) {
-            want_sig = (sig_enc == OCA_ENCODING_DER)
-                           ? DER_EC_P256_SIGNATURE_MAX_BYTES
-                           : RAW_EC_P256_SIGNATURE_BYTES;
+            if (sig_enc == OCA_ENCODING_RAW) {
+                want_sig = RAW_EC_P256_SIGNATURE_BYTES;
+            } else if (sig_enc == OCA_ENCODING_DER) {
+                want_sig = DER_EC_P256_SIGNATURE_MAX_BYTES;
+            } else {
+                return OCA_FAIL_CRYPTO_FIELD_SIZE;
+            }
             /* DER is not defined for an EC public key. */
             if (key_enc != OCA_ENCODING_RAW) {
                 return OCA_FAIL_CRYPTO_FIELD_SIZE;
@@ -292,21 +306,47 @@ oca_result_t oca_check_crypto_field_sizes(const uint8_t *body)
         if (sig_size != want_sig || key_size != want_key) {
             return OCA_FAIL_CRYPTO_FIELD_SIZE;
         }
+        /* Confirm the classical signature and public key are zero-padded past
+         * their declared sizes. signature_classic is the one variant-positioned
+         * field here, so its offset comes from the descriptor. */
+        if (padding_is_dirty(body + v->off_signature, OCA_LEN_SIGNATURE, sig_size)
+            || padding_is_dirty(body + OCA_OFF_PUBLIC_KEY, OCA_LEN_PUBLIC_KEY,
+                                key_size)) {
+            return OCA_FAIL_CRYPTO_FIELD_SIZE;
+        }
     }
 
-    /* PQC sizes: bounds only, for now. Each size field caps how far a later
-     * parse reads into its companion field, so zero and beyond-the-field are
-     * rejected here; per-algorithm exact sizes (ML-DSA / SLH-DSA) are pinned
-     * when a PQC verification backend exists to consume them. The variant
-     * gate mirrors the invariant's: a class bit naming a region the variant
-     * does not carry is that check's rejection, not this one's. */
-    if ((control & OCA_SECURE_BOOT_PQC_BIT) != 0u && v->len_pqc_signature != 0u) {
+    /* FIPS 204 defines no bare ASN.1 structure for an ML-DSA key or signature,
+     * so DER is undefined for PQC and both encodings must be raw, whose sizes
+     * the parameter set fixes exactly. */
+    if (ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE) {
+        /* Never read PQC offsets out of a body that has none. The confirm
+         * above already refused this; it is repeated at the point of use. */
+        if (ctx->manifest_is_pqc != OCA_SECURE_TRUE) {
+            return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
+        }
         uint16_t pqc_sig_size = oca_le_u16(body + OCA_PQC_OFF_SIGNATURE_SIZE);
         uint16_t pqc_key_size = oca_le_u16(body + OCA_PQC_OFF_PUBLIC_KEY_SIZE);
-        if (pqc_sig_size == 0u
-            || (size_t)pqc_sig_size > (size_t)OCA_PQC_LEN_SIGNATURE_PQC
-            || pqc_key_size == 0u
-            || (size_t)pqc_key_size > (size_t)OCA_PQC_LEN_PUBLIC_KEY) {
+        oca_encoding_t pqc_sig_enc =
+            (oca_encoding_t)body[OCA_PQC_OFF_SIGNATURE_ENCODING];
+        oca_encoding_t pqc_key_enc =
+            (oca_encoding_t)body[OCA_PQC_OFF_PUBLIC_KEY_ENCODING];
+        oca_primitive_type_t pqc_prim =
+            (oca_primitive_type_t)body[OCA_PQC_OFF_SIGNATURE_TYPE];
+
+        if (pqc_prim != OCA_PRIMITIVE_ML_DSA_87
+            || pqc_sig_enc != OCA_ENCODING_RAW
+            || pqc_key_enc != OCA_ENCODING_RAW
+            || pqc_sig_size != OCA_PQC_ML_DSA_87_SIGNATURE_BYTES
+            || pqc_key_size != OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES) {
+            return OCA_FAIL_CRYPTO_FIELD_SIZE;
+        }
+        /* Confirm the PQC signature and public key are zero-padded past their
+         * declared sizes. */
+        if (padding_is_dirty(body + OCA_PQC_OFF_SIGNATURE_PQC,
+                             OCA_PQC_LEN_SIGNATURE_PQC, pqc_sig_size)
+            || padding_is_dirty(body + OCA_PQC_OFF_PUBLIC_KEY,
+                                OCA_PQC_LEN_PUBLIC_KEY, pqc_key_size)) {
             return OCA_FAIL_CRYPTO_FIELD_SIZE;
         }
     }
@@ -327,6 +367,19 @@ oca_result_t oca_check_signature_class_group_codes(const uint8_t *body)
      * revocation and carries no meaning on its own. */
     if ((classic != 0u && classic != OCA_CLASS_REVOKE_CLASSIC_GROUP_CODE)
         || (pqc != 0u && pqc != OCA_CLASS_REVOKE_PQC_GROUP_CODE)) {
+        return OCA_FAIL_GROUP_CODE;
+    }
+
+    /* Every defined class of a group set while its code byte is 0x00 disables
+     * the group without the code, which only the intact code may do. */
+    uint8_t classic_classes = field[OCA_CLASS_REVOKE_OFF_CLASSIC_CLASSES];
+    uint8_t pqc_classes     = field[OCA_CLASS_REVOKE_OFF_PQC_CLASSES];
+    if ((classic == 0u
+         && (classic_classes & OCA_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES)
+            == OCA_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES)
+        || (pqc == 0u
+            && (pqc_classes & OCA_CLASS_REVOKE_PQC_DEFINED_CLASSES)
+               == OCA_CLASS_REVOKE_PQC_DEFINED_CLASSES)) {
         return OCA_FAIL_GROUP_CODE;
     }
     return OCA_OK;

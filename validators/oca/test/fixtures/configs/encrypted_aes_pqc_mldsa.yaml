@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+# ML-DSA-87 signed OCA-PQC manifest (PQC class only) with an AES-128-CBC
+# encrypted payload. The payload secret is supplied to the validator via
+# encrypted_aes_pqc_mldsa.flags.
+manifest_format: oca-pqc
+manifest_identifier: "ENCMLDSA"
+description: "AES-128-CBC encrypted payload, ML-DSA-87 signed fixture"
+secure_boot: 1
+secure_boot_classic: 0
+secure_boot_pqc: 1
+allow_test_signing_key: true   # committed development keys — never for a real build
+signature_type_pqc: 0x33
+signing_authority_pqc: local
+signing_key_file_pqc: "tests/signing_keys/mldsa87_private_key.pem"
+public_key_select_pqc: 0x01
+encrypted_payload: 1
+encryption_type: 0x01
+encryption_key_derivation_function: 0x0001
+encryption_secret: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+encryption_iv: "101112131415161718191a1b1c1d1e1f"
+encryption_kdf_input: "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8"
+timestamp: 1764633600
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+payload_images:
+  - type: "ENCMLDSABLSTAGE1"
+    path: "examples/oca_classic_basic/dummy_image.bin"

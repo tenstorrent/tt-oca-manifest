@@ -35,6 +35,7 @@ import argparse
 import difflib
 import re
 import sys
+from enum import Enum
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -95,6 +96,9 @@ MAPPING: dict[str, tuple[str, str]] = {
     "OCA_LEN_SIGNATURE_CLASS_REVOKE":      ("LEN_SIGNATURE_CLASS_REVOKE", "dec"),
     "OCA_CLASS_REVOKE_CLASSIC_GROUP_CODE": ("SIGNATURE_CLASS_REVOKE_CLASSIC_GROUP_CODE", "hex"),
     "OCA_CLASS_REVOKE_PQC_GROUP_CODE":     ("SIGNATURE_CLASS_REVOKE_PQC_GROUP_CODE", "hex"),
+    "OCA_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES":
+        ("SIGNATURE_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES", "hex"),
+    "OCA_CLASS_REVOKE_PQC_DEFINED_CLASSES": ("SIGNATURE_CLASS_REVOKE_PQC_DEFINED_CLASSES", "hex"),
     "OCA_OFF_MANIFEST_CONTENT_VERSION":    ("OFF_MANIFEST_CONTENT_VERSION", "dec"),
     "OCA_OFF_MANIFEST_DESCRIPTION":        ("OFF_MANIFEST_DESCRIPTION", "dec"),
     "OCA_CLASSIC_OFF_TRAILER":                     ("OFF_CLASSIC_MANIFEST_TRAILER", "dec"),
@@ -103,15 +107,30 @@ MAPPING: dict[str, tuple[str, str]] = {
     "OCA_CLASSIC_OFF_MANIFEST_HASH":               ("OFF_MANIFEST_HASH", "dec"),
     "OCA_LEN_MANIFEST_HASH":               ("HASH_FIELD_SIZE", "dec"),
     "OCA_MANIFEST_HASH_DIGEST_SIZE":              ("MANIFEST_HASH_DIGEST_SIZE", "dec"),
-    # PQC variant anchors. Only the values the Python packer names
-    # independently are cross-checked here; the PQC per-field offsets are
-    # derived from region sizes on the Python side and asserted internally on
-    # the C side (oca_layout_pqc.h static_asserts), so they have no Python
-    # counterpart to diff against.
+    # PQC variant: its sizes, the PQC-only signing fields, the shared fields at
+    # their PQC positions, signature_pqc, then the ML-DSA-87 encoded lengths.
     "OCA_PQC_BODY_SIZE":                   ("OCA_PQC_BODY_SIZE", "dec"),
     "OCA_PQC_SIGNED_REGION_END":           ("PQC_SIGNED_REGION_END", "dec"),
-    "OCA_PQC_OFF_PAYLOAD_OFFSET":          ("PQC_PAYLOAD_OFFSET_FIELD", "dec"),
-    "OCA_PQC_LEN_SIGNATURE_PQC":           ("PQC_SIGNATURE_SIZE", "dec"),
+    "OCA_PQC_OFF_CLASSIC_TRAILER_SLOT":    ("OFF_CLASSIC_MANIFEST_TRAILER", "dec"),
+    "OCA_PQC_OFF_SIGNATURE_TYPE":          ("OFF_SIGNATURE_TYPE_PQC", "dec"),
+    "OCA_PQC_OFF_SIGNATURE_ENCODING":      ("OFF_SIGNATURE_ENCODING_PQC", "dec"),
+    "OCA_PQC_OFF_SIGNATURE_SIZE":          ("OFF_SIGNATURE_SIZE_PQC", "dec"),
+    "OCA_PQC_OFF_PUBLIC_KEY_SELECT":       ("OFF_PUBLIC_KEY_SELECT_PQC", "dec"),
+    "OCA_PQC_LEN_PUBLIC_KEY_SELECT":       ("LEN_PUBLIC_KEY_SELECT_PQC", "dec"),
+    "OCA_PQC_OFF_PUBLIC_KEY":              ("OFF_PUBLIC_KEY_PQC", "dec"),
+    "OCA_PQC_LEN_PUBLIC_KEY":              ("LEN_PUBLIC_KEY_PQC", "dec"),
+    "OCA_PQC_OFF_PUBLIC_KEY_ENCODING":     ("OFF_PUBLIC_KEY_ENCODING_PQC", "dec"),
+    "OCA_PQC_OFF_PUBLIC_KEY_SIZE":         ("OFF_PUBLIC_KEY_SIZE_PQC", "dec"),
+    "OCA_PQC_OFF_PUBLIC_KEY_REVOKE":       ("OFF_PUBLIC_KEY_PQC_REVOKE", "dec"),
+    "OCA_PQC_LEN_PUBLIC_KEY_REVOKE":       ("LEN_PUBLIC_KEY_PQC_REVOKE", "dec"),
+    "OCA_PQC_OFF_TRAILER":                 ("OFF_PQC_MANIFEST_TRAILER", "dec"),
+    "OCA_PQC_OFF_SIGNATURE":               ("OFF_PQC_SIGNATURE_CLASSIC", "dec"),
+    "OCA_PQC_OFF_MANIFEST_HASH":           ("OFF_PQC_MANIFEST_HASH", "dec"),
+    "OCA_PQC_OFF_PAYLOAD_OFFSET":          ("OFF_PQC_PAYLOAD_OFFSET", "dec"),
+    "OCA_PQC_OFF_SIGNATURE_PQC":           ("OFF_SIGNATURE_PQC", "dec"),
+    "OCA_PQC_LEN_SIGNATURE_PQC":           ("LEN_SIGNATURE_PQC", "dec"),
+    "OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES":  ("ML_DSA_87_PUBLIC_KEY_BYTES", "dec"),
+    "OCA_PQC_ML_DSA_87_SIGNATURE_BYTES":   ("ML_DSA_87_SIGNATURE_BYTES", "dec"),
     # Payload encryption + payload-hash fields (consumed by the encrypted-payload
     # validation stage) and the PTOC sizes used to recompute the plaintext chain.
     "OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL":  ("OFF_PAYLOAD_ENCRYPTION_CONTROL", "dec"),
@@ -121,6 +140,16 @@ MAPPING: dict[str, tuple[str, str]] = {
     "OCA_OFF_ENCRYPTION_KDF_INPUT":        ("OFF_ENCRYPTION_KDF_INPUT", "dec"),
     "OCA_LEN_ENCRYPTION_KDF_INPUT":        ("ENCRYPTION_KDF_INPUT_SIZE", "dec"),
     "OCA_OFF_ENCRYPTION_TYPE":             ("OFF_ENCRYPTION_TYPE", "dec"),
+    "OCA_OFF_ENCRYPTION_KDF":              ("OFF_ENCRYPTION_KDF", "dec"),
+    "OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256":
+        ("OcaEncryptionKdf.SP800_108_CTR_HMAC_SHA256", "hex"),
+    "OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT": ("ENCRYPTION_INPUT_KEY_SOURCE_SHIFT", "dec"),
+    "OCA_ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED":
+        ("ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED", "hex"),
+    # The declared algorithms of manifest_hash and of the payload digests.
+    "OCA_OFF_MANIFEST_HASH_TYPE":          ("OFF_MANIFEST_HASH_TYPE", "dec"),
+    "OCA_OFF_PAYLOAD_HASH_TYPE":           ("OFF_PAYLOAD_HASH_TYPE", "dec"),
+    "OCA_HASH_TYPE_SHA2_256":              ("OcaClassicHashType.SHA2_256", "hex"),
     "OCA_OFF_PAYLOAD_HASH":                ("OFF_PAYLOAD_HASH", "dec"),
     "OCA_OFF_PAYLOAD_HASH_CHAIN":          ("OFF_PAYLOAD_HASH_CHAIN", "dec"),
     "OCA_OFF_PAYLOAD_HASHED_LENGTH":       ("OFF_PAYLOAD_HASHED_LENGTH", "dec"),
@@ -169,21 +198,15 @@ NOT_REQUIRED_PREFIXES = (
     "LEN_RESERVED_",
     "OFF_ENCRYPTION_",
     "LEN_ENCRYPTION_",
-    "OFF_PAYLOAD_",         # residual payload metadata the validator does not
-                            # gate on (payload_hash_type). payload_offset IS
-                            # now consumed -- oca_locate_payload resolves and
-                            # bounds-checks it -- and is mapped explicitly. The
-                            # ones it DOES consume — payload_length,
-                            # payload_hashed_length, payload_hash[_chain],
-                            # payload_encryption_control — are mapped above,
-                            # and an explicit mapping wins over this prefix.
+    "OFF_PAYLOAD_",         # payload metadata; every field the validator
+                            # consumes is mapped above, and an explicit mapping
+                            # wins over this prefix.
     "OFF_VERIFIER_KEY_",    # deferred feature
     "OFF_VERIFIER_",        # deferred verifier-key family (security_version etc.)
     "OFF_CO_SIGNER_",       # deferred feature
     "OFF_UNAUTHENTICATED_", # field lives outside the signed region; not gated
     "OFF_FEATURE_CONTROL",
     "OFF_TIMESTAMP",        # informational, not gate-affecting
-    "OFF_MANIFEST_HASH_TYPE",
     "OFF_ENCRYPTION_TYPE",
 )
 
@@ -207,6 +230,20 @@ def parse_c_header(path: Path) -> dict[str, int]:
     return out
 
 
+def python_value(module, name: str) -> int | None:
+    """The integer `name` names in `module`, or None if it names nothing.
+
+    A plain name is a module-level constant. `EnumName.MEMBER` is an enum
+    member, read by its value, so an on-disk code point the packer holds only
+    as an enum is pinned without a duplicate constant beside it."""
+    value = module
+    for part in name.split("."):
+        value = getattr(value, part, None)
+        if value is None:
+            return None
+    return int(value.value if isinstance(value, Enum) else value)
+
+
 def load_python_constants() -> dict[str, int]:
     """Import the packer's constants module and return its symbol table."""
     try:
@@ -217,8 +254,8 @@ def load_python_constants() -> dict[str, int]:
         print("Hint: install the project with `pip install -e .` first.",
               file=sys.stderr)
         raise SystemExit(2)
-    return {name: int(getattr(oca_consts, name)) for _, (name, _) in MAPPING.items()
-            if hasattr(oca_consts, name)}
+    values = {name: python_value(oca_consts, name) for _, (name, _) in MAPPING.items()}
+    return {name: value for name, value in values.items() if value is not None}
 
 
 def find_unmapped_python_constants() -> list[str]:
@@ -266,15 +303,15 @@ def main() -> int:
 
     mismatches: list[tuple[str, int, int]] = []
     missing_in_c: list[str] = []
+    missing_in_python: list[str] = []
     for c_name, (py_name, _fmt) in MAPPING.items():
         if c_name not in c_values:
             missing_in_c.append(c_name)
             continue
         if py_name not in py_values:
-            # Python side is missing the corresponding constant. That's a
-            # packer-side bug, not a C-side drift; flag it loudly.
-            print(f"sync_layout: WARNING: {py_name} not found in src/oca/constants.py",
-                  file=sys.stderr)
+            # A mapping whose Python side names nothing compares nothing, so it
+            # fails rather than passing unchecked.
+            missing_in_python.append(py_name)
             continue
         if c_values[c_name] != py_values[py_name]:
             mismatches.append((c_name, c_values[c_name], py_values[py_name]))
@@ -283,10 +320,15 @@ def main() -> int:
         print("sync_layout: missing C defines:", file=sys.stderr)
         for name in missing_in_c:
             print(f"  {name}", file=sys.stderr)
+    if missing_in_python:
+        print("sync_layout: MAPPING names constants src/oca/constants.py does not "
+              "define:", file=sys.stderr)
+        for name in missing_in_python:
+            print(f"  {name}", file=sys.stderr)
 
     unmapped = find_unmapped_python_constants()
 
-    if not mismatches and not missing_in_c and not unmapped:
+    if not mismatches and not missing_in_c and not missing_in_python and not unmapped:
         return 0
 
     if unmapped:

@@ -2,10 +2,9 @@
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """OCA payload TOC header (32 bytes) and TOC entry (280 bytes) builders.
 
-Source-of-truth byte layouts: contracts/oca-payload-toc.md, which mirrors the
-"Payload TOC" / "Payload TOC entry" tables in the OCA spec. Every field is
-written through an `OFF_TOC_*` constant so the packer and the C validator
-address the same bytes.
+Source-of-truth byte layouts: the "Payload TOC" / "Payload TOC entry" tables in
+the OCA boot manifest specification. Every field is written through an
+`OFF_TOC_*` constant so the packer and the C validator address the same bytes.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ _U64_ENTRY_FIELDS = {
 
 
 def build_toc_header(payload_length: int, image_count: int) -> bytes:
-    """Build the 32-byte PTOC header per contracts/oca-payload-toc.md."""
+    """Build the 32-byte PTOC header."""
     if image_count < 1:
         raise ValueError(f"image_count must be ≥ 1; got {image_count}")
     if payload_length < 0:
@@ -124,7 +123,7 @@ def build_toc_entry(image_meta: Dict[str, Any], image_bytes: bytes) -> bytes:
     Bytes not covered by a field above are the entry's two reserved regions
     (20..24 and 272..280), which the spec requires the Producer to zero.
     """
-    image_type = image_meta.get("type", "_VENDOR1 BLSTAGE1")
+    image_type = image_meta.get("type")
     if not isinstance(image_type, str):
         raise OcaConfigError("image.type must be a string", field_name="payload_images")
     if len(image_type) > oca_consts.LEN_TOC_ENTRY_TYPE:

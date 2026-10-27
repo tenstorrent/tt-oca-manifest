@@ -13,6 +13,7 @@ Do not use any key in this directory for anything but running the tests.
 | `rsa_private_key.f4.pem` | RSA-3072, e=F4 (65537) | the default signing path in most producer tests |
 | `rsa_private_key.e3.pem` | RSA-3072, e=3 | coverage of the small-public-exponent path |
 | `ec_private_key.pem` | ECDSA P-256 | coverage of the ECC signing path |
+| `mldsa87_private_key.pem` | ML-DSA-87, seed-only PKCS#8 | coverage of the PQC signing path |
 
 The test suite needs real, parseable private keys — signing and verification are
 what it is testing, so the keys cannot be stubs or fixtures. They are checked in

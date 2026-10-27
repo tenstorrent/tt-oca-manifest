@@ -30,6 +30,7 @@ import textwrap
 
 import pytest
 from cryptography.exceptions import InvalidSignature
+from oca_fixtures import manifest_reader
 from oca_fixtures.manifest_reader import verify_classic_signature
 from tt_boot_manifest.key_hygiene import ALLOW_CONFIG_FIELD, ALLOW_ENV_VAR, KeyHygieneError
 from tt_boot_manifest.oca import constants as oca_consts
@@ -49,6 +50,13 @@ CLASSIC_EXAMPLES = [
     "configs/oca_encrypted_example.yaml",
     "configs/oca_secure_boot_device_state_example.yaml",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _without_the_suite_test_key_override(monkeypatch):
+    """These are configs a reader packs, so each must declare the development-key
+    opt-in itself; the suite-wide override would hide one that lost it."""
+    monkeypatch.delenv(ALLOW_ENV_VAR, raising=False)
 
 
 def _pack(cfg_rel, tmp_path):
@@ -108,10 +116,36 @@ def test_classic_example_builds_and_validates(cfg, tmp_path):
     _validate_classic_manifest(_pack(cfg, tmp_path))
 
 
+# PQC examples that sign: the classes each one enforces.
+SIGNED_PQC_EXAMPLES = [
+    ("configs/oca_pqc_signed_example.yaml", {"pqc"}),
+    ("configs/oca_pqc_hybrid_example.yaml", {"classic", "pqc"}),
+]
+
+
+@pytest.mark.parametrize("cfg,classes", SIGNED_PQC_EXAMPLES)
+def test_signed_pqc_example_builds_and_validates(cfg, classes, tmp_path):
+    """Each signing PQC example packs into an OCAP manifest whose hash recomputes
+    and whose every enforced signature verifies over the PQC signed region."""
+    body = _pack(cfg, tmp_path)[: oca_consts.OCA_PQC_BODY_SIZE]
+    assert body[0:4] == b"OCAP", "pqc magic"
+
+    region = manifest_reader.signed_region(body)
+    embedded = body[oca_consts.OFF_PQC_MANIFEST_HASH:
+                    oca_consts.OFF_PQC_MANIFEST_HASH + oca_consts.MANIFEST_HASH_DIGEST_SIZE]
+    assert embedded == hashlib.sha256(region).digest(), "manifest_hash recompute"
+
+    control = body[oca_consts.OFF_SECURE_BOOT_CONTROL]
+    assert bool(control & 0x02) == ("classic" in classes)
+    assert bool(control & 0x04) == ("pqc" in classes)
+    if "classic" in classes:
+        assert manifest_reader.classic_signature_valid(body)
+    assert manifest_reader.pqc_signature_valid(body)
+
+
 def test_pqc_example_builds_structurally(tmp_path):
-    """The PQC example packs into a structurally-correct OCAP manifest. (PQC
-    signature verification is a deferred capability, so only framing is checked
-    here.)"""
+    """The non-secure PQC example packs into a structurally-correct OCAP
+    manifest; it carries no signature, so only framing is checked here."""
     bundle = _pack("configs/oca_pqc_example.yaml", tmp_path)
     assert len(bundle) >= oca_consts.OCA_PQC_BODY_SIZE
     body = bundle[: oca_consts.OCA_PQC_BODY_SIZE]

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # Classic-signed (RSA-3072) OCA-PQC manifest — secure boot. Exercises the
-# validator verifying a classic signature over the PQC signed region [0, 5872).
+# validator verifying a classic signature over the PQC signed region [0, 5903).
 manifest_format: oca-pqc
 manifest_identifier: "PQCRSA"
 description: "RSA-3072 signed PQC fixture"

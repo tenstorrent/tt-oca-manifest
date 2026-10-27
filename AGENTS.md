@@ -38,7 +38,7 @@ them for keywords — a partial read costs far more time than a full one.
 |---|---|
 | `README.md` | The manifest variants, installation, packing, YAML config field reference, signing authorities, secure boot, test organization |
 | `validators/oca/README.md` | Validator layout, build targets, compile-time gates, the producer/consumer lock-step gates and what to do when you add a field |
-| `validators/oca/INTEGRATION.md` | Building a consumer on the library: vendoring, the callback table, entry points, the staged boot flow, reaching the plaintext payload, walking the TOC, secure-boot device state |
+| `validators/oca/INTEGRATION.md` | Building a consumer on the library: vendoring, the callback table, entry points, the staged boot flow, reaching the plaintext payload, walking the TOC, secure-boot device state, enabling PQC secure boot, upgrading to 0.7 |
 | [OCA boot manifest specification](https://www.openchipletatlas.org/specifications/oca/latest) | The format specification itself — the authority the producer and validator both implement. Owned and published by the Open Chiplet Atlas project, not maintained in this repository |
 | `validators/oca/lib/oca_validator.h` | The sole public C header; the API contract and every result code |
 | `src/oca/constants.py` | OCA offsets, lengths and enums — the **source of truth** the C layout headers mirror |
@@ -93,7 +93,7 @@ future variants slot in under `lib/` without a build-system fork.
 
 ### Python
 
-Python 3.9 or newer. Install the package **editable** into whichever Python environment you
+Python 3.11 or newer. Install the package **editable** into whichever Python environment you
 already use, with the `dev` extra:
 
 ```bash
@@ -119,8 +119,12 @@ Needed to build the validator and to run the validator integration tests, which 
 rather than fail when it is absent:
 
 - A host C toolchain with `-std=c99` support (gcc 12+ or clang 16+)
-- OpenSSL 3 development headers, discovered via `pkg-config`
-  (macOS: `brew install openssl@3`; Debian/Ubuntu: `apt install libssl-dev pkg-config`)
+- OpenSSL **3.5 or later** development headers, discovered via `pkg-config` (macOS:
+  `brew install openssl@3`; Debian 13+ or Ubuntu 26.04+: `apt install libssl-dev pkg-config`).
+  The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. With an older OpenSSL the CLI
+  build stops with the reason and the integration tests skip saying so — Ubuntu 24.04's
+  `libssl-dev` is 3.0. `TT_BOOT_MANIFEST_REQUIRE_VALIDATOR=1` turns that skip, and the
+  missing-toolchain one, into a failure; CI sets it
 - `doxygen` for the documentation gate — any current release **except 1.9.8**, which falsely
   reports documented functions as undocumented. The test detects that defect and skips with an
   explanation; CI pins 1.18.0
@@ -201,17 +205,18 @@ make -C validators/oca clean
 
 The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic -ffreestanding -nostdlib` to
 prove target portability; the archive is for the host CLI and CI, not a release artifact. The
-CLI links OpenSSL 3.
+CLI links OpenSSL 3.5 or later.
 
 ```bash
 validators/oca/build/test/oca-validate --manifest out/oca_classic.bin --list-images
 validators/oca/build/test/oca-validate --help
 ```
 
-Exit codes are 0 = PASS, 1 = FAIL, 2 = usage error. `--help` is the authority on the hardware
-identity, lifecycle, version, payload-secret, root-key and storage-image flags — read it
-rather than guessing. Fixture configs under `validators/oca/test/fixtures/configs/` pair each
-`<name>.yaml` with a `<name>.flags` file holding the CLI flags that fixture needs.
+Exit codes are 0 = PASS, 1 = FAIL, 2 = usage error, 3 = a manifest variant this build compiled
+out. `--help` is the authority on the hardware identity, lifecycle, version, payload-secret,
+root-key and storage-image flags — read it rather than guessing. Fixture configs under
+`validators/oca/test/fixtures/configs/` pair each `<name>.yaml` with a `<name>.flags` file
+holding the CLI flags that fixture needs.
 
 ### Compile-time gates
 
@@ -258,14 +263,21 @@ implementation, the principle wins and the convenient implementation is the bug.
 ### Cryptographic correctness (non-negotiable)
 
 All primitives — RSA-3072 PKCS#1 v1.5, ECDSA P-256 with RFC 6979 deterministic signing,
-SHA-256, AES-128-CBC / AES-256-CBC, KBKDF — are invoked exclusively through the `cryptography`
-library or a vetted equivalent such as AWS KMS. No hand-rolled crypto, no ad-hoc constant-time
-routines, no experimental algorithm choices.
+ML-DSA-87 (FIPS 204), SHA-256, AES-128-CBC / AES-256-CBC, KBKDF — are invoked exclusively
+through the `cryptography` library or a vetted equivalent such as AWS KMS. No hand-rolled
+crypto, no ad-hoc constant-time routines, no experimental algorithm choices.
 
 Supported signature algorithms are exactly RSA-3072 PKCS#1 v1.5 + SHA-256
-(`signature_type: 0x01`) and ECDSA P-256 + SHA-256 (`signature_type: 0x05`). The specification
-defines more values; the packer rejects them at config-load time. Adding another requires both
-boot ROM support and a deliberate amendment to these rules — neither alone is sufficient.
+(`signature_type: 0x01`) and ECDSA P-256 + SHA-256 (`signature_type: 0x05`) for the classical
+class, and ML-DSA-87 (`signature_type_pqc: 0x33`) for the PQC class. ML-DSA-87 is pure FIPS 204
+ML-DSA signed over the raw signed region with the empty context. We do not pre-hash and do not
+use HashML-DSA. A signer or verifier that computes the message representative μ itself produces
+or accepts the same signature, so that is an implementation choice, not a different
+construction. ML-DSA-87 signs through the `local` authority only; the classical class signs
+through `local` or `aws`. The specification defines more values; the packer rejects them at
+config-load time. Adding another requires both boot ROM support and a deliberate amendment to
+these rules.
+
 Encryption, when enabled, is AES-CBC with KBKDF-derived keys, either 128- or 256-bit per the
 manifest's `encryption_type`; mode, key length and KDF parameters including the input-block
 construction must match the boot ROM's expectations.
@@ -280,6 +292,15 @@ Identical inputs must produce byte-identical output. Non-deterministic inputs �
 IVs, salts, non-deterministic signature schemes — either default to a stable value or are
 supplied explicitly by the caller. They must not silently vary between runs. ECDSA uses RFC
 6979 specifically to preserve this; the rest of the pipeline holds the same line.
+
+One exception: the PQC signature value. `cryptography` signs ML-DSA hedged and exposes no
+deterministic mode, so the first `signature_size_pqc` bytes of an OCA-PQC body's
+`signature_pqc` (offset 6495; 4627 bytes for ML-DSA-87) — and that span wherever such a body
+sits in a combined image — may differ between runs. Every other byte stays byte-identical,
+including `manifest_hash`, the classical signature, and the zero padding of `signature_pqc`.
+Tests that pin or compare packed bytes mask exactly that span
+(`oca_fixtures.manifest_reader.mask_pqc_signature`) and verify the signature instead of
+comparing it; release diffs do the same.
 
 Release artifacts are audited, re-signed and diffed against rebuilds. A field that varies run
 to run destroys that.
@@ -299,7 +320,9 @@ should be created.
 
 Before merging anything that alters generated bytes for an existing config, regenerate from
 the `configs/oca_*.yaml` examples, diff the binary output, and put the diff — or its absence —
-in the pull request description.
+in the pull request description. `tests/test_oca_config_byte_stability.py` pins the packed
+length and digest of every committed config, so such a change fails there, naming the config,
+until its pin is updated in the same commit.
 
 ### Test-first for security-critical logic (non-negotiable)
 
@@ -380,10 +403,12 @@ Python side and requires each to be either mapped to a C mirror in `MAPPING` or 
 `NOT_REQUIRED_*` allowlist with a one-line rationale. You cannot add a manifest field in
 Python and silently leave the validator behind.
 
-**The enum gate.** `tests/test_oca_encoding_enum_sync.py` pins the C `oca_encoding_t`
-enumerator values to the packer's on-disk encoding bytes, because `oca_signature_check()`
+**The enum gates.** `tests/test_oca_encoding_enum_sync.py` pins the C `oca_encoding_t`
+enumerator values to the packer's on-disk encoding bytes, because `oca_check_signature()`
 casts those bytes straight to the enum with no translation. This gate exists because the
-failure it prevents actually happened.
+failure it prevents actually happened. `tests/test_oca_primitive_enum_sync.py` does the same
+for `oca_primitive_type_t` and the signature-type bytes, and requires every enumerator the
+packer cannot write to be a listed format code point.
 
 ### Adding a manifest field
 
@@ -459,13 +484,14 @@ the `aws-sso` console script.
 - **`make check` prints two `N/N passed` summaries** — the C unit-test driver, then the
   fixture sweep. Fewer than two means something declined to build and succeeded anyway; CI
   fails the run for exactly this, and so should you.
-- **`make check` exits 0 down several "nothing to build" paths** left over from the skeleton
-  phase: an empty `lib/`, a missing `test/unit_test.c`, zero fixtures. Each prints a notice
-  and succeeds. `skipping archive`, `skipping link` and `no fixtures yet` in the output are
-  failures wearing a green exit code.
+- **`make check` exits 0 down several "nothing to build" paths**: an empty `lib/`, a missing
+  `test/unit_test.c`, zero fixtures. Each prints a notice and succeeds. `skipping archive`,
+  `skipping link` and `no fixtures yet` in the output are failures wearing a green exit code.
 - **A skip is a signal, not a pass.** The validator integration tests skip without `make` or
-  `pkg-config`; the doxygen gate skips without doxygen or against 1.9.8. A broken toolchain
-  therefore reads as a green run with a quietly smaller suite. Confirm the gates actually ran.
+  `pkg-config`, or with an OpenSSL older than 3.5; the doxygen gate skips without doxygen or
+  against 1.9.8. A broken toolchain therefore reads as a green run with a quietly smaller suite.
+  Confirm the gates actually ran, or set `TT_BOOT_MANIFEST_REQUIRE_VALIDATOR=1` so the
+  validator skips fail instead.
 - **Judge a suite by diffing against your last known-good run**, not against an absolute pass
   count — counts drift as tests are added.
 
@@ -566,3 +592,9 @@ Keep pull requests focused; unrelated changes belong in separate ones. Branch na
 | `make check` cannot import the packer | The Makefile's interpreter search found a Python without the editable install. Pass `PYTHON=<path>` explicitly |
 | A new manifest field passes Python tests but the validator ignores it | The completeness gate was satisfied with an allowlist entry instead of a decoder, or the check was composed into `oca_validate()` where the staged flow skips it |
 | `oca-combined` treated as a third manifest variant | It is a packaging mode that places already-built bundles; only `oca-classic` and `oca-pqc` are formats |
+| Two builds of the same PQC-signed config differ | Expected. ML-DSA signing is hedged, so the PQC signature value — `signature_size_pqc` bytes from OCA-PQC offset 6495, 4627 for ML-DSA-87 — varies between builds. Compare with `oca_fixtures.manifest_reader.mask_pqc_signature` and verify the signature instead — see "Deterministic and reproducible output" |
+| A config is rejected over a signing field after setting `secure_boot: 0` or `secure_boot_classic: 0` | A signing field of a class that is off describes a signature the manifest will not carry, so the packer rejects it by name — a `0` or empty value included, since that still names the field; with secure boot off, both classes are. Remove it, or turn the class on. The two ROOT-key revocation bitmaps are not signing fields and may ride on any secure manifest |
+| Loading the ML-DSA-87 key fails with "this cryptography build cannot sign with ML-DSA-87" | The installed `cryptography` has no ML-DSA. Install 48.0.0 or later from its wheels, which bundle a new enough OpenSSL |
+| `oca-validate` refuses a hybrid or PQC-signed bundle with `ROOT_KEY_UNAUTHORIZED` despite `--root-key-digest` | Each signature class is authorized by its own anchor only, and an anchor only for the slot it is held at. Pass `--root-key-digest-pqc` for the PQC key as well, with a `<slot>:` prefix when the manifest selects a slot other than 0; a digest never authorizes the other family's key |
+| The validator integration tests skip, or fail under `TT_BOOT_MANIFEST_REQUIRE_VALIDATOR`, with "needs OpenSSL 3.5 or later" | The OpenSSL `pkg-config` found is older than 3.5 — Ubuntu 24.04's `libssl-dev` is 3.0. The CLI verifies ML-DSA-87, which needs 3.5; install a newer OpenSSL and point `pkg-config` at it |
+| Every secure boot fails `CALLBACK_UNAVAILABLE`, or a hand-composed sequence fails `SIGNATURE_COHORT_REQUIRED` at the signature check | The device's signature posture is applied at every secure boot by `oca_check_signature_posture()`, which needs both `get_signature_cohort_enforce` and `get_signature_class_revoke` — report zeros on a part with no posture store — and `oca_check_signature()` refuses a context that check did not vouch for |

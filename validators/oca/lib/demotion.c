@@ -11,9 +11,9 @@
  * is a no-op retained for API/pipeline stability.
  */
 
-#include "demotion.h"
+#include "oca_validator.h"
 
-oca_result_t oca_demotion_check(const uint8_t *body)
+oca_result_t oca_check_demotion_control(const uint8_t *body)
 {
     /* demotion_control's reserved bits [15:4] are Producer-zeroed and reserved
      * for backward-compatible minor-version extension. Per v2 the Consumer

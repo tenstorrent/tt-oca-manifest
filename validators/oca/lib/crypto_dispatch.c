@@ -5,21 +5,27 @@
  * @brief Crypto callback dispatch for manifest_hash and signature_classic.
  */
 
-#include "crypto_dispatch.h"
+#include "oca_validator.h"
 
 #include "oca_compare.h"
 #include "oca_layout.h"
 #include "oca_layout_pqc.h"
 #include "oca_variant.h"
+#include "parser.h"
 #include "secure_boot.h"
 
-oca_result_t oca_manifest_hash_check(const uint8_t *body,
+oca_result_t oca_check_manifest_hash(const uint8_t *body,
                                      const oca_callbacks_t *cb)
 {
     oca_result_t status;
     const oca_variant_t *v = oca_variant_for_body(body, &status);
     if (v == 0) {
         return status;
+    }
+    /* Refused before hashing: a SHA-256 compared against a digest of another
+     * algorithm would report a sound manifest as corrupt. */
+    if (body[OCA_OFF_MANIFEST_HASH_TYPE] != OCA_HASH_TYPE_SHA2_256) {
+        return OCA_FAIL_UNSUPPORTED_ALGORITHM;
     }
     if (cb == 0 || cb->sha256 == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
@@ -59,9 +65,10 @@ oca_result_t oca_manifest_hash_check(const uint8_t *body,
  *                  and the signed-region extent. Every PQC field exists in
  *                  exactly one variant, so those offsets are the fixed
  *                  OCA_PQC_* constants.
- * @param[in] cb    Callback table. cb->verify_signature is non-NULL — the
- *                  caller fail-closes on an unwired verifier before any class
- *                  is verified.
+ * @param[in] cb    Callback table. cb->verify_signature is checked here as well
+ *                  as by the caller, so a path that skipped the caller's check
+ *                  fails closed instead of calling through NULL — on a part
+ *                  with code mapped at address zero, a jump into it.
  * @param[in] algo  Which class's signature to verify.
  * @retval OCA_OK                          The signature verified.
  * @retval OCA_FAIL_SIGNATURE              It did not — or the callback answered
@@ -69,7 +76,8 @@ oca_result_t oca_manifest_hash_check(const uint8_t *body,
  *                                         returning, which is treated as a
  *                                         failure rather than silently passing
  *                                         the manifest.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The verifier could not run.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The verifier is not wired, or could
+ *                                         not run.
  * @return cb->verify_signature's verdict, normalized to the three codes above.
  */
 static oca_result_t verify_signature_by_class(const uint8_t *body,
@@ -77,6 +85,9 @@ static oca_result_t verify_signature_by_class(const uint8_t *body,
                                      const oca_callbacks_t *cb,
                                      oca_key_algorithm_t algo)
 {
+    if (cb == 0 || cb->verify_signature == 0) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
     const int is_pqc   = algo == OCA_KEY_ALGO_PQC;
     size_t off_type    = is_pqc ? (size_t)OCA_PQC_OFF_SIGNATURE_TYPE
                                 : (size_t)OCA_OFF_SIGNATURE_TYPE;
@@ -95,12 +106,17 @@ static oca_result_t verify_signature_by_class(const uint8_t *body,
                                 : (size_t)OCA_OFF_PUBLIC_KEY;
     size_t len_key     = is_pqc ? (size_t)OCA_PQC_LEN_PUBLIC_KEY
                                 : (size_t)OCA_LEN_PUBLIC_KEY;
+    size_t off_sig_sz  = is_pqc ? (size_t)OCA_PQC_OFF_SIGNATURE_SIZE
+                                : (size_t)OCA_OFF_SIGNATURE_SIZE;
+    size_t off_key_sz  = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SIZE
+                                : (size_t)OCA_OFF_PUBLIC_KEY_SIZE;
 
     oca_primitive_type_t prim = (oca_primitive_type_t)body[off_type];
 
     oca_crypto_blob_t signature = {
         .bytes          = body + off_sig,
         .field_length   = len_sig,
+        .length         = oca_le_u16(body + off_sig_sz),
         .kind           = OCA_BLOB_SIGNATURE,
         .encoding       = (oca_encoding_t)body[off_sig_enc],
         .primitive_type = prim,
@@ -109,6 +125,7 @@ static oca_result_t verify_signature_by_class(const uint8_t *body,
     oca_crypto_blob_t public_key = {
         .bytes          = body + off_key,
         .field_length   = len_key,
+        .length         = oca_le_u16(body + off_key_sz),
         .kind           = OCA_BLOB_PUBLIC_KEY,
         .encoding       = (oca_encoding_t)body[off_key_enc],
         .primitive_type = prim,
@@ -124,7 +141,7 @@ static oca_result_t verify_signature_by_class(const uint8_t *body,
     return OCA_FAIL_SIGNATURE;
 }
 
-oca_result_t oca_signature_check(const uint8_t *body,
+oca_result_t oca_check_signature(const uint8_t *body,
                                  const oca_callbacks_t *cb,
                                  oca_validation_context_t *ctx)
 {
@@ -150,9 +167,24 @@ oca_result_t oca_signature_check(const uint8_t *body,
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
 
-    /* The recorded enforcement must still match the manifest's class bits —
-     * one glitched context word must not downgrade a hybrid manifest to
+    /* The recorded class enforcement is confirmed at time of use — one
+     * glitched context word must not downgrade a hybrid manifest to
      * single-class verification. */
+    oca_result_t classes = oca_secure_boot_confirm_classes(body, ctx);
+    if (classes != OCA_OK) {
+        return classes;
+    }
+
+    /* The device's posture comes before any signature: a context the posture
+     * check did not vouch for is refused, so a hand-composed sequence cannot
+     * verify a manifest that relies on a disabled algorithm or lacks a cohort
+     * the device demands. */
+    if (ctx->secure_boot_posture_met != OCA_SECURE_TRUE) {
+        return OCA_FAIL_SIGNATURE_COHORT_REQUIRED;
+    }
+
+    /* Derived again here, independently of the confirm, for the final verdict
+     * fold below. */
     uint8_t control = body[OCA_OFF_SECURE_BOOT_CONTROL];
     oca_secure_bool_t bit_classic =
         ((control & OCA_SECURE_BOOT_CLASSIC_BIT) != 0u)
@@ -160,18 +192,6 @@ oca_result_t oca_signature_check(const uint8_t *body,
     oca_secure_bool_t bit_pqc =
         ((control & OCA_SECURE_BOOT_PQC_BIT) != 0u)
         ? OCA_SECURE_TRUE : OCA_SECURE_FALSE;
-    if (ctx == 0
-        || ctx->secure_boot_enforce_classic != bit_classic
-        || ctx->secure_boot_enforce_pqc != bit_pqc) {
-        return OCA_FAIL_SECURE_BOOT_STATE_CHANGED;
-    }
-
-    /* Engaged with no class enforced means the determination's rejection was
-     * composed around by hand. Fail, never skip verification. */
-    if (ctx->secure_boot_enforce_classic != OCA_SECURE_TRUE
-        && ctx->secure_boot_enforce_pqc != OCA_SECURE_TRUE) {
-        return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
-    }
 
     /* Per-class verdict words, folded into the final result below. Each class
      * block must SET its word — verified, or deliberately skipped — so the
@@ -184,8 +204,10 @@ oca_result_t oca_signature_check(const uint8_t *body,
 
     /* --- CLASSICAL signature verification (when secure_boot_classic) ---
      * Gated on the classical key's own authorization flag: a key nothing
-     * vouched for is never exercised. */
-    if (ctx->secure_boot_enforce_classic == OCA_SECURE_TRUE) {
+     * vouched for is never exercised. Skipped only on an exact
+     * OCA_SECURE_FALSE, so a corrupted enforcement word runs a class's check
+     * rather than skipping it. */
+    if (ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE) {
         if (ctx->secure_boot_key_authorized_classic != OCA_SECURE_TRUE) {
             return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
         }
@@ -202,7 +224,7 @@ oca_result_t oca_signature_check(const uint8_t *body,
      * Same gate, on the PQC flag: a classical vouching never unlocks a PQC
      * verify. A variant with no PQC crypto region fails closed — the
      * structural invariant already rejects that manifest outright. */
-    if (ctx->secure_boot_enforce_pqc == OCA_SECURE_TRUE) {
+    if (ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE) {
         if (ctx->manifest_is_pqc != OCA_SECURE_TRUE) {
             return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
         }

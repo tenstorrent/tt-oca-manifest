@@ -6,10 +6,10 @@ A small, freestanding C library that parses an OCA boot manifest and decides
 PASS or FAIL against caller-supplied hardware-identity and cryptographic
 callbacks. The same library and binary handle every OCA format variant —
 the magic bytes at offset 0 select the parser path. Both the Classic (`OCAC`)
-and PQC (`OCAP`) framings are parsed today; PQC *signature verification* is
-the one piece still outstanding (see "Not supported" below). Future variants
-land here without a fork in the build system, the CLI surface, or the symbol
-set.
+and PQC (`OCAP`) variants are parsed and verified, including PQC-only and
+hybrid signatures; the cryptography itself stays in the integrator's callbacks.
+Future variants land here without a fork in the build system, the CLI surface,
+or the symbol set.
 
 A companion host CLI (`oca-validate`) wires the library against OpenSSL and
 command-line-driven hardware values, so the same library code that runs on
@@ -48,7 +48,7 @@ make clean
 ```
 
 The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic
--ffreestanding -nostdlib`. The host CLI links OpenSSL 3 (`-lcrypto`).
+-ffreestanding -nostdlib`. The host CLI links OpenSSL 3.5 or later (`-lcrypto`).
 
 ### Compile-time overrides
 
@@ -120,21 +120,25 @@ Expected `make check` output (tail) — every unit test + every fixture
 round-trip passes:
 
 ```
-245/245 passed
+315/315 passed
 PASS: all_constraints
 PASS: basic
 PASS: control_plane
 PASS: encrypted_aes
 PASS: encrypted_aes_pqc
+PASS: encrypted_aes_pqc_mldsa
 PASS: multi_image
 PASS: pqc_basic
+PASS: pqc_hybrid_ecdsa
+PASS: pqc_hybrid_rsa
+PASS: pqc_secure_mldsa
 PASS: pqc_secure_rsa
 PASS: secure_ecdsa
 PASS: secure_rsa
 PASS: secure_rsa_der
 PASS: secure_rsa_e3
 PASS: secure_rsa_e3_der
-13/13 passed
+17/17 passed
 check: complete
 ```
 
@@ -146,8 +150,13 @@ unit test and every fixture round-trip passes.)
 - A host C toolchain (gcc 12+ or clang 16+) with `-std=c99` support.
 - GNU Make. 3.81 (what macOS bundles) works for ordinary use; **4.x is preferred
   if you script builds** — see "Compile-time overrides" for why.
-- OpenSSL 3 development headers, discovered via `pkg-config` (macOS:
-  `brew install openssl@3`; Debian/Ubuntu: `apt install libssl-dev`).
+- OpenSSL 3.5 or later development headers, discovered via `pkg-config` (macOS:
+  `brew install openssl@3`; Debian 13+ or Ubuntu 26.04+: `apt install libssl-dev`).
+  The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. When `pkg-config`
+  finds OpenSSL, `make` checks its version before linking the CLI
+  (`OPENSSL_MIN_VERSION`); with `OPENSSL_CFLAGS` supplied by hand, the same
+  minimum is enforced at compile time. The library and the unit tests do not use
+  OpenSSL.
 - For `make check` only: a Python environment with the project's
   `tt_boot_manifest` packer installed. The Makefile invokes
   `python -m tt_boot_manifest.pack_images` to (re-)generate fixture
@@ -194,12 +203,17 @@ boot path.
 | Manifest field | Supported value(s) | Notes |
 |----------------|--------------------|-------|
 | manifest format (magic) | `OCAC` (classic), `OCAP` (PQC) | one library parses both; magic selects the path |
-| `manifest_hash_type` | SHA2-256 (`0x01`) | the only digest this build recomputes |
+| `manifest_hash_type` | SHA2-256 (`0x01`) | the only digest this build recomputes; any other is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` before anything is hashed |
+| `payload_hash_type` | SHA2-256 (`0x01`) | covers `payload_hash`, the chain and every TOC entry hash; any other is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` when a payload is declared |
 | `signature_type_classic` | RSA-3072-PKCS#1v1.5-SHA256 (`0x01`), ECDSA-P256-SHA256 (`0x05`) | the primitive is passed to the host `verify_signature` callback; the callback owns the math |
-| `signature_encoding_classic` / `public_key_encoding_classic` | ASN.1 DER (`0x01`) | |
+| `signature_encoding_classic` / `public_key_encoding_classic` | raw (`0x02`); ASN.1 DER (`0x01`) for RSA public keys and ECDSA signatures | under secure boot, every key and signature field of an enforced class must be zero past its declared size, or the manifest is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
+| `secure_boot_control` signature classes | classical, PQC, or both (hybrid) | under secure boot at least one class must be set, and the PQC class only on an `OCAP` manifest (else `OCA_FAIL_SIGNATURE_CLASS_CONTROL`); each enforced class's key is authorized against its own anchor family, and a hybrid manifest needs both signatures to verify |
+| `signature_type_pqc` | ML-DSA-87 (`0x33`) | pure FIPS 204 over the signed region, empty context; the host `verify_signature` callback owns the math |
+| `signature_encoding_pqc` / `public_key_encoding_pqc` | raw (`0x02`) only, with exact sizes: 4627-byte signature, 2592-byte key | any other PQC primitive, encoding or size is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
+| device signature posture (`signature_class_revoke`, `signature_cohort_enforce` as committed) | per-algorithm class bits and the `0xCA` / `0xAC` group codes; the ROOT key's cohort nibble | applied at every secure boot by `oca_check_signature_posture()`: an enforced class whose algorithm the device has disabled is refused with `OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED`, and a manifest that does not enforce a cohort the device demands of the ROOT key with `OCA_FAIL_SIGNATURE_COHORT_REQUIRED` |
 | `encryption_type` | AES-128-CBC (`0x01`) or AES-256-CBC (`0x02`) + PKCS#7 | payload decryption is delegated to the host `decrypt_payload` callback; the key length follows the type |
-| `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below) |
-| `input_key_source` | pre-shared secret (b001) | |
+| `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below). Any other value on an encrypted payload is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` |
+| `input_key_source` | pre-shared secret (b001) | any other source on an encrypted payload, the KEM-unwrapped DEK included, is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` |
 | payload `image_count` | 1 .. `OCA_TOC_MAX_IMAGES` (default **256**) | a consumer resource limit, not a format limit — see below |
 
 **Payload TOC size limit.** The format sets no upper bound on `image_count`, so
@@ -247,31 +261,20 @@ payload. The pre-shared secret is the HMAC key; the derivation binds no device
 state, so it is reproducible in every lifecycle state.
 
 **Not supported (rejected or not yet verified).** These are documented so an
-integrator knows the current boundary; several are tracked as follow-on work:
+integrator knows the current boundary:
 
-- **A PQC signature backend** — the library side of PQC verification is in
-  place. The manifest `secure_boot_classic` / `secure_boot_pqc` class control 
-  bits are enforced. Secure boot with neither class named is rejected, as is `secure_boot_pqc` on a classic manifest. Each enforced class's ROOT key is authorized against its own anchor and its signature dispatched through `verify_signature` with the blob's `key_algorithm` naming the family.
-  A hybrid signed manifest is verified as logical AND with either class failing causing a rejection. What does not exist is any in-tree PQC implementation: the reference harness verifies classical RSA/ECDSA only and fails closed on `OCA_KEY_ALGO_PQC`, and the packer cannot yet produce a PQC-signed manifest. 
-  The PQC size fields get bounds validation only; per-algorithm exact sizes (ML-DSA / SLH-DSA) are pinned when a backend exists to consume them.
+- **PQC signature algorithms other than ML-DSA-87** — ML-DSA-44 / -65 and
+  SLH-DSA are refused with `OCA_FAIL_CRYPTO_FIELD_SIZE`.
 - **Composite CBC-HMAC and AEAD (e.g. GCM-SIV) encryption modes**, and
   **KEM-unwrapped DEK** (`input_key_source` b010) — only plain AES-128-CBC and
   AES-256-CBC with a pre-shared secret are handled.
-- **PQC ROOT-key revocation** — classic ROOT-key revocation and anti-rollback
-  *are* implemented (see [Secure-boot device state](INTEGRATION.md#secure-boot-device-state));
-  the PQC key is authorized against the device's anchor but its
-  `public_key_pqc_revoke` bitmap and the PQC half of the device revocation
-  state are not yet consulted.
 - **Verifier key entry and co-signer entry verification** — the appended-entry
   trust chain is not walked.
-- **Boot-time enforcement of the signature posture registers** — the
-  `signature_cohort_enforce` and `signature_class_revoke` fields are validated
-  (including the group-code interlock) and OR-ed into device state by the
-  post-verify commit, but the *accumulated* state is not yet consulted at boot.
-  This build will not reject a signature whose algorithm class the device has
-  revoked, nor require a cohort the device demands beyond what the manifest's
-  own class bits already name — the per-class dispatch those registers need
-  exists now, but the accumulated device state is not yet read back into it.
+- **Cohort enforcement for the verifier key and co-signers** — the device's
+  signature posture is applied at boot to the ROOT key's signatures only. The
+  verifier-key and co-signer nibbles of `signature_cohort_enforce` are
+  committed to device state but not consulted, because those entries are not
+  verified.
 
 ## Integrating into a target firmware project
 
@@ -291,10 +294,12 @@ Two automated gates:
 ### 1. Drift gate
 
 `tests/test_oca_c_validator_layout_sync.py` runs `scripts/sync_layout.py`
-on every `pytest` invocation. The script compares every
-`OCA_CLASSIC_OFF_*` / `OCA_CLASSIC_LEN_*` / mask in `lib/oca_layout.h`
-against its `tt_boot_manifest.oca.constants` counterpart. Any mismatch
-fails the test with a unified diff and a `sed` fixup suggestion.
+on every `pytest` invocation. The script compares every mapped offset,
+length and mask in the layout headers — the shared `lib/oca_layout.h`
+and the variant headers `lib/oca_layout_classic.h` and
+`lib/oca_layout_pqc.h` — against its `tt_boot_manifest.oca.constants`
+counterpart. Any mismatch fails the test with a unified diff and a `sed`
+fixup suggestion.
 
 ### 2. Completeness gate
 
@@ -311,8 +316,10 @@ the Python side and silently leave the C validator behind.
 2. Run `pytest tests/test_oca_c_validator_layout_sync.py`. It fails:
    `OFF_FOO ... not mapped to the C side`.
 3. Either:
-   - Validator-relevant: add `OCA_CLASSIC_OFF_FOO` to
-     `lib/oca_layout.h` and an entry to `MAPPING` in `sync_layout.py`.
+   - Validator-relevant: add the mirror — `OCA_OFF_FOO` in
+     `lib/oca_layout.h` for a field shared by every variant, or an
+     `OCA_CLASSIC_` / `OCA_PQC_` name in that variant's header — and an
+     entry to `MAPPING` in `sync_layout.py`.
      If the new field is constraint-bearing, write the per-field
      decoder under `lib/` (new `oca_check_foo()`, composed into
      `oca_validate_manifest()` for a manifest-level check or

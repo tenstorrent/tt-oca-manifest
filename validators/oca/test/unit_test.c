@@ -163,6 +163,24 @@ static void fill_unused_identity(uint8_t *buf)
     memset(buf + OCA_OFF_SYSTEM_ID,  OCA_MANIFEST_UNUSED_BYTE, OCA_LEN_IDENTITY);
 }
 
+/* The algorithms every producer declares and this library computes: SHA2-256
+ * for both digests, and the SP 800-108r1 KDF an encrypted payload uses. */
+static void declare_supported_algorithms(uint8_t *buf)
+{
+    buf[OCA_OFF_MANIFEST_HASH_TYPE] = OCA_HASH_TYPE_SHA2_256;
+    buf[OCA_OFF_PAYLOAD_HASH_TYPE] = OCA_HASH_TYPE_SHA2_256;
+    buf[OCA_OFF_ENCRYPTION_KDF] =
+        (uint8_t)(OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256 & 0xFFu);
+    buf[OCA_OFF_ENCRYPTION_KDF + 1] =
+        (uint8_t)(OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256 >> 8);
+}
+
+/* payload_encryption_control for an encrypted payload keyed by the pre-shared
+ * secret, as the packer writes it. */
+#define ENCRYPTED_PRESHARED \
+    (OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT \
+     | (OCA_ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT))
+
 static void build_minimal_manifest(uint8_t buf[OCA_CLASSIC_BODY_SIZE])
 {
     memset(buf, 0, OCA_CLASSIC_BODY_SIZE);
@@ -177,6 +195,7 @@ static void build_minimal_manifest(uint8_t buf[OCA_CLASSIC_BODY_SIZE])
     /* manifest_length = 4096 */
     buf[OCA_OFF_MANIFEST_LENGTH + 1] = 0x10;
     fill_unused_identity(buf);
+    declare_supported_algorithms(buf);
     /* payload_offset = body_size: what every producer writes for a contiguous
      * bundle, and what oca_check_payload requires before it will assume the
      * payload follows the body. Leaving it zero models no real manifest. */
@@ -283,11 +302,12 @@ static const oca_validation_context_t g_determined_secure = {
     .secure_boot_device_disabled         = OCA_SECURE_FALSE
 };
 
-/* A determination in force with the ROOT key already authorized, and nothing yet
- * authenticated. This is what oca_check_signature() is handed in the composed
- * pipeline, and the minimum it will act on: authorization is recorded precisely
- * so a context lacking it cannot reach the verifier. Distinct from
- * g_determined_secure, which stops one check earlier. */
+/* A determination in force with the device posture met and the ROOT key
+ * already authorized, and nothing yet authenticated. This is what
+ * oca_check_signature() is handed in the composed pipeline, and the minimum it
+ * will act on: authorization is recorded precisely so a context lacking it
+ * cannot reach the verifier. Distinct from g_determined_secure, which stops one
+ * check earlier. */
 static const oca_validation_context_t g_authorized_secure = {
     .secure_boot_determined              = OCA_SECURE_TRUE,
     .secure_boot_enabled                 = OCA_SECURE_TRUE,
@@ -297,6 +317,7 @@ static const oca_validation_context_t g_authorized_secure = {
     .secure_boot_enforce_pqc             = OCA_SECURE_FALSE,
     .secure_boot_key_authorized_classic  = OCA_SECURE_TRUE,
     .secure_boot_key_authorized_pqc      = OCA_SECURE_FALSE,
+    .secure_boot_posture_met             = OCA_SECURE_TRUE,
     .secure_boot_authenticated           = OCA_SECURE_FALSE,
     .secure_boot_device_disabled         = OCA_SECURE_FALSE
 };
@@ -339,13 +360,36 @@ static oca_validation_context_t determined_for(const uint8_t *body,
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
     (void)oca_determine_secure_boot(body, cb, &ctx);
-    /* Authorization too, because it is the first of the gated key checks and
-     * oca_check_signature() refuses a context that does not record it. A test
-     * handed this context is testing something DOWNSTREAM of authorization, so
-     * reaching it having skipped authorization would not be a state the composed
-     * pipeline can produce. Tests that are about authorization itself build their
-     * own context, the same convention the encryption-gate tests follow. */
+    /* The posture check and authorization too, because oca_check_signature()
+     * refuses a context that does not record both. A test handed this context
+     * is testing something DOWNSTREAM of them, so reaching it having skipped
+     * either would not be a state the composed pipeline can produce. Tests that
+     * are about either check itself build their own context, the same
+     * convention the encryption-gate tests follow. */
+    (void)oca_check_signature_posture(body, cb, &ctx);
     (void)oca_check_root_key_authorized(body, cb, &ctx);
+    return ctx;
+}
+
+/**
+ * @brief Run the determination, authorization and signature check over this
+ *        manifest and callback table.
+ *
+ * What oca_commit_security_state() must be handed: it writes device state only
+ * for a manifest whose signatures were actually checked, so a commit test that
+ * started from determined_for() would be refused before reaching what it tests.
+ *
+ * @param[in] body  Manifest body the commit will be run against.
+ * @param[in] cb    Callback table the commit will be given; its verify callback
+ *                  decides whether the context comes back authenticated.
+ * @return A context holding this fixture's determination, authorization and
+ *         signature verdict.
+ */
+static oca_validation_context_t verified_for(const uint8_t *body,
+                                             const oca_callbacks_t *cb)
+{
+    oca_validation_context_t ctx = determined_for(body, cb);
+    (void)oca_check_signature(body, cb, &ctx);
     return ctx;
 }
 
@@ -398,15 +442,21 @@ typedef struct {
     bool     version_present;
 
     /* Device-stored secure-boot state — an in-memory stand-in for fuses and
-     * OTP: per-algorithm ROOT-key revocation bitmap (the classic slot is the
-     * one exercised) plus the 128-bit security-version flags. */
+     * OTP: one ROOT-key revocation bitmap per algorithm family, plus the
+     * 128-bit security-version flags. */
     uint8_t revoke[16];
+    uint8_t revoke_pqc[16];
     uint8_t secver[16];
     /* The two signature posture registers are 8 bytes, not 16 — they mirror
      * their manifest fields, and those are u64. */
     uint8_t cohort[8];
     uint8_t class_revoke[8];
     bool    fail_set;
+    bool    fail_set_revoke_pqc;
+    /* Fail the ROOT-key revocation READ for one family, so a case can drive the
+     * check and the commit down their unreadable-state paths per family. */
+    bool    fail_get_revoke_classic;
+    bool    fail_get_revoke_pqc;
 
     /* Ciphertext-aware SHA-256 state. The payload digest stub returns
      * `ct_digest` when hashing the ciphertext (matched by pointer and length)
@@ -436,6 +486,11 @@ typedef struct {
     int lifecycle_calls;
     int version_calls;
     int revoke_calls;
+    /* Per-family split of the revocation reader and writer, so a case can
+     * assert which family's state a check consulted or a commit wrote. */
+    int revoke_pqc_calls;
+    int set_revoke_classic_calls;
+    int set_revoke_pqc_calls;
 
     /* What the decryption descriptor carried, captured for assertions. Inside
      * the fixture rather than beside it for the same reason the counters are:
@@ -810,26 +865,22 @@ TEST(test_null_callback_table_still_fail_safes)
     ASSERT_TRUE(oca_secure_boot_active(buf, NULL) == OCA_SECURE_TRUE);
 }
 
-/* ---- scope boundary: the secure-boot invariant reads the raw manifest bit ----
+/* ---- secure boot off: signing fields are ignored, not judged ----
  *
- * Wiring the determination into that check would be an easy and silent change to
- * make while editing nearby code, and on a disabled part the two usually agree —
- * so nothing else would notice. */
-TEST(test_secure_boot_invariant_still_reads_the_raw_manifest_bit)
+ * A Consumer ignores the Secure-Boot-only fields while secure boot is disabled,
+ * so a manifest that does not assert secure boot is not refused for carrying
+ * them. */
+TEST(test_secure_boot_invariant_ignores_signing_fields)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
-
-    /* bit clear + a populated signing field: rejected, disable state or not. */
     build_minimal_manifest(buf);
     buf[OCA_CLASSIC_OFF_SIGNATURE] = 0x01u;
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf),
-                  OCA_FAIL_SECURE_BOOT_INVARIANT);
-
-    /* bit set + the same field: permitted, because the manifest says it is a
-     * secure-boot manifest. */
-    build_sb_asserting_manifest(buf);
-    buf[OCA_CLASSIC_OFF_SIGNATURE] = 0x01u;
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_OK);
+    buf[OCA_OFF_PUBLIC_KEY] = 0x01u;
+    buf[OCA_OFF_PUBLIC_KEY_SELECT] = 0x01u;
+    buf[OCA_OFF_SIGNATURE_TYPE] = 0xF0u;
+    buf[OCA_OFF_SIGNATURE_ENCODING] = 0xF0u;
+    buf[OCA_OFF_PUBLIC_KEY_ENCODING] = 0xF0u;
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf), OCA_OK);
 }
 
 /* Composite callback table for full-pipeline tests. Every stub reads the one
@@ -1071,16 +1122,7 @@ TEST(test_secure_boot_invariant_clean_zero_path)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_OK);
-}
-
-TEST(test_secure_boot_invariant_dirty_signature_field)
-{
-    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
-    build_minimal_manifest(buf);
-    buf[OCA_CLASSIC_OFF_SIGNATURE] = 0xFFu;
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf),
-                  OCA_FAIL_SECURE_BOOT_INVARIANT);
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf), OCA_OK);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1323,6 +1365,45 @@ TEST(test_manifest_hash_mismatch_fails)
                   OCA_FAIL_MANIFEST_HASH);
 }
 
+/* Digests requested of counting_sha256(), for checks refused before hashing. */
+static int g_sha_calls;
+
+static oca_result_t counting_sha256(const uint8_t *msg, size_t msg_len, uint8_t out[32])
+{
+    (void)msg; (void)msg_len;
+    g_sha_calls++;
+    memset(out, 0, 32);
+    return OCA_OK;
+}
+
+/* Hash-type values other than SHA2-256: unset, the other digests the format
+ * defines, and a reserved value. */
+static const uint8_t UNSUPPORTED_HASH_TYPES[] = { 0x00u, 0x02u, 0x04u, 0x08u, 0x09u, 0xFFu };
+
+TEST(test_result_string_covers_the_unsupported_algorithm_code)
+{
+    ASSERT_EQ_INT(strcmp(oca_result_str(OCA_FAIL_UNSUPPORTED_ALGORITHM),
+                         "UNSUPPORTED_ALGORITHM"), 0);
+}
+
+/* The renamed checks are still reachable by their former names for one minor
+ * release, and the two names give the same verdict. */
+TEST(test_deprecated_check_names_reach_the_renamed_checks)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(buf);
+    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x05u;   /* PQC class on a Classic body */
+    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf), OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf, NULL, &ctx),
+                  OCA_FAIL_SECURE_BOOT_UNDETERMINED);
+    ASSERT_EQ_INT(oca_check_signing_description(buf, NULL, &ctx),
+                  OCA_FAIL_SECURE_BOOT_UNDETERMINED);
+}
+
 /* Pipeline: integrity is settled before anything reads the contents, so a
  * corrupt manifest reports MANIFEST_HASH rather than whichever field happens to
  * decode wrong out of the damaged bytes. Move oca_check_manifest_hash() back
@@ -1524,7 +1605,7 @@ static void build_encrypted_bundle_len(uint8_t *buf, size_t ct_len,
 {
     memset(buf, 0, OCA_CLASSIC_BODY_SIZE + ct_len);
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;             /* encrypted_payload */
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;  /* encrypted_payload */
     buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;  /* supported cipher */
     toc_put_u64(buf + OCA_OFF_PAYLOAD_HASHED_LENGTH, ct_len);
     toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, ct_len);
@@ -1564,7 +1645,7 @@ TEST(test_encryption_info_reports_cipher_and_selector)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_256_CBC;
     /* u16 LE, and deliberately > 8 bits so a byte-wide read is caught. */
     buf[OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT]      = 0x34u;
@@ -1582,7 +1663,7 @@ TEST(test_encryption_info_reports_an_unknown_cipher_verbatim)
     /* Reported, not rejected — oca_check_payload owns that decision. */
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     buf[OCA_OFF_ENCRYPTION_TYPE] = 0x7Fu;
 
     oca_payload_encryption_t enc;
@@ -1609,7 +1690,7 @@ TEST(test_encryption_info_needs_no_payload_resident)
     /* The staged case: a body-sized buffer with no payload after it. */
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;
     buf[OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT] = 0x01u;
     buf[OCA_OFF_PAYLOAD_HASHED_LENGTH] = 0x80u;   /* 128 B of ciphertext, LE u64 */
@@ -1682,6 +1763,27 @@ TEST(test_payload_null_decrypt_callback_unavailable)
 
     ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL),
                   OCA_FAIL_CALLBACK_UNAVAILABLE);
+}
+
+/* A declared payload with no digest to check it by fails closed, whether the
+ * hash is unwired or the whole table is missing, and nothing is decrypted. */
+TEST(test_payload_without_sha256_is_unavailable)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN];
+    uint8_t ph[32]; memset(ph, 0x5A, 32);
+    uint8_t chain[32]; memset(chain, 0, 32);
+    build_encrypted_bundle(buf, ph, chain);
+    payload_sha_ctx_init(buf + OCA_CLASSIC_BODY_SIZE, true, 0x5A);
+
+    oca_callbacks_t cb;
+    payload_cb(&cb, decrypt_ok);
+    cb.sha256 = 0;
+    g_fx.decrypt_calls = 0;
+    ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, NULL, &g_authenticated, NULL),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
 }
 
 TEST(test_payload_decrypt_failure)
@@ -2110,7 +2212,7 @@ TEST(test_payload_toc_entry_hash_mismatch_second_entry)
 }
 
 /* Only the leading digest_size bytes of the 64-byte hash field are compared;
- * the trailing padding this pass does not interpret must not fail a good entry. */
+ * the trailing padding the library does not interpret must not fail a good entry. */
 TEST(test_payload_toc_entry_hash_padding_ignored)
 {
     uint8_t pt[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];
@@ -2169,6 +2271,94 @@ TEST(test_cleartext_payload_happy_path)
     oca_callbacks_t cb;
     cleartext_cb(&cb);
     ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL), OCA_OK);
+}
+
+/* Run an encrypted bundle whose declared algorithms the test has edited, and
+ * report what oca_check_payload() returned. Counts digests and decryptions, so
+ * the caller can assert a refusal came before either. */
+static oca_result_t check_encrypted_algorithms(uint8_t *buf, size_t len)
+{
+    oca_callbacks_t cb;
+    payload_cb(&cb, decrypt_ok);
+    cb.sha256 = counting_sha256;
+    g_sha_calls = 0;
+    g_fx.decrypt_calls = 0;
+    return oca_check_payload(buf, len, &cb, &g_authenticated, NULL);
+}
+
+/* An encrypted payload's key derivation and input-key source must be the ones
+ * the decrypt contract defines — SP 800-108r1 counter mode with HMAC-SHA-256,
+ * from the pre-shared secret — and its payload_hash_type SHA2-256. Each other
+ * value is refused before the ciphertext is hashed or decrypted. The supported
+ * combination reaches the payload hash, which is the control. */
+TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
+{
+    static const uint16_t kdfs[] = { 0x0000u, 0x0002u, 0x0008u, 0x0009u, 0xFF00u };
+    static const uint8_t key_sources[] = { 0x0u, 0x2u, 0x3u, 0x7u };
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN];
+    uint8_t ph[32]; memset(ph, 0x11, 32);
+    uint8_t chain[32]; memset(chain, 0, 32);
+
+    build_encrypted_bundle(buf, ph, chain);
+    ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf), OCA_FAIL_PAYLOAD_HASH);
+    ASSERT_EQ_INT(g_sha_calls, 1);
+
+    for (size_t i = 0u; i < sizeof kdfs / sizeof kdfs[0]; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, kdfs[i]);
+        ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
+                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
+        ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
+    }
+    for (size_t i = 0u; i < sizeof key_sources; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = (uint8_t)(
+            OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT
+            | (key_sources[i] << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT));
+        ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
+                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
+        ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
+    }
+    for (size_t i = 0u; i < sizeof UNSUPPORTED_HASH_TYPES; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
+        ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
+                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
+    }
+}
+
+/* A cleartext payload's digests follow payload_hash_type too. Its key
+ * derivation and key source describe no key, so they are not judged; nor is
+ * anything when no payload is declared. */
+TEST(test_cleartext_payload_judges_only_its_hash_type)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE + CLEAR_PAYLOAD_LEN];
+    oca_callbacks_t cb;
+    memset(&cb, 0, sizeof(cb));
+    cb.sha256 = counting_sha256;
+
+    for (size_t i = 0u; i < sizeof UNSUPPORTED_HASH_TYPES; ++i) {
+        build_cleartext_bundle(buf);
+        buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
+        g_sha_calls = 0;
+        ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL),
+                      OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
+    }
+
+    build_cleartext_bundle(buf);
+    toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, 0xFF00u);
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] =
+        (uint8_t)(0x2u << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT);
+    ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL), OCA_OK);
+
+    uint8_t bare[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(bare);
+    bare[OCA_OFF_PAYLOAD_HASH_TYPE] = 0xFFu;
+    ASSERT_EQ_INT(oca_check_payload(bare, sizeof bare, NULL, &g_authenticated, NULL), OCA_OK);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2888,7 +3078,7 @@ static void build_inplace_bundle(uint8_t *buf, const uint8_t payload_hash[32])
 {
     memset(buf, 0, OCA_CLASSIC_BODY_SIZE + INPLACE_CT_LEN);
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;                 /* encrypted */
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;  /* encrypted */
     buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;
     toc_put_u64(buf + OCA_OFF_PAYLOAD_HASHED_LENGTH, INPLACE_CT_LEN);
     toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, INPLACE_CT_LEN);
@@ -3516,7 +3706,7 @@ TEST(test_locate_payload_spans_the_ciphertext_when_encrypted)
     oca_storage_bounds_t bounds;
     int64_t addr = 0; size_t span = 0u;
     loc_body_init(buf, OCA_CLASSIC_BODY_SIZE);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     toc_put_u64(buf + OCA_OFF_PAYLOAD_HASHED_LENGTH, 8192u);
     loc_bounds_init(&bounds);
     ASSERT_EQ_INT(oca_locate_payload(buf, &bounds, &addr, &span), OCA_OK);
@@ -3619,11 +3809,22 @@ TEST(test_result_string_covers_the_location_code)
 
 /* Device-state readers and writers over the fixture's fuse/OTP stand-in. */
 
+/* The fixture's bitmap for one algorithm family. */
+static uint8_t *dev_revoke_state(oca_key_algorithm_t algo)
+{
+    return (algo == OCA_KEY_ALGO_PQC) ? g_fx.revoke_pqc : g_fx.revoke;
+}
+
 static oca_result_t dev_get_revoke(oca_key_algorithm_t algo, uint8_t out[16])
 {
-    (void)algo;
     g_fx.revoke_calls++;
-    memcpy(out, g_fx.revoke, 16);
+    if (algo == OCA_KEY_ALGO_PQC) {
+        g_fx.revoke_pqc_calls++;
+        if (g_fx.fail_get_revoke_pqc) return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    } else if (g_fx.fail_get_revoke_classic) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    memcpy(out, dev_revoke_state(algo), 16);
     return OCA_OK;
 }
 
@@ -3635,9 +3836,17 @@ static oca_result_t dev_get_secver(uint8_t out[16])
 
 static oca_result_t dev_set_revoke(oca_key_algorithm_t algo, const uint8_t in[16])
 {
-    (void)algo;    g_fx.set_calls++;
+    g_fx.set_calls++;
+    if (algo == OCA_KEY_ALGO_PQC) {
+        g_fx.set_revoke_pqc_calls++;
+    } else {
+        g_fx.set_revoke_classic_calls++;
+    }
     if (g_fx.fail_set) return OCA_FAIL_SECURITY_STATE_UPDATE;
-    memcpy(g_fx.revoke, in, 16);
+    if (g_fx.fail_set_revoke_pqc && algo == OCA_KEY_ALGO_PQC) {
+        return OCA_FAIL_SECURITY_STATE_UPDATE;
+    }
+    memcpy(dev_revoke_state(algo), in, 16);
     return OCA_OK;
 }
 
@@ -3726,6 +3935,7 @@ static const uint8_t *g_verify_sig_bytes[2];
 static oca_key_algorithm_t g_verify_algo[2];
 static size_t g_verify_region_len[2];
 static oca_crypto_blob_t g_verify_pk_blob[2];
+static oca_crypto_blob_t g_verify_sig_blob[2];
 static bool g_verify_fail_enabled;
 static oca_key_algorithm_t g_verify_fail_algo;
 static oca_result_t verify_capture_cb(const oca_crypto_blob_t *sig,
@@ -3739,6 +3949,7 @@ static oca_result_t verify_capture_cb(const oca_crypto_blob_t *sig,
         g_verify_algo[g_fx.sig_calls]       = sig->key_algorithm;
         g_verify_region_len[g_fx.sig_calls] = signed_region_len;
         g_verify_pk_blob[g_fx.sig_calls]    = *pk;
+        g_verify_sig_blob[g_fx.sig_calls]   = *sig;
     }
     g_fx.sig_calls++;
     if (g_verify_fail_enabled && sig->key_algorithm == g_verify_fail_algo) {
@@ -3760,6 +3971,7 @@ static void build_minimal_pqc_manifest(uint8_t buf[OCA_PQC_BODY_SIZE])
     buf[OCA_OFF_MANIFEST_VERSION_MINOR + 0] =
         (uint8_t)(OCA_LIB_MANIFEST_MINOR & 0xFF);
     fill_unused_identity(buf);
+    declare_supported_algorithms(buf);
     /* manifest_length = payload_offset = 36864 (0x9000) */
     buf[OCA_OFF_MANIFEST_LENGTH + 1] = 0x90;
     buf[OCA_PQC_OFF_PAYLOAD_OFFSET + 1] = 0x90;
@@ -3770,6 +3982,30 @@ static void build_minimal_pqc_manifest(uint8_t buf[OCA_PQC_BODY_SIZE])
      * sets g_fx.sha_hash_off to this variant's hash position. */
     for (unsigned i = 0; i < 32; ++i) {
         buf[OCA_PQC_OFF_MANIFEST_HASH + i] = (uint8_t)i;
+    }
+}
+
+/* manifest_hash_type names the digest; SHA2-256 is the only one this library
+ * computes, so any other is refused before anything is hashed, in both
+ * variants, rather than reported as a corrupt manifest. */
+TEST(test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing)
+{
+    oca_callbacks_t cb;
+    memset(&cb, 0, sizeof(cb));
+    cb.sha256 = counting_sha256;
+    for (size_t i = 0u; i < sizeof UNSUPPORTED_HASH_TYPES; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_minimal_manifest(buf);
+        buf[OCA_OFF_MANIFEST_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
+        g_sha_calls = 0;
+        ASSERT_EQ_INT(oca_check_manifest_hash(buf, &cb), OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
+
+        static uint8_t pqc[OCA_PQC_BODY_SIZE];
+        build_minimal_pqc_manifest(pqc);
+        pqc[OCA_OFF_MANIFEST_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i];
+        ASSERT_EQ_INT(oca_check_manifest_hash(pqc, &cb), OCA_FAIL_UNSUPPORTED_ALGORITHM);
+        ASSERT_EQ_INT(g_sha_calls, 0);
     }
 }
 
@@ -3800,6 +4036,15 @@ static void build_secure_pqc_manifest(uint8_t buf[OCA_PQC_BODY_SIZE],
 
 /* Full callback table for device-state pipeline tests: passing sha + counting
  * signature + the device-state stub get/set callbacks. */
+/* Wire the fixture's signature posture readers into a hand-built table, which
+ * every secure-boot signature check needs: the posture check runs first and
+ * fails closed without them. */
+static void wire_posture(oca_callbacks_t *cb)
+{
+    cb->get_signature_cohort_enforce = dev_get_cohort;
+    cb->get_signature_class_revoke   = dev_get_class_revoke;
+}
+
 static void build_devstate_cb(oca_callbacks_t *cb,
                               const uint8_t *body)
 {
@@ -3816,6 +4061,60 @@ static void build_devstate_cb(oca_callbacks_t *cb,
     cb->set_signature_cohort_enforce = dev_set_cohort;
     cb->get_signature_class_revoke   = dev_get_class_revoke;
     cb->set_signature_class_revoke   = dev_set_class_revoke;
+}
+
+/* ------------------------------------------------------------------ */
+/* manifest_length for each variant, and its place in the framing      */
+/* ------------------------------------------------------------------ */
+
+/* The PQC variant is held to its own size, exactly as Classic is to 4096. */
+TEST(test_manifest_length_holds_a_pqc_body_to_its_own_size)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    static const uint32_t bad[] = {
+        0u, OCA_CLASSIC_BODY_SIZE, OCA_PQC_BODY_SIZE - 1u, OCA_PQC_BODY_SIZE + 1u,
+        0xFFFFFFFFu,
+    };
+    build_minimal_pqc_manifest(buf);
+    ASSERT_EQ_INT(oca_check_manifest_length(buf), OCA_OK);
+    for (unsigned i = 0u; i < sizeof bad / sizeof bad[0]; ++i) {
+        build_minimal_pqc_manifest(buf);
+        toc_put_u32(buf + OCA_OFF_MANIFEST_LENGTH, bad[i]);
+        ASSERT_EQ_INT(oca_check_manifest_length(buf), OCA_FAIL_MANIFEST_LENGTH);
+    }
+}
+
+/* manifest_length is verified right after the magic and the major version,
+ * before any further field is parsed, the trailer included: a body wrong on both
+ * counts reports its length, in either variant. */
+TEST(test_manifest_length_is_checked_before_the_trailer)
+{
+    uint8_t classic[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(classic);
+    toc_put_u32(classic + OCA_OFF_MANIFEST_LENGTH, OCA_PQC_BODY_SIZE);
+    classic[OCA_CLASSIC_OFF_TRAILER + 2] = 0xFFu;
+    ASSERT_EQ_INT(oca_validate_manifest(classic, sizeof classic, NULL, NULL),
+                  OCA_FAIL_MANIFEST_LENGTH);
+
+    static uint8_t pqc[OCA_PQC_BODY_SIZE];
+    build_minimal_pqc_manifest(pqc);
+    toc_put_u32(pqc + OCA_OFF_MANIFEST_LENGTH, OCA_CLASSIC_BODY_SIZE);
+    pqc[OCA_PQC_OFF_TRAILER] ^= 0xFFu;
+    ASSERT_EQ_INT(oca_validate_manifest(pqc, sizeof pqc, NULL, NULL),
+                  OCA_FAIL_MANIFEST_LENGTH);
+}
+
+/* The major version comes first: a newer major may redefine every later field,
+ * manifest_length among them. */
+TEST(test_the_major_version_is_checked_before_manifest_length)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(buf);
+    buf[OCA_OFF_MANIFEST_VERSION_MAJOR + 0] = (uint8_t)(OCA_LIB_MANIFEST_MAJOR + 1);
+    toc_put_u32(buf + OCA_OFF_MANIFEST_LENGTH, OCA_PQC_BODY_SIZE);
+    buf[OCA_CLASSIC_OFF_TRAILER + 2] = 0xFFu;
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, NULL, NULL),
+                  OCA_FAIL_FORMAT_VERSION_MISMATCH);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3959,7 +4258,7 @@ TEST(test_encryption_gate_applies_to_pqc_variant)
     static uint8_t buf[OCA_PQC_BODY_SIZE];
     memset(buf, 0, sizeof buf);
     memcpy(buf, "OCAP", 4);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
 
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
@@ -3977,7 +4276,7 @@ TEST(test_encryption_declared_with_zero_length_payload_still_refused)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     /* payload_length and payload_hashed_length both left at zero */
 
     oca_validation_context_t ctx;
@@ -4362,6 +4661,7 @@ TEST(test_signature_refuses_a_context_without_authorization)
     /* g_determined_secure is exactly this state: determination in force, no
      * authorization recorded. Copied because oca_check_signature writes. */
     oca_validation_context_t ctx = g_determined_secure;
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
     ASSERT_TRUE(ctx.secure_boot_key_authorized_classic != OCA_SECURE_TRUE);
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
                   OCA_FAIL_ROOT_KEY_UNAUTHORIZED);
@@ -4586,7 +4886,7 @@ TEST(test_commit_ors_in_revoke_and_secver)
     g_fx.secver[0] = 0x01u;                         /* device already has flag bit0 */
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
-    oca_validation_context_t ctx = determined_for(buf, &cb);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);           /* slot 5 OR-ed in */
     ASSERT_EQ_INT(g_fx.revoke[1], 0x01u);           /* prior slot 8 retained */
@@ -4603,7 +4903,7 @@ TEST(test_commit_disable_secver_only)
     test_fixture_reset();
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
-    oca_validation_context_t ctx = determined_for(buf, &cb);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);           /* revocation still updated */
     ASSERT_EQ_INT(g_fx.secver[0], 0x00u);           /* security version suppressed */
@@ -4621,14 +4921,14 @@ TEST(test_commit_ors_in_the_signature_posture_registers)
     buf[OCA_OFF_SIGNATURE_CLASS_REVOKE]   = 0x02u;   /* revoke RSA-4096 class */
     test_fixture_reset();
     g_fx.cohort[1] = 0x02u;                          /* prior verifier-key posture */
-    g_fx.class_revoke[0] = 0x01u;                    /* device already revoked RSA-3072 */
+    g_fx.class_revoke[0] = 0x04u;                    /* device already revoked P-256 */
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
-    oca_validation_context_t ctx = determined_for(buf, &cb);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_fx.cohort[0], 0x01u);            /* manifest value OR-ed in */
     ASSERT_EQ_INT(g_fx.cohort[1], 0x02u);            /* prior posture retained */
-    ASSERT_EQ_INT(g_fx.class_revoke[0], 0x03u);      /* both classes now revoked */
+    ASSERT_EQ_INT(g_fx.class_revoke[0], 0x06u);      /* both classes now revoked */
 }
 
 TEST(test_commit_disable_cohort_enforce_only)
@@ -4642,7 +4942,7 @@ TEST(test_commit_disable_cohort_enforce_only)
     test_fixture_reset();
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
-    oca_validation_context_t ctx = determined_for(buf, &cb);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_fx.cohort[0], 0x00u);            /* suppressed */
     ASSERT_EQ_INT(g_fx.class_revoke[0], 0x02u);      /* the other still committed */
@@ -4659,7 +4959,7 @@ TEST(test_commit_disable_class_revoke_only)
     test_fixture_reset();
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
-    oca_validation_context_t ctx = determined_for(buf, &cb);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_fx.cohort[0], 0x01u);
     ASSERT_EQ_INT(g_fx.class_revoke[0], 0x00u);      /* suppressed */
@@ -4683,7 +4983,7 @@ TEST(test_manifest_security_control_is_read_as_a_u16)
     test_fixture_reset();
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
-    oca_validation_context_t ctx = determined_for(buf, &cb);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);
     ASSERT_EQ_INT(g_fx.secver[0], 0x04u);
@@ -4701,9 +5001,54 @@ TEST(test_commit_without_posture_callbacks_is_unavailable)
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
     cb.set_signature_cohort_enforce = 0;
-    oca_validation_context_t ctx = determined_for(buf, &cb);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx),
                   OCA_FAIL_CALLBACK_UNAVAILABLE);
+}
+
+/* The callbacks oca_commit_security_state() calls, in the order it calls them,
+ * and the index COMMIT_CALLBACK_COUNT that stands for a missing table. */
+#define COMMIT_CALLBACK_COUNT 8u
+
+/* Unwire one commit callback, by its index in the list above. */
+static void unwire_commit_callback(oca_callbacks_t *cb, unsigned which)
+{
+    switch (which) {
+        case 0u: cb->get_root_key_revocation      = 0; break;
+        case 1u: cb->set_root_key_revocation      = 0; break;
+        case 2u: cb->get_security_version         = 0; break;
+        case 3u: cb->set_security_version         = 0; break;
+        case 4u: cb->get_signature_cohort_enforce = 0; break;
+        case 5u: cb->set_signature_cohort_enforce = 0; break;
+        case 6u: cb->get_signature_class_revoke   = 0; break;
+        case 7u: cb->set_signature_class_revoke   = 0; break;
+        default: break;
+    }
+}
+
+/* Every callback the commit calls fails closed when unwired — unwired after a
+ * validation that needed the readers, so the commit is the code under test —
+ * and so does a missing table. A writer missing from the first register's pair
+ * stops the commit before anything is written. */
+TEST(test_commit_without_any_one_callback_is_unavailable)
+{
+    for (unsigned which = 0u; which <= COMMIT_CALLBACK_COUNT; ++which) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_secure_manifest(buf);
+        test_fixture_reset();
+        oca_callbacks_t cb;
+        build_devstate_cb(&cb, buf);
+        oca_validation_context_t ctx = verified_for(buf, &cb);
+        unwire_commit_callback(&cb, which);
+        g_fx.set_calls = 0;
+
+        const oca_callbacks_t *table = (which == COMMIT_CALLBACK_COUNT) ? 0 : &cb;
+        ASSERT_EQ_INT(oca_commit_security_state(buf, table, &ctx),
+                      OCA_FAIL_CALLBACK_UNAVAILABLE);
+        if (which <= 1u || which == COMMIT_CALLBACK_COUNT) {
+            ASSERT_EQ_INT(g_fx.set_calls, 0);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -4746,6 +5091,51 @@ TEST(test_a_fragment_of_a_group_code_is_rejected)
     ASSERT_EQ_INT(oca_check_signature_class_group_codes(buf), OCA_FAIL_GROUP_CODE);
 }
 
+/* One signature_class_revoke shape, and the verdict on it. */
+typedef struct {
+    uint8_t      classic_classes;
+    uint8_t      classic_code;
+    uint8_t      pqc_classes;
+    uint8_t      pqc_code;
+    oca_result_t want;
+} class_revoke_case_t;
+
+/* Write a case's four bytes into a minimal manifest's signature_class_revoke. */
+static void set_class_revoke(uint8_t *buf, const class_revoke_case_t *c)
+{
+    uint8_t *field = buf + OCA_OFF_SIGNATURE_CLASS_REVOKE;
+    field[OCA_CLASS_REVOKE_OFF_CLASSIC_CLASSES]    = c->classic_classes;
+    field[OCA_CLASS_REVOKE_OFF_CLASSIC_GROUP_CODE] = c->classic_code;
+    field[OCA_CLASS_REVOKE_OFF_PQC_CLASSES]        = c->pqc_classes;
+    field[OCA_CLASS_REVOKE_OFF_PQC_GROUP_CODE]     = c->pqc_code;
+}
+
+/* A group whose every defined class bit is set disables the whole group, so it
+ * needs that group's code. b27, reserved for FN-DSA, is not a PQC class: it
+ * neither completes a group nor keeps one from being complete. */
+TEST(test_a_group_disabled_by_its_class_bits_alone_is_rejected)
+{
+    static const class_revoke_case_t cases[] = {
+        { 0xFFu, 0x00u, 0x00u, 0x00u, OCA_FAIL_GROUP_CODE },
+        { 0xFFu, 0xCAu, 0x00u, 0x00u, OCA_OK },
+        { 0x7Fu, 0x00u, 0x00u, 0x00u, OCA_OK },
+        { 0xFEu, 0x00u, 0x00u, 0x00u, OCA_OK },
+        { 0xFFu, 0x00u, 0x00u, 0xACu, OCA_FAIL_GROUP_CODE },  /* other group's code */
+        { 0x00u, 0x00u, 0xF7u, 0x00u, OCA_FAIL_GROUP_CODE },
+        { 0x00u, 0x00u, 0xFFu, 0x00u, OCA_FAIL_GROUP_CODE },  /* with b27 */
+        { 0x00u, 0x00u, 0xF7u, 0xACu, OCA_OK },
+        { 0x00u, 0x00u, 0x77u, 0x00u, OCA_OK },               /* no b31 */
+        { 0x00u, 0x00u, 0xF3u, 0x00u, OCA_OK },               /* no b26 */
+        { 0x00u, 0x00u, 0x08u, 0x00u, OCA_OK },               /* b27 alone */
+    };
+    for (unsigned i = 0u; i < sizeof cases / sizeof cases[0]; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_minimal_manifest(buf);
+        set_class_revoke(buf, &cases[i]);
+        ASSERT_EQ_INT(oca_check_signature_class_group_codes(buf), cases[i].want);
+    }
+}
+
 /* The check is ungated and cheap, so it must run before anything consults the
  * device. Observing that no identity callback fired pins the ordering. */
 TEST(test_a_bad_group_code_is_caught_before_any_device_read)
@@ -4775,32 +5165,58 @@ TEST(test_commit_refuses_a_fragmented_group_code)
     test_fixture_reset();
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
-    oca_validation_context_t ctx = determined_for(buf, &cb);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_FAIL_GROUP_CODE);
     ASSERT_EQ_INT(g_fx.class_revoke[0], 0x00u);   /* nothing written */
+}
+
+/* The same for a group disabled by its class bits alone. */
+TEST(test_commit_refuses_a_group_disabled_by_its_class_bits_alone)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    buf[OCA_OFF_SIGNATURE_CLASS_REVOKE + OCA_CLASS_REVOKE_OFF_PQC_CLASSES] =
+        OCA_CLASS_REVOKE_PQC_DEFINED_CLASSES;
+    test_fixture_reset();
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_FAIL_GROUP_CODE);
+    ASSERT_EQ_INT(g_fx.class_revoke[3], 0x00u);   /* nothing written */
 }
 
 /* ------------------------------------------------------------------ */
 /* Crypto field sizes                                                  */
 /* ------------------------------------------------------------------ */
 
+/* The crypto-field-size check against a determination of @p buf on a part that
+ * does not enforce secure boot itself, so the manifest's own bit decides. */
+static oca_result_t check_sizes(const uint8_t *buf)
+{
+    oca_callbacks_t cb;
+    memset(&cb, 0, sizeof cb);
+    cb.is_secure_boot_active = sb_inactive_cb;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    return oca_check_signing_description(buf, &cb, &ctx);
+}
+
 TEST(test_consistent_crypto_field_sizes_are_accepted)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_secure_manifest(buf);          /* raw RSA-3072: 384 / 388 */
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_OK);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
 
     /* Raw ECDSA P-256: a 64-byte signature and a 65-byte SEC1 point. */
     buf[OCA_OFF_SIGNATURE_TYPE] = OCA_PRIMITIVE_ECDSA_P256_SHA256;
     toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 64u);
     toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 65u);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_OK);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
 
     /* DER ECDSA: the size field carries the algorithm MAXIMUM, not the actual
      * length, because it sits inside the region its own signature covers. */
     buf[OCA_OFF_SIGNATURE_ENCODING] = OCA_ENCODING_DER;
     toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 72u);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_OK);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
 }
 
 TEST(test_inconsistent_crypto_field_sizes_are_rejected)
@@ -4810,22 +5226,22 @@ TEST(test_inconsistent_crypto_field_sizes_are_rejected)
     /* Zero is never a valid size. */
     build_secure_manifest(buf);
     toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 0u);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
 
     /* Larger than the field it bounds. */
     build_secure_manifest(buf);
     toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, OCA_LEN_PUBLIC_KEY + 1u);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
 
     /* Right shape, wrong algorithm: 384 is the RSA signature length. */
     build_secure_manifest(buf);
     buf[OCA_OFF_SIGNATURE_TYPE] = OCA_PRIMITIVE_ECDSA_P256_SHA256;
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
 
     /* DER is not defined for an RSA signature — it is a bare integer. */
     build_secure_manifest(buf);
     buf[OCA_OFF_SIGNATURE_ENCODING] = OCA_ENCODING_DER;
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
 
     /* A DER ECDSA size that is the ACTUAL length rather than the maximum. */
     build_secure_manifest(buf);
@@ -4833,16 +5249,53 @@ TEST(test_inconsistent_crypto_field_sizes_are_rejected)
     buf[OCA_OFF_SIGNATURE_ENCODING] = OCA_ENCODING_DER;
     toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 65u);
     toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 70u);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
 }
 
-/* A non-secure manifest zeroes these fields, and the secure-boot invariant owns
- * that case — so this check has to stay quiet rather than double-report it. */
+/* The signing description is a Secure-Boot-only field, validated only when
+ * secure boot is in force. A non-secure manifest's description is ignored —
+ * even a class it names, and even a description that is nonsense. */
 TEST(test_crypto_field_sizes_ignored_on_a_non_secure_manifest)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_OK);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+
+    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x02u;   /* classic named, enforced bit clear */
+    buf[OCA_OFF_SIGNATURE_TYPE] = 0xF0u;
+    toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 0u);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+}
+
+/* When the device enforces secure boot the same description is in use, so it
+ * is validated even though the manifest's own enforced bit is clear. */
+TEST(test_crypto_field_sizes_engage_when_the_device_enforces_secure_boot)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    oca_callbacks_t cb;
+    memset(&cb, 0, sizeof cb);
+    cb.is_secure_boot_active = sb_active_cb;
+
+    build_secure_manifest(buf);
+    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x02u;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_signing_description(buf, &cb, &ctx), OCA_OK);
+
+    buf[OCA_OFF_SIGNATURE_TYPE] = 0xF0u;
+    ASSERT_EQ_INT(oca_check_signing_description(buf, &cb, &ctx),
+                  OCA_FAIL_CRYPTO_FIELD_SIZE);
+}
+
+TEST(test_crypto_field_sizes_refuse_an_undetermined_context)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_check_signing_description(buf, NULL, &ctx),
+                  OCA_FAIL_SECURE_BOOT_UNDETERMINED);
+    ASSERT_EQ_INT(oca_check_signing_description(buf, NULL, NULL),
+                  OCA_FAIL_SECURE_BOOT_UNDETERMINED);
 }
 
 /* ---- signature-class control (secure_boot_control bits 2:1) ---- */
@@ -5013,10 +5466,10 @@ TEST(test_pqc_class_bit_on_a_classic_manifest_is_rejected)
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
     buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x04u;    /* secure boot OFF */
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf),
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x05u;    /* secure boot ON */
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf),
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
 }
 
@@ -5026,7 +5479,7 @@ TEST(test_pqc_class_bit_is_permitted_on_a_pqc_manifest)
     memset(buf, 0, sizeof buf);
     memcpy(buf, "OCAP", 4);
     buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x04u;
-    ASSERT_EQ_INT(oca_check_secure_boot_invariant(buf), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_class_variant(buf), OCA_OK);
 }
 
 /* A PQC-only manifest (bit1 clear) zeroes its classical crypto description;
@@ -5034,38 +5487,342 @@ TEST(test_pqc_class_bit_is_permitted_on_a_pqc_manifest)
 TEST(test_pqc_only_manifest_passes_size_check_with_zeroed_classical_fields)
 {
     static uint8_t buf[OCA_PQC_BODY_SIZE];
-    memset(buf, 0, sizeof buf);
-    memcpy(buf, "OCAP", 4);
-    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x05u;    /* enforced + pqc only */
-    /* ML-DSA-87: raw public key 2592, signature 4627. */
-    toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, 4627u);
-    toc_put_u16(buf + OCA_PQC_OFF_PUBLIC_KEY_SIZE, 2592u);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_OK);
+    build_secure_pqc_manifest(buf, 0x05u);       /* enforced + pqc only */
+    buf[OCA_OFF_SIGNATURE_TYPE] = 0x00u;
+    buf[OCA_OFF_SIGNATURE_ENCODING] = 0x00u;
+    buf[OCA_OFF_PUBLIC_KEY_ENCODING] = 0x00u;
+    toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 0u);
+    toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 0u);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
 }
 
-/* The PQC size fields bound how far a later parse reads into their companion
- * fields, so zero and beyond-the-field are rejected. Exact per-algorithm sizes
- * get pinned when a PQC verification backend exists to consume them. */
-TEST(test_pqc_size_fields_are_bounded)
+TEST(test_ml_dsa_87_description_passes_the_size_check)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);       /* pqc only */
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+    build_secure_pqc_manifest(buf, 0x07u);       /* hybrid */
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+}
+
+/* ML-DSA-87 is the only PQC primitive accepted: the other format-defined PQC
+ * parameter sets, an unset type, a classical code point and integrator values
+ * are all refused, in a PQC-only and a hybrid manifest alike. */
+TEST(test_pqc_description_accepts_only_ml_dsa_87)
+{
+    static const uint8_t refused[] = {
+        0x00u, 0x01u, 0x05u, 0x31u, 0x32u, 0x34u,
+        0x51u, 0x52u, 0x53u, 0x54u, 0x55u, 0x56u, 0xF0u, 0xFFu,
+    };
+    static const uint8_t controls[] = { 0x05u, 0x07u };
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    for (size_t c = 0u; c < sizeof controls / sizeof controls[0]; ++c) {
+        for (size_t i = 0u; i < sizeof refused / sizeof refused[0]; ++i) {
+            build_secure_pqc_manifest(buf, controls[c]);
+            buf[OCA_PQC_OFF_SIGNATURE_TYPE] = refused[i];
+            ASSERT_EQ_INT(check_sizes(buf),
+                          OCA_FAIL_CRYPTO_FIELD_SIZE);
+        }
+    }
+}
+
+/* FIPS 204 defines no bare ASN.1 structure for an ML-DSA key or signature, so
+ * DER is undefined for PQC and each encoding must be raw. */
+TEST(test_pqc_description_requires_raw_encodings)
+{
+    static const uint8_t refused[] = { 0x00u, OCA_ENCODING_DER, 0x03u, 0xF0u };
+    static const unsigned fields[] = {
+        OCA_PQC_OFF_SIGNATURE_ENCODING, OCA_PQC_OFF_PUBLIC_KEY_ENCODING,
+    };
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    for (size_t f = 0u; f < sizeof fields / sizeof fields[0]; ++f) {
+        for (size_t i = 0u; i < sizeof refused / sizeof refused[0]; ++i) {
+            build_secure_pqc_manifest(buf, 0x05u);
+            buf[fields[f]] = refused[i];
+            ASSERT_EQ_INT(check_sizes(buf),
+                          OCA_FAIL_CRYPTO_FIELD_SIZE);
+        }
+    }
+}
+
+/* Raw ML-DSA-87 sizes are fixed by the parameter set, so any other value is
+ * refused — including one that still fits inside its field. */
+TEST(test_pqc_size_fields_must_be_the_exact_ml_dsa_87_sizes)
+{
+    static const uint16_t bad_signature[] = {
+        0u, OCA_PQC_ML_DSA_87_SIGNATURE_BYTES - 1u,
+        OCA_PQC_ML_DSA_87_SIGNATURE_BYTES + 1u,
+        OCA_PQC_LEN_SIGNATURE_PQC, OCA_PQC_LEN_SIGNATURE_PQC + 1u,
+    };
+    static const uint16_t bad_key[] = {
+        0u, OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES - 1u,
+        OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES + 1u,
+        OCA_PQC_LEN_PUBLIC_KEY, OCA_PQC_LEN_PUBLIC_KEY + 1u,
+    };
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    for (size_t i = 0u; i < sizeof bad_signature / sizeof bad_signature[0]; ++i) {
+        build_secure_pqc_manifest(buf, 0x05u);
+        toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, bad_signature[i]);
+        ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    }
+    for (size_t i = 0u; i < sizeof bad_key / sizeof bad_key[0]; ++i) {
+        build_secure_pqc_manifest(buf, 0x05u);
+        toc_put_u16(buf + OCA_PQC_OFF_PUBLIC_KEY_SIZE, bad_key[i]);
+        ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    }
+}
+
+/* A classic-only OCAP manifest never uses its PQC description, so the PQC
+ * rules do not fire on it. */
+TEST(test_pqc_description_is_ignored_when_the_pqc_class_is_off)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x03u);
+    buf[OCA_PQC_OFF_SIGNATURE_TYPE] = 0xF0u;
+    buf[OCA_PQC_OFF_SIGNATURE_ENCODING] = OCA_ENCODING_DER;
+    toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, 1u);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+}
+
+/* The classical description admits only the primitives this library accepts:
+ * an unset type, an unsupported classical code point, a PQC code point and an
+ * integrator value are all refused. */
+TEST(test_classic_description_accepts_only_supported_primitives)
+{
+    static const uint8_t refused[] = { 0x00u, 0x02u, 0x33u, 0xF0u };
+    for (size_t i = 0u; i < sizeof refused / sizeof refused[0]; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_secure_manifest(buf);
+        buf[OCA_OFF_SIGNATURE_TYPE] = refused[i];
+        ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    }
+}
+
+/* The classical description admits only the encodings its primitive defines.
+ * An unset, reserved or integrator encoding is refused even where its size
+ * matches another encoding's rule: an RSA key at any size within the field,
+ * which a DER key could be, and an ECDSA signature at the raw or DER size. */
+TEST(test_classic_description_accepts_only_defined_encodings)
+{
+    static const uint8_t undefined[] = { 0x00u, 0x03u, 0xF0u, 0xFFu };
+    static const uint16_t ecdsa_sig_sizes[] = { 64u, 72u };
+    for (size_t i = 0u; i < sizeof undefined / sizeof undefined[0]; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_secure_manifest(buf);
+        buf[OCA_OFF_PUBLIC_KEY_ENCODING] = undefined[i];
+        ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+
+        for (size_t s = 0u; s < sizeof ecdsa_sig_sizes / sizeof ecdsa_sig_sizes[0]; ++s) {
+            build_secure_manifest(buf);
+            buf[OCA_OFF_SIGNATURE_TYPE] = OCA_PRIMITIVE_ECDSA_P256_SHA256;
+            buf[OCA_OFF_SIGNATURE_ENCODING] = undefined[i];
+            toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, ecdsa_sig_sizes[s]);
+            toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 65u);
+            ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+        }
+    }
+
+    /* The defined encodings still pass: a DER RSA key, and an ECDSA signature
+     * in each encoding at its own size. */
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    buf[OCA_OFF_PUBLIC_KEY_ENCODING] = OCA_ENCODING_DER;
+    toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 398u);
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+    static const oca_encoding_t ecdsa_encodings[] = { OCA_ENCODING_RAW, OCA_ENCODING_DER };
+    for (size_t e = 0u; e < 2u; ++e) {
+        build_secure_manifest(buf);
+        buf[OCA_OFF_SIGNATURE_TYPE] = OCA_PRIMITIVE_ECDSA_P256_SHA256;
+        buf[OCA_OFF_SIGNATURE_ENCODING] = (uint8_t)ecdsa_encodings[e];
+        toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, ecdsa_sig_sizes[e]);
+        toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 65u);
+        ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+    }
+}
+
+/* A key or signature field: its offset, the size its fixture declares valid,
+ * and its width. */
+typedef struct {
+    size_t off;
+    size_t valid;
+    size_t width;
+} padded_field_t;
+
+/* The classical fields of build_secure_manifest(). */
+static const padded_field_t CLASSIC_PADDED_FIELDS[] = {
+    { OCA_CLASSIC_OFF_SIGNATURE, 384u, OCA_LEN_SIGNATURE },
+    { OCA_OFF_PUBLIC_KEY,        388u, OCA_LEN_PUBLIC_KEY },
+};
+
+/* Every field of a hybrid build_secure_pqc_manifest(): signature_classic sits
+ * at its PQC-variant offset. */
+static const padded_field_t HYBRID_PADDED_FIELDS[] = {
+    { OCA_PQC_OFF_SIGNATURE,     384u, OCA_LEN_SIGNATURE },
+    { OCA_OFF_PUBLIC_KEY,        388u, OCA_LEN_PUBLIC_KEY },
+    { OCA_PQC_OFF_SIGNATURE_PQC, OCA_PQC_ML_DSA_87_SIGNATURE_BYTES,
+      OCA_PQC_LEN_SIGNATURE_PQC },
+    { OCA_PQC_OFF_PUBLIC_KEY,    OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES,
+      OCA_PQC_LEN_PUBLIC_KEY },
+};
+
+/* Assert the padding rule on @p f of @p buf, a body @p rebuild restores: a
+ * non-zero last valid byte is content and accepted, while a non-zero first or
+ * last padding byte is refused. */
+static void assert_padding_must_be_zero(uint8_t *buf, void (*rebuild)(uint8_t *),
+                                        const padded_field_t *f)
+{
+    rebuild(buf);
+    buf[f->off + f->valid - 1u] = 0xA5u;
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+
+    rebuild(buf);
+    buf[f->off + f->valid] = 0x01u;
+    ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+
+    rebuild(buf);
+    buf[f->off + f->width - 1u] = 0x80u;
+    ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+}
+
+static void rebuild_secure_manifest(uint8_t *buf)
+{
+    build_secure_manifest(buf);
+}
+
+static void rebuild_hybrid_manifest(uint8_t *buf)
+{
+    build_secure_pqc_manifest(buf, 0x07u);
+}
+
+TEST(test_classic_padding_past_a_declared_size_must_be_zero)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    for (size_t i = 0u; i < sizeof CLASSIC_PADDED_FIELDS / sizeof CLASSIC_PADDED_FIELDS[0];
+         ++i) {
+        assert_padding_must_be_zero(buf, rebuild_secure_manifest, &CLASSIC_PADDED_FIELDS[i]);
+    }
+}
+
+TEST(test_hybrid_padding_past_a_declared_size_must_be_zero)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    for (size_t i = 0u; i < sizeof HYBRID_PADDED_FIELDS / sizeof HYBRID_PADDED_FIELDS[0];
+         ++i) {
+        assert_padding_must_be_zero(buf, rebuild_hybrid_manifest, &HYBRID_PADDED_FIELDS[i]);
+    }
+}
+
+/* The padding rule belongs to the signing description, so it is skipped with
+ * it: for a class the manifest does not enforce, and while secure boot is not
+ * in force. */
+TEST(test_padding_is_not_judged_for_a_class_or_boot_that_does_not_use_it)
 {
     static uint8_t buf[OCA_PQC_BODY_SIZE];
 
-    memset(buf, 0, sizeof buf);
-    memcpy(buf, "OCAP", 4);
-    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x05u;
-    toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, 0u);        /* zero */
-    toc_put_u16(buf + OCA_PQC_OFF_PUBLIC_KEY_SIZE, 2592u);
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    build_secure_pqc_manifest(buf, 0x05u);          /* PQC only */
+    buf[OCA_PQC_OFF_SIGNATURE + 384u] = 0x01u;
+    buf[OCA_OFF_PUBLIC_KEY + 388u] = 0x01u;
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
 
-    toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, 29825u);    /* overruns */
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    build_secure_pqc_manifest(buf, 0x03u);          /* classical only */
+    buf[OCA_PQC_OFF_SIGNATURE_PQC + OCA_PQC_ML_DSA_87_SIGNATURE_BYTES] = 0x01u;
+    buf[OCA_PQC_OFF_PUBLIC_KEY + OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES] = 0x01u;
+    ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
 
-    toc_put_u16(buf + OCA_PQC_OFF_SIGNATURE_SIZE, 4627u);
-    toc_put_u16(buf + OCA_PQC_OFF_PUBLIC_KEY_SIZE, 0u);       /* zero */
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    uint8_t classic[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(classic);                /* secure boot off */
+    classic[OCA_CLASSIC_OFF_SIGNATURE + OCA_LEN_SIGNATURE - 1u] = 0x01u;
+    ASSERT_EQ_INT(check_sizes(classic), OCA_OK);
+}
 
-    toc_put_u16(buf + OCA_PQC_OFF_PUBLIC_KEY_SIZE, 2625u);    /* overruns */
-    ASSERT_EQ_INT(oca_check_crypto_field_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+/* The first and last byte of every PQC signing field. */
+static const unsigned pqc_signing_field_bytes[] = {
+    OCA_PQC_OFF_SIGNATURE_TYPE,
+    OCA_PQC_OFF_SIGNATURE_ENCODING,
+    OCA_PQC_OFF_PUBLIC_KEY_ENCODING,
+    OCA_PQC_OFF_PUBLIC_KEY_SELECT,
+    OCA_PQC_OFF_PUBLIC_KEY_SELECT + OCA_PQC_LEN_PUBLIC_KEY_SELECT - 1u,
+    OCA_PQC_OFF_PUBLIC_KEY,
+    OCA_PQC_OFF_PUBLIC_KEY + OCA_PQC_LEN_PUBLIC_KEY - 1u,
+    OCA_PQC_OFF_SIGNATURE_PQC,
+    OCA_PQC_OFF_SIGNATURE_PQC + OCA_PQC_LEN_SIGNATURE_PQC - 1u,
+};
+
+TEST(test_secure_boot_off_ignores_each_dirty_pqc_signing_field)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    for (size_t i = 0u;
+         i < sizeof pqc_signing_field_bytes / sizeof pqc_signing_field_bytes[0]; ++i) {
+        build_minimal_pqc_manifest(buf);
+        buf[pqc_signing_field_bytes[i]] = 0x5Au;
+        ASSERT_EQ_INT(oca_check_signature_class_variant(buf), OCA_OK);
+    }
+}
+
+/* A part that does not enforce secure boot boots a non-secure manifest whatever
+ * its signing fields hold, and never exercises them. */
+TEST(test_non_secure_manifest_with_populated_signing_fields_validates)
+{
+    uint8_t classic[OCA_CLASSIC_BODY_SIZE];
+    static uint8_t pqc[OCA_PQC_BODY_SIZE];
+    oca_callbacks_t cb;
+    oca_validation_context_t ctx;
+
+    build_secure_manifest(classic);
+    classic[OCA_OFF_SECURE_BOOT_CONTROL] = 0x00u;
+    classic[OCA_CLASSIC_OFF_SIGNATURE] = 0x5Au;
+    build_devstate_cb(&cb, classic);
+    cb.is_secure_boot_active = sb_inactive_cb;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(classic, sizeof classic, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
+
+    build_secure_pqc_manifest(pqc, 0x07u);
+    pqc[OCA_OFF_SECURE_BOOT_CONTROL] = 0x00u;
+    pqc[OCA_PQC_OFF_SIGNATURE_PQC] = 0x5Au;
+    pqc[OCA_PQC_OFF_SIGNATURE_TYPE] = 0xF0u;    /* not a primitive anything accepts */
+    build_devstate_cb(&cb, pqc);
+    cb.is_secure_boot_active = sb_inactive_cb;
+    g_fx.sha_hash_off = OCA_PQC_OFF_MANIFEST_HASH;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(pqc, sizeof pqc, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
+}
+
+/* The device-enforced route: the manifest leaves secure_boot_enforced clear but
+ * names a class, and the part enforces secure boot itself. The signing fields
+ * are then in use, so the manifest validates with its signature verified. */
+TEST(test_device_enforced_bit_clear_manifest_validates_end_to_end)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x02u;   /* classic named, enforced bit clear */
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    cb.is_secure_boot_active = sb_active_cb;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.sig_calls, 1);
+}
+
+/* On that route the signing description is validated exactly as on a manifest
+ * asserting secure boot: a PQC class naming RSA never reaches the verifier. */
+TEST(test_device_enforced_bit_clear_manifest_with_a_bad_description_is_refused)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x04u;   /* pqc named, enforced bit clear */
+    buf[OCA_PQC_OFF_SIGNATURE_TYPE] = OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256;
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    cb.is_secure_boot_active = sb_active_cb;
+    g_fx.sha_hash_off = OCA_PQC_OFF_MANIFEST_HASH;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx),
+                  OCA_FAIL_CRYPTO_FIELD_SIZE);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
 }
 
 /* ---- per-class authorization and the hybrid AND ---- */
@@ -5170,6 +5927,11 @@ TEST(test_key_checks_backstop_a_context_with_no_enforced_class)
     ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     ASSERT_EQ_INT(g_authorize_calls, 0);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+    ASSERT_EQ_INT(g_fx.revoke_calls, 0);
+    ASSERT_EQ_INT(oca_check_signing_description(buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     ctx.secure_boot_key_authorized_classic = OCA_SECURE_TRUE;   /* even vouched-for */
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
@@ -5197,6 +5959,11 @@ TEST(test_key_checks_refuse_a_record_disagreeing_with_the_class_bits)
     ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx),
                   OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
     ASSERT_EQ_INT(g_authorize_calls, 0);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx),
+                  OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
+    ASSERT_EQ_INT(g_fx.revoke_calls, 0);
+    ASSERT_EQ_INT(oca_check_signing_description(buf, &cb, &ctx),
+                  OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
                   OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
     ASSERT_EQ_INT(g_fx.sig_calls, 0);
@@ -5229,9 +5996,11 @@ TEST(test_authorization_presents_the_key_the_verifier_receives)
     memset(&cb, 0, sizeof cb);
     cb.is_key_authorized = authorize_capture_cb;
     cb.verify_signature  = verify_capture_cb;
+    wire_posture(&cb);
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
     ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_authorize_calls, 2);
@@ -5266,6 +6035,7 @@ TEST(test_hybrid_signature_verifies_both_classes)
     memset(&cb, 0, sizeof cb);
     cb.is_key_authorized = authorize_any_cb;
     cb.verify_signature  = verify_capture_cb;
+    wire_posture(&cb);
     oca_validation_context_t ctx = determined_for(buf, &cb);
 
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx), OCA_OK);
@@ -5291,7 +6061,7 @@ TEST(test_hybrid_signature_fails_when_either_class_fails)
     for (i = 0; i < sizeof failing / sizeof failing[0]; ++i) {
         static uint8_t buf[OCA_PQC_BODY_SIZE];
         build_secure_pqc_manifest(buf, 0x07u);
-        buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+        buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
         test_fixture_reset();
         g_authorize_calls = 0;
         g_verify_fail_enabled = true;
@@ -5300,6 +6070,7 @@ TEST(test_hybrid_signature_fails_when_either_class_fails)
         memset(&cb, 0, sizeof cb);
         cb.is_key_authorized = authorize_any_cb;
         cb.verify_signature  = verify_capture_cb;
+        wire_posture(&cb);
         oca_validation_context_t ctx = determined_for(buf, &cb);
 
         ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx), OCA_FAIL_SIGNATURE);
@@ -5324,10 +6095,12 @@ TEST(test_pqc_signature_requires_the_pqc_authorization)
     memset(&cb, 0, sizeof cb);
     cb.is_key_authorized = authorize_any_cb;
     cb.verify_signature  = verify_capture_cb;
+    wire_posture(&cb);
     g_verify_fail_enabled = false;
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
     ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
     /* No authorization ran; vouch for the OTHER class by hand to prove the
      * check reads the flag for the class it is about to verify. */
     ctx.secure_boot_key_authorized_classic = OCA_SECURE_TRUE;
@@ -5360,6 +6133,11 @@ TEST(test_pqc_enforcement_on_a_classic_variant_fails_closed)
     ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     ASSERT_EQ_INT(g_authorize_calls, 0);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+    ASSERT_EQ_INT(g_fx.revoke_calls, 0);
+    ASSERT_EQ_INT(oca_check_signing_description(buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_CLASS_CONTROL);
     ctx.secure_boot_key_authorized_pqc = OCA_SECURE_TRUE;   /* even vouched-for */
     ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
                   OCA_FAIL_SIGNATURE_CLASS_CONTROL);
@@ -5387,6 +6165,268 @@ TEST(test_hybrid_manifest_validates_end_to_end)
     ASSERT_TRUE(ctx.secure_boot_authenticated == OCA_SECURE_TRUE);
 }
 
+/* ---- PQC ROOT-key revocation, in its own family ---- */
+
+static void set_pqc_revoke_bit(uint8_t buf[OCA_PQC_BODY_SIZE], unsigned n)
+{
+    buf[OCA_PQC_OFF_PUBLIC_KEY_REVOKE + (n / 8)] |= (uint8_t)(1u << (n % 8));
+}
+
+/* The revocation code sizes one buffer and one loop for either family, and the
+ * get/set_root_key_revocation callbacks take one width for both, so every
+ * ROOT-key bitmap field must have that width. */
+TEST(test_every_root_key_bitmap_has_the_shared_width)
+{
+    ASSERT_EQ_INT(OCA_LEN_PUBLIC_KEY_SELECT, OCA_LEN_ROOT_KEY_BITMAP);
+    ASSERT_EQ_INT(OCA_PQC_LEN_PUBLIC_KEY_SELECT, OCA_LEN_ROOT_KEY_BITMAP);
+    ASSERT_EQ_INT(OCA_PQC_LEN_PUBLIC_KEY_REVOKE, OCA_LEN_ROOT_KEY_BITMAP);
+}
+
+TEST(test_pqc_root_key_revoked_by_manifest)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);       /* PQC key slot 0 selected */
+    set_pqc_revoke_bit(buf, 0);
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_FAIL_ROOT_KEY_REVOKED);
+}
+
+TEST(test_pqc_root_key_revoked_by_device_pqc_state)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    g_fx.revoke_pqc[0] = 0x01u;                  /* device revokes PQC slot 0 */
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_FAIL_ROOT_KEY_REVOKED);
+    ASSERT_EQ_INT(g_fx.revoke_pqc_calls, 1);
+}
+
+/* Classic revocation state says nothing about a PQC key. A PQC-only manifest
+ * reads only the PQC family's state, so a classic slot 0 revoked in both the
+ * manifest and the device leaves PQC slot 0 usable. */
+TEST(test_pqc_key_is_not_revoked_by_classic_state)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x01u;
+    g_fx.revoke[0] = 0x01u;
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke_calls, 1);
+    ASSERT_EQ_INT(g_fx.revoke_pqc_calls, 1);
+}
+
+TEST(test_pqc_root_key_reserved_bits_ignored)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    buf[OCA_PQC_OFF_PUBLIC_KEY_SELECT + 15] |= 0x01u;   /* reserved select bit 120 */
+    set_pqc_revoke_bit(buf, 120);                       /* reserved revoke bit 120 */
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_OK);
+}
+
+/* A hybrid manifest exercises both keys, so either family revoking its own key
+ * is enough to refuse it, and an unrevoked hybrid reads both families. */
+TEST(test_hybrid_revocation_checks_each_family)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+
+    build_secure_pqc_manifest(buf, 0x07u);
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke_calls, 2);
+    ASSERT_EQ_INT(g_fx.revoke_pqc_calls, 1);
+
+    g_fx.revoke[0] = 0x01u;                      /* classic slot 0 revoked */
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_FAIL_ROOT_KEY_REVOKED);
+
+    g_fx.revoke[0] = 0x00u;
+    g_fx.revoke_pqc[0] = 0x01u;                  /* PQC slot 0 revoked */
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_FAIL_ROOT_KEY_REVOKED);
+}
+
+/* A classic-only OCAP manifest never uses its PQC key, so neither the PQC
+ * revocation it carries nor the device's PQC state is consulted. */
+TEST(test_classic_only_ocap_manifest_ignores_pqc_revocation)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x03u);
+    set_pqc_revoke_bit(buf, 0);
+    g_fx.revoke_pqc[0] = 0x01u;
+    oca_callbacks_t cb; memset(&cb, 0, sizeof cb);
+    cb.get_root_key_revocation = dev_get_revoke;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke_pqc_calls, 0);
+}
+
+/* Pipeline: a revoked PQC key is refused before any signature is verified. */
+TEST(test_revoked_pqc_key_skips_signature_in_pipeline)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    set_pqc_revoke_bit(buf, 0);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    g_fx.sha_hash_off = OCA_PQC_OFF_MANIFEST_HASH;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx),
+                  OCA_FAIL_ROOT_KEY_REVOKED);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
+}
+
+/* ---- device-state commit, per family ---- */
+
+TEST(test_commit_ors_in_each_familys_revocation_for_a_hybrid_manifest)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x07u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x20u;    /* manifest revokes classic slot 5 */
+    set_pqc_revoke_bit(buf, 9);                        /* and PQC slot 9 */
+    g_fx.revoke[1] = 0x01u;                            /* device: classic slot 8 */
+    g_fx.revoke_pqc[2] = 0x01u;                        /* device: PQC slot 16 */
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.revoke[1], 0x01u);
+    ASSERT_EQ_INT(g_fx.revoke_pqc[1], 0x02u);
+    ASSERT_EQ_INT(g_fx.revoke_pqc[2], 0x01u);
+    ASSERT_EQ_INT(g_fx.set_revoke_classic_calls, 1);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 1);
+}
+
+/* A verified manifest commits every revocation bitmap it carries, whichever
+ * signature class authenticated it: a PQC-only manifest can retire classic
+ * keys, and a classic-only OCAP manifest can retire PQC keys. */
+TEST(test_commit_pqc_only_manifest_writes_both_families)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x20u;
+    set_pqc_revoke_bit(buf, 5);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.revoke_pqc[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.set_revoke_classic_calls, 1);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 1);
+}
+
+TEST(test_commit_classic_only_ocap_manifest_writes_both_families)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x03u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x20u;
+    set_pqc_revoke_bit(buf, 5);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.revoke_pqc[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.set_revoke_classic_calls, 1);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 1);
+}
+
+/* A classic manifest carries no PQC bitmap, so the PQC family is never read or
+ * written for it. */
+TEST(test_commit_classic_manifest_writes_only_the_classic_family)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    set_revoke_bit(buf, 5);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);
+    ASSERT_EQ_INT(g_fx.revoke_pqc_calls, 0);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 0);
+}
+
+TEST(test_commit_revoke_disable_suppresses_both_families)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x07u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x20u;
+    set_pqc_revoke_bit(buf, 5);
+    buf[OCA_OFF_MANIFEST_SECURITY_CONTROL] = 0x02u;  /* bit1: suppress revocation OR-in */
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.set_revoke_classic_calls, 0);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 0);
+    ASSERT_EQ_INT(g_fx.revoke_pqc[0], 0x00u);
+}
+
+/* The classic write succeeds and the PQC one fails: the failure surfaces
+ * rather than being masked by the write that worked. */
+TEST(test_commit_pqc_revocation_write_failure_surfaced)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    set_pqc_revoke_bit(buf, 5);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    g_fx.fail_set_revoke_pqc = true;
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx),
+                  OCA_FAIL_SECURITY_STATE_UPDATE);
+    ASSERT_EQ_INT(g_fx.set_revoke_classic_calls, 1);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 1);
+}
+
+/* The commit burns fuses, so it holds the class record to the same standard as
+ * the key checks: a record the manifest bits disagree with, a context enforcing
+ * no class, or PQC enforcement on a body with no PQC fields is refused before
+ * anything is written. */
+TEST(test_commit_refuses_a_class_record_it_cannot_trust)
+{
+    uint8_t classic[OCA_CLASSIC_BODY_SIZE];
+    oca_callbacks_t cb;
+
+    build_secure_manifest(classic);              /* control = 0x03 */
+    build_devstate_cb(&cb, classic);
+    oca_validation_context_t ctx = verified_for(classic, &cb);
+    classic[OCA_OFF_SECURE_BOOT_CONTROL] = 0x07u;    /* bits moved under the record */
+    ASSERT_EQ_INT(oca_commit_security_state(classic, &cb, &ctx),
+                  OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
+
+    build_secure_manifest(classic);
+    classic[OCA_OFF_SECURE_BOOT_CONTROL] = 0x01u;    /* neither class named */
+    ctx = g_determined_secure;
+    ctx.secure_boot_enforce_classic = OCA_SECURE_FALSE;
+    ASSERT_EQ_INT(oca_commit_security_state(classic, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+
+    build_secure_manifest(classic);
+    classic[OCA_OFF_SECURE_BOOT_CONTROL] = 0x05u;    /* pqc named on OCAC */
+    ctx = g_determined_secure;
+    ctx.secure_boot_enforce_classic = OCA_SECURE_FALSE;
+    ctx.secure_boot_enforce_pqc     = OCA_SECURE_TRUE;
+    ASSERT_EQ_INT(oca_commit_security_state(classic, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+
+    ASSERT_EQ_INT(g_fx.set_calls, 0);
+}
+
 TEST(test_commit_disable_revoke_only)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
@@ -5397,7 +6437,7 @@ TEST(test_commit_disable_revoke_only)
     test_fixture_reset();
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
-    oca_validation_context_t ctx = determined_for(buf, &cb);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_fx.revoke[0], 0x00u);           /* revocation suppressed */
     ASSERT_EQ_INT(g_fx.secver[0], 0x04u);           /* security version still updated */
@@ -5412,7 +6452,7 @@ TEST(test_commit_write_failure_surfaced)
     g_fx.fail_set = true;
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
-    oca_validation_context_t ctx = determined_for(buf, &cb);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_FAIL_SECURITY_STATE_UPDATE);
 }
 
@@ -5567,6 +6607,7 @@ TEST(test_a_manifest_that_outranks_the_device_records_no_disable)
     oca_validation_context_t ctx;
     oca_validation_context_init(&ctx);
     ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
 
     ASSERT_TRUE(ctx.secure_boot_enabled == OCA_SECURE_TRUE);          /* manifest won */
     ASSERT_TRUE(ctx.secure_boot_device_disabled != OCA_SECURE_TRUE);  /* never asked */
@@ -5681,6 +6722,26 @@ static void arm_flip(int after, bool initial)
     g_flip_initial = initial;
 }
 
+/* Every consumer that confirms the determination inside
+ * oca_validate_manifest(), in order: the crypto-field-size check, the signature
+ * posture, ROOT-key authorization, revocation, security_version, signature, and
+ * — when built in — the security_version recheck. The encryption precondition
+ * confirms too, but only for a manifest that declares encryption. */
+#if OCA_RECHECK_SECURITY_VERSION
+#define GATED_CONSUMERS 7
+#else
+#define GATED_CONSUMERS 6
+#endif
+
+/* A manifest that names the classical class but leaves secure_boot_enforced
+ * clear, so the device's report decides whether secure boot is in force, with a
+ * signing description that holds up if it is. */
+static void build_device_decided_manifest(uint8_t buf[OCA_CLASSIC_BODY_SIZE])
+{
+    build_secure_manifest(buf);
+    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x02u;
+}
+
 /* The headline property, checked at EVERY consumer rather than once.
  *
  * Each iteration lets the determination and the confirms before consumer N see
@@ -5690,18 +6751,16 @@ static void arm_flip(int after, bool initial)
  */
 TEST(test_a_reporter_that_changes_its_answer_is_caught_at_each_consumer)
 {
-    /* Consumer order inside oca_validate_manifest(): the determination itself is
-     * consultation 0, then the encryption precondition, revocation,
-     * security_version, signature, and the security_version recheck — six in
-     * all, which is why the manifest below declares encryption. Flipping before
-     * consultation N means 0..N-1 agree and N does not, so each iteration lands
-     * the disagreement on a different consumer. */
+    /* The determination itself is consultation 0, the encryption precondition
+     * consultation 1 — which is why the manifest below declares encryption —
+     * and the GATED_CONSUMERS follow. Flipping before consultation N means
+     * 0..N-1 agree and N does not, so each iteration lands the disagreement on
+     * a different consumer. */
     int flip_at;
-    for (flip_at = 1; flip_at <= 5; ++flip_at) {
+    for (flip_at = 1; flip_at <= 1 + GATED_CONSUMERS; ++flip_at) {
         uint8_t buf[OCA_CLASSIC_BODY_SIZE];
-        build_minimal_manifest(buf);        /* bit clear, so the device decides */
-        buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x02u;  /* class named for the in-force phase */
-        buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+        build_device_decided_manifest(buf);
+        buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
         test_fixture_reset();
 
         oca_callbacks_t cb;
@@ -5741,8 +6800,7 @@ TEST(test_a_flip_to_secure_is_caught_as_readily_as_a_flip_to_insecure)
 TEST(test_a_stable_reporter_confirms_clean_through_every_consumer)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
-    build_minimal_manifest(buf);
-    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x02u;  /* class named; the device decides */
+    build_device_decided_manifest(buf);
     test_fixture_reset();
 
     oca_callbacks_t cb;
@@ -5763,9 +6821,8 @@ TEST(test_a_stable_reporter_confirms_clean_through_every_consumer)
 /* One determination, then one confirm per consumer — stated as an exact count.
  *
  * A loose bound would keep passing if a consumer lost its confirm. The count is
- * the determination plus the checks that gate on it: revocation,
- * security_version, signature, and the security_version recheck, and — only when
- * the manifest declares encryption — the encryption precondition. Both cases are
+ * the determination plus the GATED_CONSUMERS, and — only when the manifest
+ * declares encryption — the encryption precondition. Both cases are
  * asserted, because the difference between them IS the precondition's
  * short-circuit: it tests the control bit before consulting anything, so a
  * cleartext manifest pays nothing for a rule that cannot apply to it.
@@ -5775,19 +6832,13 @@ TEST(test_a_stable_reporter_confirms_clean_through_every_consumer)
  */
 TEST(test_the_determination_costs_one_consultation_per_consumer)
 {
-#if OCA_RECHECK_SECURITY_VERSION
-    /* authorization, revocation, security_version, signature, recheck */
-    const int gated = 5;
-#else
-    const int gated = 4;
-#endif
+    const int gated = GATED_CONSUMERS;
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     oca_callbacks_t cb;
     oca_validation_context_t ctx;
 
     /* Cleartext: the encryption precondition returns before it confirms. */
-    build_minimal_manifest(buf);
-    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x02u;  /* class named; the device decides */
+    build_device_decided_manifest(buf);
     test_fixture_reset();
     build_devstate_cb(&cb, buf);
     cb.is_secure_boot_disabled = sb_disabled_false_cb;
@@ -5803,9 +6854,8 @@ TEST(test_the_determination_costs_one_consultation_per_consumer)
     ASSERT_EQ_INT(g_fx.revoke_calls, 1);
 
     /* Encryption declared: the precondition now confirms too. */
-    build_minimal_manifest(buf);
-    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x02u;
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    build_device_decided_manifest(buf);
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     test_fixture_reset();
     build_devstate_cb(&cb, buf);
     cb.is_secure_boot_disabled = sb_disabled_false_cb;
@@ -5988,8 +7038,7 @@ TEST(test_an_unrecognized_reporter_answer_leaves_secure_boot_on)
 TEST(test_a_return_one_reporter_still_gets_signature_verification)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
-    build_minimal_manifest(buf);
-    buf[OCA_OFF_SECURE_BOOT_CONTROL] = 0x02u;  /* class named; reporters decide */
+    build_device_decided_manifest(buf);
     test_fixture_reset();
 
     oca_callbacks_t cb;
@@ -6031,7 +7080,7 @@ TEST(test_a_corrupted_engaged_word_runs_the_check_rather_than_skipping_it)
      * rather than from something upstream having already failed. */
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = 0x01u;
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     test_fixture_reset();
 
     oca_callbacks_t cb;
@@ -6081,7 +7130,7 @@ TEST(test_commit_secure_boot_disabled_noop)
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
     cb.is_secure_boot_active = sb_inactive_cb;  /* and device reports secure boot off */
-    oca_validation_context_t ctx = determined_for(buf, &cb);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
     ASSERT_EQ_INT(g_fx.set_calls, 0);      /* nothing written */
 }
@@ -6096,11 +7145,652 @@ TEST(test_validate_is_read_only_then_commit)
     oca_callbacks_t cb;
     build_devstate_cb(&cb, buf);
     g_fx.sig_calls = 0;
-    ASSERT_EQ_INT(oca_validate(buf, OCA_CLASSIC_BODY_SIZE, &cb, NULL, NULL), OCA_OK);
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate(buf, OCA_CLASSIC_BODY_SIZE, &cb, &ctx, NULL), OCA_OK);
     ASSERT_EQ_INT(g_fx.set_calls, 0);      /* validation never commits */
-    oca_validation_context_t ctx = determined_for(buf, &cb);
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
     ASSERT_TRUE(g_fx.set_calls > 0);       /* explicit commit does write */
+}
+
+/* ------------------------------------------------------------------ */
+/* Device state is committed only for an authenticated manifest       */
+/* ------------------------------------------------------------------ */
+
+/* A commit burns fuses, so it acts only on a manifest whose signatures were
+ * actually checked. A context that was determined and authorized but never
+ * verified is refused, and neither family's state is read or written. */
+TEST(test_commit_refuses_a_context_no_signature_check_authenticated)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x07u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x20u;
+    set_pqc_revoke_bit(buf, 5);
+    buf[OCA_OFF_MANIFEST_SECURITY_VERSION] = 0x04u;
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_FAIL_SIGNATURE);
+    ASSERT_EQ_INT(g_fx.set_calls, 0);
+    ASSERT_EQ_INT(g_fx.revoke_calls, 0);
+}
+
+/* The context a failed validation leaves behind cannot advance device state:
+ * the integrator who ignores the validation verdict still burns nothing. */
+TEST(test_commit_refuses_the_context_of_a_failed_validation)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    set_revoke_bit(buf, 5);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    cb.verify_signature = failing_signature_cb;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx), OCA_FAIL_SIGNATURE);
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_FAIL_SIGNATURE);
+    ASSERT_EQ_INT(g_fx.set_calls, 0);
+}
+
+/* Only the intact TRUE pattern authenticates: every other word refuses. */
+TEST(test_commit_refuses_a_corrupted_authentication_word)
+{
+    static const oca_secure_bool_t corrupt[] = {
+        0x00000000u, 0xFFFFFFFFu, OCA_SECURE_FALSE,
+        OCA_SECURE_TRUE ^ 1u, OCA_SECURE_TRUE ^ 0x80000000u
+    };
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    set_revoke_bit(buf, 5);
+    for (unsigned i = 0; i < sizeof corrupt / sizeof corrupt[0]; ++i) {
+        test_fixture_reset();
+        oca_callbacks_t cb;
+        build_devstate_cb(&cb, buf);
+        oca_validation_context_t ctx = verified_for(buf, &cb);
+        ASSERT_EQ_INT(ctx.secure_boot_authenticated, OCA_SECURE_TRUE);
+        ctx.secure_boot_authenticated = corrupt[i];
+        ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_FAIL_SIGNATURE);
+        ASSERT_EQ_INT(g_fx.set_calls, 0);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* An enforced class must select a ROOT key                           */
+/* ------------------------------------------------------------------ */
+
+/* With secure boot in force, a class that selects no key authorizes nothing,
+ * and would leave revocation nothing to check. Refused before the anchor is
+ * consulted, so an anchor that ignores the select bitmap cannot rescue it. */
+TEST(test_an_enforced_classic_class_that_selects_no_key_is_unauthorized)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    buf[OCA_OFF_PUBLIC_KEY_SELECT] = 0x00u;
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    g_authorize_calls = 0;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx),
+                  OCA_FAIL_ROOT_KEY_UNAUTHORIZED);
+    ASSERT_EQ_INT(g_authorize_calls, 0);
+    ASSERT_TRUE(ctx.secure_boot_key_authorized_classic != OCA_SECURE_TRUE);
+}
+
+TEST(test_an_enforced_pqc_class_that_selects_no_key_is_unauthorized)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x07u);
+    buf[OCA_PQC_OFF_PUBLIC_KEY_SELECT] = 0x00u;
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    g_authorize_calls = 0;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx),
+                  OCA_FAIL_ROOT_KEY_UNAUTHORIZED);
+    ASSERT_EQ_INT(g_authorize_calls, 1);    /* the classical key, which selects one */
+    ASSERT_TRUE(ctx.secure_boot_key_authorized_pqc != OCA_SECURE_TRUE);
+}
+
+/* The two reserved bytes of the bitmap select nothing: a key "selected" only
+ * there is still no key. */
+TEST(test_select_bits_only_in_the_reserved_bytes_select_no_key)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    buf[OCA_OFF_PUBLIC_KEY_SELECT] = 0x00u;
+    buf[OCA_OFF_PUBLIC_KEY_SELECT + OCA_ROOT_KEY_BITMAP_USED_BYTES] = 0x01u;
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    g_authorize_calls = 0;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx),
+                  OCA_FAIL_ROOT_KEY_UNAUTHORIZED);
+    ASSERT_EQ_INT(g_authorize_calls, 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Device-state reads fail closed                                     */
+/* ------------------------------------------------------------------ */
+
+/* Reports success without writing its output. */
+static oca_result_t revoke_read_writing_nothing(oca_key_algorithm_t algo,
+                                                uint8_t out[16])
+{
+    (void)algo; (void)out;
+    g_fx.revoke_calls++;
+    return OCA_OK;
+}
+
+static oca_result_t secver_read_writing_nothing(uint8_t out[16])
+{
+    (void)out;
+    return OCA_OK;
+}
+
+/* The check reads an unwritten revocation buffer as every key revoked. */
+TEST(test_a_revocation_read_that_writes_nothing_revokes_every_key)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    cb.get_root_key_revocation = revoke_read_writing_nothing;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(buf, &cb, &ctx),
+                  OCA_FAIL_ROOT_KEY_REVOKED);
+}
+
+/* The anti-rollback check reads an unwritten flag buffer as every flag set. */
+TEST(test_a_security_version_read_that_writes_nothing_is_a_rollback)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    cb.get_security_version = secver_read_writing_nothing;
+    oca_validation_context_t ctx = determined_for(buf, &cb);
+    ASSERT_EQ_INT(oca_check_security_version(buf, &cb, &ctx),
+                  OCA_FAIL_SECURITY_VERSION);
+}
+
+/* The commit ORs onto zeros instead, so an unwritten read never burns a bit
+ * the manifest did not ask for. */
+TEST(test_a_commit_over_an_unwritten_read_writes_only_the_manifest_bits)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    set_revoke_bit(buf, 5);
+    buf[OCA_OFF_MANIFEST_SECURITY_CONTROL] = 0x3Du;   /* commit revocation only */
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    cb.get_root_key_revocation = revoke_read_writing_nothing;
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_fx.revoke[0], 0x20u);
+    for (unsigned i = 1; i < 16u; ++i) {
+        ASSERT_EQ_INT(g_fx.revoke[i], 0x00u);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Unreadable revocation state, per family                            */
+/* ------------------------------------------------------------------ */
+
+TEST(test_an_unreadable_revocation_state_fails_the_check_for_each_family)
+{
+    uint8_t classic[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(classic);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, classic);
+    oca_validation_context_t ctx = determined_for(classic, &cb);
+    g_fx.fail_get_revoke_classic = true;
+    ASSERT_EQ_INT(oca_check_root_key_revocation(classic, &cb, &ctx),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+
+    static uint8_t hybrid[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(hybrid, 0x07u);
+    test_fixture_reset();
+    build_devstate_cb(&cb, hybrid);
+    g_fx.sha_hash_off = OCA_PQC_OFF_MANIFEST_HASH;
+    ctx = determined_for(hybrid, &cb);
+    g_fx.fail_get_revoke_pqc = true;
+    ASSERT_EQ_INT(oca_check_root_key_revocation(hybrid, &cb, &ctx),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(g_fx.revoke_pqc_calls, 1);
+}
+
+/* A classic read failure stops the commit before anything is written. */
+TEST(test_commit_writes_nothing_when_the_classic_revocation_read_fails)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    set_revoke_bit(buf, 5);
+    buf[OCA_OFF_MANIFEST_SECURITY_VERSION] = 0x04u;
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    g_fx.fail_get_revoke_classic = true;
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(g_fx.set_calls, 0);
+}
+
+/* A PQC read failure stops the commit after the classic write: the classic
+ * revocation is already burned, and nothing after the PQC family — security
+ * version, posture registers — is written. */
+TEST(test_commit_stops_at_an_unreadable_pqc_revocation_state)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x07u);
+    buf[OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE] = 0x20u;
+    set_pqc_revoke_bit(buf, 5);
+    buf[OCA_OFF_MANIFEST_SECURITY_VERSION] = 0x04u;
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    g_fx.sha_hash_off = OCA_PQC_OFF_MANIFEST_HASH;
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    g_fx.fail_get_revoke_pqc = true;
+    ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(g_fx.set_revoke_classic_calls, 1);
+    ASSERT_EQ_INT(g_fx.set_revoke_pqc_calls, 0);
+    ASSERT_EQ_INT(g_fx.set_calls, 1);
+    ASSERT_EQ_INT(g_fx.secver[0], 0x00u);
+}
+
+/* ------------------------------------------------------------------ */
+/* Crypto blobs carry the validated size                              */
+/* ------------------------------------------------------------------ */
+
+/* Each blob carries the manifest's own size field, so a backend reads the
+ * value's length rather than keeping a per-algorithm table. Index 0 is the
+ * classical class and 1 the PQC class, in both checks. */
+TEST(test_every_blob_carries_its_declared_size)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x07u);
+    test_fixture_reset();
+    g_authorize_calls = 0;
+    g_verify_fail_enabled = false;
+    oca_callbacks_t cb;
+    memset(&cb, 0, sizeof cb);
+    cb.is_key_authorized = authorize_capture_cb;
+    cb.verify_signature  = verify_capture_cb;
+    wire_posture(&cb);
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(g_auth_pk_blob[0].length, 388);
+    ASSERT_EQ_INT(g_auth_pk_blob[1].length, OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES);
+    ASSERT_EQ_INT(g_verify_pk_blob[0].length, 388);
+    ASSERT_EQ_INT(g_verify_pk_blob[1].length, OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES);
+    ASSERT_EQ_INT(g_verify_sig_blob[0].length, 384);
+    ASSERT_EQ_INT(g_verify_sig_blob[1].length, OCA_PQC_ML_DSA_87_SIGNATURE_BYTES);
+}
+
+/* ------------------------------------------------------------------ */
+/* The device's signature posture                                     */
+/* ------------------------------------------------------------------ */
+
+/* Device posture values, in the manifest registers' own bit layout. */
+static const uint64_t REVOKE_RSA_3072        = 1ull << 0;
+static const uint64_t REVOKE_P256            = 1ull << 2;
+static const uint64_t REVOKE_ML_DSA_44       = 1ull << 24;
+static const uint64_t REVOKE_ML_DSA_65       = 1ull << 25;
+static const uint64_t REVOKE_ML_DSA_87       = 1ull << 26;
+static const uint64_t REVOKE_CLASSICAL_BITS  = 0xFFull;
+static const uint64_t REVOKE_PQC_BITS        = 0xFFull << 24;
+static const uint64_t REVOKE_CLASSICAL_GROUP = 0xCAull << 8;
+static const uint64_t REVOKE_PQC_GROUP       = 0xACull << 32;
+static const uint64_t COHORT_ROOT_CLASSICAL  = 0x1ull;
+static const uint64_t COHORT_ROOT_PQC        = 0x2ull;
+
+/* Store a register value little-endian, as the device reports it. */
+static void set_posture_register(uint8_t reg[8], uint64_t value)
+{
+    for (unsigned i = 0; i < 8u; ++i) {
+        reg[i] = (uint8_t)(value >> (8u * i));
+    }
+}
+
+/* The posture check's verdict on `buf` under this device posture, with
+ * secure boot determined for it. */
+static oca_result_t posture_verdict(const uint8_t *buf, uint64_t class_revoke,
+                                    uint64_t cohort)
+{
+    test_fixture_reset();
+    set_posture_register(g_fx.class_revoke, class_revoke);
+    set_posture_register(g_fx.cohort, cohort);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    (void)oca_determine_secure_boot(buf, &cb, &ctx);
+    return oca_check_signature_posture(buf, &cb, &ctx);
+}
+
+static oca_result_t posture_for_pqc(uint8_t control, uint64_t class_revoke,
+                                    uint64_t cohort)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, control);
+    return posture_verdict(buf, class_revoke, cohort);
+}
+
+static oca_result_t posture_for_pqc_type(uint8_t pqc_type, uint64_t class_revoke)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    buf[OCA_PQC_OFF_SIGNATURE_TYPE] = pqc_type;
+    return posture_verdict(buf, class_revoke, 0u);
+}
+
+static oca_result_t posture_for_classic(uint8_t classic_type, uint64_t class_revoke,
+                                        uint64_t cohort)
+{
+    static uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    buf[OCA_OFF_SIGNATURE_TYPE] = classic_type;
+    return posture_verdict(buf, class_revoke, cohort);
+}
+
+TEST(test_a_device_with_no_posture_accepts_every_signature_choice)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, 0u, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x07u, 0u, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_classic(OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256, 0u, 0u),
+                  OCA_OK);
+}
+
+/* A disabled algorithm refuses every enforced class that signs with it, and
+ * only those. */
+TEST(test_a_disabled_algorithm_refuses_the_classes_that_use_it)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_ML_DSA_87, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x07u, REVOKE_ML_DSA_87, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_ML_DSA_87, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_RSA_3072, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_RSA_3072, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_classic(OCA_PRIMITIVE_ECDSA_P256_SHA256, REVOKE_P256, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_classic(OCA_PRIMITIVE_ECDSA_P256_SHA256, REVOKE_RSA_3072, 0u),
+                  OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_ML_DSA_44 | REVOKE_ML_DSA_65, 0u), OCA_OK);
+}
+
+/* Each signature_type the format defines maps to its own algorithm-class bit:
+ * that bit refuses it, and every other bit of its group does not. */
+TEST(test_every_defined_signature_type_maps_to_its_revocation_bit)
+{
+    static const struct { uint8_t type; unsigned bit; } classic[] = {
+        {0x01u, 0}, {0x02u, 0}, {0x03u, 1}, {0x04u, 1}, {0x05u, 2}, {0x06u, 3},
+        {0x07u, 4}, {0x0Au, 5}, {0x0Bu, 6}, {0xF0u, 7}, {0xFFu, 7},
+    };
+    static const struct { uint8_t type; unsigned bit; } pqc[] = {
+        {0x31u, 24}, {0x32u, 25}, {0x33u, 26}, {0x41u, 27}, {0x42u, 27},
+        {0x51u, 28}, {0x54u, 28}, {0x52u, 29}, {0x55u, 29}, {0x53u, 30},
+        {0x56u, 30}, {0xF0u, 31}, {0xFFu, 31},
+    };
+    for (unsigned i = 0; i < sizeof classic / sizeof classic[0]; ++i) {
+        uint64_t own = 1ull << classic[i].bit;
+        ASSERT_EQ_INT(posture_for_classic(classic[i].type, own, 0u),
+                      OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+        ASSERT_EQ_INT(posture_for_classic(classic[i].type, REVOKE_CLASSICAL_BITS & ~own, 0u),
+                      OCA_OK);
+    }
+    for (unsigned i = 0; i < sizeof pqc / sizeof pqc[0]; ++i) {
+        uint64_t own = 1ull << pqc[i].bit;
+        ASSERT_EQ_INT(posture_for_pqc_type(pqc[i].type, own),
+                      OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+        ASSERT_EQ_INT(posture_for_pqc_type(pqc[i].type, REVOKE_PQC_BITS & ~own), OCA_OK);
+    }
+}
+
+/* A type the format does not define names no algorithm class, and is refused
+ * rather than waved through. */
+TEST(test_an_undefined_signature_type_is_refused_by_the_posture_check)
+{
+    ASSERT_EQ_INT(posture_for_classic(0x08u, 0u, 0u), OCA_FAIL_CRYPTO_FIELD_SIZE);
+    ASSERT_EQ_INT(posture_for_pqc_type(0x34u, 0u), OCA_FAIL_CRYPTO_FIELD_SIZE);
+}
+
+/* Only the intact group code disables a whole group; a fragment of it, which
+ * can accumulate by OR, disables nothing. */
+TEST(test_only_an_intact_group_code_disables_its_group)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_PQC_GROUP, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_PQC_GROUP, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_CLASSICAL_GROUP, 0u),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_CLASSICAL_GROUP, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, 0x8Cull << 32, 0u), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0x4Aull << 8, 0u), OCA_OK);
+}
+
+/* The ROOT nibble names the cohorts the device demands; a manifest must
+ * enforce each of them. */
+TEST(test_the_root_cohort_demands_its_signature_classes)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, COHORT_ROOT_PQC),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, 0u, COHORT_ROOT_PQC), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x07u, 0u, COHORT_ROOT_PQC), OCA_OK);
+    ASSERT_EQ_INT(posture_for_classic(OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256, 0u,
+                                      COHORT_ROOT_PQC),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, 0u, COHORT_ROOT_CLASSICAL),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, COHORT_ROOT_CLASSICAL), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x07u, 0u, COHORT_ROOT_CLASSICAL | COHORT_ROOT_PQC), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, 0u, COHORT_ROOT_CLASSICAL | COHORT_ROOT_PQC),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+}
+
+/* A wholly disabled group withdraws the device's demand for that cohort, and
+ * the algorithm revocation still refuses a manifest that relies on it. */
+TEST(test_a_disabled_group_withdraws_its_cohort_demand)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_PQC_GROUP, COHORT_ROOT_PQC), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_PQC_GROUP, COHORT_ROOT_PQC),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_for_pqc(0x05u, REVOKE_CLASSICAL_GROUP, COHORT_ROOT_CLASSICAL),
+                  OCA_OK);
+    /* Every per-algorithm bit without the group code is not a group disable:
+     * the demand stands. */
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, REVOKE_PQC_BITS, COHORT_ROOT_PQC),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+}
+
+/* Bits for entities this library does not engage — the verifier key and the
+ * co-signers — and the nibble's reserved bits demand nothing. */
+TEST(test_cohort_bits_outside_the_root_demand_are_ignored)
+{
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, 0x2ull << 4), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, 0x3333333333ull & ~0xFull), OCA_OK);
+    ASSERT_EQ_INT(posture_for_pqc(0x03u, 0u, 0xCull), OCA_OK);
+}
+
+/* Posture readers that report success without writing leave the buffers as
+ * the check pre-filled them: every algorithm disabled, every cohort demanded. */
+static oca_result_t posture_read_writing_nothing(uint8_t out[8])
+{
+    (void)out;
+    return OCA_OK;
+}
+
+static oca_result_t posture_read_failing(uint8_t out[8])
+{
+    (void)out;
+    return OCA_FAIL_CALLBACK_UNAVAILABLE;
+}
+
+/* Run the posture check on a PQC-only manifest with the given readers. */
+static oca_result_t posture_with_readers(oca_result_t (*class_revoke)(uint8_t[8]),
+                                         oca_result_t (*cohort)(uint8_t[8]))
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    test_fixture_reset();
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    cb.get_signature_class_revoke   = class_revoke;
+    cb.get_signature_cohort_enforce = cohort;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    (void)oca_determine_secure_boot(buf, &cb, &ctx);
+    oca_result_t r = oca_check_signature_posture(buf, &cb, &ctx);
+    if (r != OCA_OK) {
+        ASSERT_TRUE(ctx.secure_boot_posture_met != OCA_SECURE_TRUE);
+    }
+    return r;
+}
+
+TEST(test_posture_readers_fail_closed)
+{
+    ASSERT_EQ_INT(posture_with_readers(NULL, dev_get_cohort),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(posture_with_readers(dev_get_class_revoke, NULL),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(posture_with_readers(posture_read_failing, dev_get_cohort),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(posture_with_readers(dev_get_class_revoke, posture_read_failing),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(posture_with_readers(posture_read_writing_nothing, dev_get_cohort),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(posture_with_readers(dev_get_class_revoke, posture_read_writing_nothing),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(posture_with_readers(dev_get_class_revoke, dev_get_cohort), OCA_OK);
+}
+
+/* With secure boot not in force there is no posture to meet, and no reader is
+ * needed. */
+TEST(test_the_posture_is_inert_when_secure_boot_is_off)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_minimal_pqc_manifest(buf);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    cb.is_secure_boot_active        = sb_inactive_cb;
+    cb.get_signature_class_revoke   = NULL;
+    cb.get_signature_cohort_enforce = NULL;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
+}
+
+TEST(test_the_posture_check_needs_a_settled_context)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t fresh;
+    oca_validation_context_init(&fresh);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &fresh),
+                  OCA_FAIL_SECURE_BOOT_UNDETERMINED);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, NULL),
+                  OCA_FAIL_SECURE_BOOT_UNDETERMINED);
+}
+
+/* A passing check vouches, a later refusing one withdraws the vouching: the
+ * flag reports the latest posture check, never an earlier one. */
+TEST(test_a_refused_posture_check_withdraws_an_earlier_vouching)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(ctx.secure_boot_posture_met, OCA_SECURE_TRUE);
+    set_posture_register(g_fx.class_revoke, REVOKE_ML_DSA_87);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_TRUE(ctx.secure_boot_posture_met != OCA_SECURE_TRUE);
+}
+
+/* A call refused before it reads the posture — here because the recorded
+ * determination no longer matches the manifest — withdraws an earlier vouching
+ * too: the flag is cleared on entry, not only once the posture is reached. */
+TEST(test_a_posture_check_refused_at_the_confirm_withdraws_an_earlier_vouching)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(ctx.secure_boot_posture_met, OCA_SECURE_TRUE);
+    ctx.secure_boot_enabled = OCA_SECURE_FALSE;
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx),
+                  OCA_FAIL_SECURE_BOOT_STATE_CHANGED);
+    ASSERT_TRUE(ctx.secure_boot_posture_met != OCA_SECURE_TRUE);
+}
+
+/* The signature check refuses a context the posture check never vouched for,
+ * before verifying anything. */
+TEST(test_the_signature_check_needs_the_posture_vouching)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    test_fixture_reset();
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx), OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
+}
+
+/* The composed pipeline applies the posture before any key is authorized or
+ * used. */
+TEST(test_validation_applies_the_posture_before_any_key_is_used)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    test_fixture_reset();
+    set_posture_register(g_fx.class_revoke, REVOKE_ML_DSA_87);
+    g_authorize_calls = 0;
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    g_fx.sha_hash_off = OCA_PQC_OFF_MANIFEST_HASH;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED);
+    ASSERT_EQ_INT(g_authorize_calls, 0);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
+
+    build_secure_pqc_manifest(buf, 0x03u);
+    test_fixture_reset();
+    set_posture_register(g_fx.cohort, COHORT_ROOT_PQC);
+    build_devstate_cb(&cb, buf);
+    g_fx.sha_hash_off = OCA_PQC_OFF_MANIFEST_HASH;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx),
+                  OCA_FAIL_SIGNATURE_COHORT_REQUIRED);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -6147,6 +7837,9 @@ int main(int argc, char **argv)
     RUN_TEST(test_validate_manifest_runs_the_length_check);
     RUN_TEST(test_both_entry_points_agree_on_a_manifest_level_failure);
     RUN_TEST(test_result_string_covers_the_manifest_length_code);
+    RUN_TEST(test_manifest_length_holds_a_pqc_body_to_its_own_size);
+    RUN_TEST(test_manifest_length_is_checked_before_the_trailer);
+    RUN_TEST(test_the_major_version_is_checked_before_manifest_length);
     RUN_TEST(test_check_magic_rejects_bad_bytes);
     RUN_TEST(test_check_trailer_rejects_bad_pattern);
     RUN_TEST(test_check_format_version_accepts_newer_minor);
@@ -6156,7 +7849,6 @@ int main(int argc, char **argv)
     RUN_TEST(test_reserved_demotion_bit_ignored);
     RUN_TEST(test_reserved_bits_ignored_end_to_end);
     RUN_TEST(test_secure_boot_invariant_clean_zero_path);
-    RUN_TEST(test_secure_boot_invariant_dirty_signature_field);
 
     /* Identity */
     RUN_TEST(test_identity_match_passes);
@@ -6181,6 +7873,9 @@ int main(int argc, char **argv)
     /* manifest_hash + signature dispatch */
     RUN_TEST(test_manifest_hash_match_passes);
     RUN_TEST(test_manifest_hash_mismatch_fails);
+    RUN_TEST(test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing);
+    RUN_TEST(test_result_string_covers_the_unsupported_algorithm_code);
+    RUN_TEST(test_deprecated_check_names_reach_the_renamed_checks);
     RUN_TEST(test_corruption_outranks_a_field_level_violation);
     RUN_TEST(test_manifest_hash_dirty_padding_fails);
 
@@ -6194,7 +7889,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_disable_short_circuits_the_active_reporter);
     RUN_TEST(test_disable_answering_false_matches_no_reporter);
     RUN_TEST(test_null_callback_table_still_fail_safes);
-    RUN_TEST(test_secure_boot_invariant_still_reads_the_raw_manifest_bit);
+    RUN_TEST(test_secure_boot_invariant_ignores_signing_fields);
 
     /* Encryption requires confirmed secure boot */
     RUN_TEST(test_decrypt_receives_cipher_and_selector_as_named_fields);
@@ -6239,6 +7934,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_payload_no_payload_declared_is_noop);
     RUN_TEST(test_payload_hash_mismatch_before_decrypt);
     RUN_TEST(test_payload_null_decrypt_callback_unavailable);
+    RUN_TEST(test_payload_without_sha256_is_unavailable);
     RUN_TEST(test_payload_decrypt_failure);
     RUN_TEST(test_payload_chain_mismatch);
     RUN_TEST(test_payload_happy_path);
@@ -6266,6 +7962,8 @@ int main(int argc, char **argv)
 
     /* Cleartext payload stage */
     RUN_TEST(test_cleartext_payload_happy_path);
+    RUN_TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing);
+    RUN_TEST(test_cleartext_payload_judges_only_its_hash_type);
     RUN_TEST(test_encrypted_plaintext_reported_after_success);
     RUN_TEST(test_cleartext_plaintext_reported_after_success);
     RUN_TEST(test_plaintext_reported_from_every_entry_point);
@@ -6370,13 +8068,18 @@ int main(int argc, char **argv)
     RUN_TEST(test_commit_disable_class_revoke_only);
     RUN_TEST(test_manifest_security_control_is_read_as_a_u16);
     RUN_TEST(test_commit_without_posture_callbacks_is_unavailable);
+    RUN_TEST(test_commit_without_any_one_callback_is_unavailable);
     RUN_TEST(test_intact_group_codes_are_accepted);
     RUN_TEST(test_a_fragment_of_a_group_code_is_rejected);
+    RUN_TEST(test_a_group_disabled_by_its_class_bits_alone_is_rejected);
     RUN_TEST(test_a_bad_group_code_is_caught_before_any_device_read);
     RUN_TEST(test_commit_refuses_a_fragmented_group_code);
+    RUN_TEST(test_commit_refuses_a_group_disabled_by_its_class_bits_alone);
     RUN_TEST(test_consistent_crypto_field_sizes_are_accepted);
     RUN_TEST(test_inconsistent_crypto_field_sizes_are_rejected);
     RUN_TEST(test_crypto_field_sizes_ignored_on_a_non_secure_manifest);
+    RUN_TEST(test_crypto_field_sizes_engage_when_the_device_enforces_secure_boot);
+    RUN_TEST(test_crypto_field_sizes_refuse_an_undetermined_context);
     RUN_TEST(test_secure_boot_with_no_signature_class_is_rejected);
     RUN_TEST(test_device_enabled_secure_boot_with_no_class_is_rejected);
     RUN_TEST(test_class_rejection_leaves_the_context_unsettled);
@@ -6387,7 +8090,20 @@ int main(int argc, char **argv)
     RUN_TEST(test_pqc_class_bit_on_a_classic_manifest_is_rejected);
     RUN_TEST(test_pqc_class_bit_is_permitted_on_a_pqc_manifest);
     RUN_TEST(test_pqc_only_manifest_passes_size_check_with_zeroed_classical_fields);
-    RUN_TEST(test_pqc_size_fields_are_bounded);
+    RUN_TEST(test_ml_dsa_87_description_passes_the_size_check);
+    RUN_TEST(test_pqc_description_accepts_only_ml_dsa_87);
+    RUN_TEST(test_pqc_description_requires_raw_encodings);
+    RUN_TEST(test_pqc_size_fields_must_be_the_exact_ml_dsa_87_sizes);
+    RUN_TEST(test_pqc_description_is_ignored_when_the_pqc_class_is_off);
+    RUN_TEST(test_classic_description_accepts_only_supported_primitives);
+    RUN_TEST(test_classic_description_accepts_only_defined_encodings);
+    RUN_TEST(test_classic_padding_past_a_declared_size_must_be_zero);
+    RUN_TEST(test_hybrid_padding_past_a_declared_size_must_be_zero);
+    RUN_TEST(test_padding_is_not_judged_for_a_class_or_boot_that_does_not_use_it);
+    RUN_TEST(test_secure_boot_off_ignores_each_dirty_pqc_signing_field);
+    RUN_TEST(test_non_secure_manifest_with_populated_signing_fields_validates);
+    RUN_TEST(test_device_enforced_bit_clear_manifest_validates_end_to_end);
+    RUN_TEST(test_device_enforced_bit_clear_manifest_with_a_bad_description_is_refused);
     RUN_TEST(test_hybrid_authorization_consults_each_classes_anchor);
     RUN_TEST(test_single_class_authorization_leaves_the_other_flag_unset);
     RUN_TEST(test_a_refused_pqc_key_fails_authorization);
@@ -6399,6 +8115,21 @@ int main(int argc, char **argv)
     RUN_TEST(test_pqc_signature_requires_the_pqc_authorization);
     RUN_TEST(test_pqc_enforcement_on_a_classic_variant_fails_closed);
     RUN_TEST(test_hybrid_manifest_validates_end_to_end);
+    RUN_TEST(test_every_root_key_bitmap_has_the_shared_width);
+    RUN_TEST(test_pqc_root_key_revoked_by_manifest);
+    RUN_TEST(test_pqc_root_key_revoked_by_device_pqc_state);
+    RUN_TEST(test_pqc_key_is_not_revoked_by_classic_state);
+    RUN_TEST(test_pqc_root_key_reserved_bits_ignored);
+    RUN_TEST(test_hybrid_revocation_checks_each_family);
+    RUN_TEST(test_classic_only_ocap_manifest_ignores_pqc_revocation);
+    RUN_TEST(test_revoked_pqc_key_skips_signature_in_pipeline);
+    RUN_TEST(test_commit_ors_in_each_familys_revocation_for_a_hybrid_manifest);
+    RUN_TEST(test_commit_pqc_only_manifest_writes_both_families);
+    RUN_TEST(test_commit_classic_only_ocap_manifest_writes_both_families);
+    RUN_TEST(test_commit_classic_manifest_writes_only_the_classic_family);
+    RUN_TEST(test_commit_revoke_disable_suppresses_both_families);
+    RUN_TEST(test_commit_pqc_revocation_write_failure_surfaced);
+    RUN_TEST(test_commit_refuses_a_class_record_it_cannot_trust);
     RUN_TEST(test_commit_disable_revoke_only);
     RUN_TEST(test_commit_write_failure_surfaced);
     RUN_TEST(test_commit_secure_boot_disabled_noop);
@@ -6421,6 +8152,34 @@ int main(int argc, char **argv)
     RUN_TEST(test_a_corrupted_engaged_word_runs_the_check_rather_than_skipping_it);
     RUN_TEST(test_a_record_disagreeing_in_the_safe_direction_is_still_refused);
     RUN_TEST(test_validate_is_read_only_then_commit);
+    RUN_TEST(test_commit_refuses_a_context_no_signature_check_authenticated);
+    RUN_TEST(test_commit_refuses_the_context_of_a_failed_validation);
+    RUN_TEST(test_commit_refuses_a_corrupted_authentication_word);
+    RUN_TEST(test_an_enforced_classic_class_that_selects_no_key_is_unauthorized);
+    RUN_TEST(test_an_enforced_pqc_class_that_selects_no_key_is_unauthorized);
+    RUN_TEST(test_select_bits_only_in_the_reserved_bytes_select_no_key);
+    RUN_TEST(test_a_revocation_read_that_writes_nothing_revokes_every_key);
+    RUN_TEST(test_a_security_version_read_that_writes_nothing_is_a_rollback);
+    RUN_TEST(test_a_commit_over_an_unwritten_read_writes_only_the_manifest_bits);
+    RUN_TEST(test_an_unreadable_revocation_state_fails_the_check_for_each_family);
+    RUN_TEST(test_commit_writes_nothing_when_the_classic_revocation_read_fails);
+    RUN_TEST(test_commit_stops_at_an_unreadable_pqc_revocation_state);
+    RUN_TEST(test_every_blob_carries_its_declared_size);
+    RUN_TEST(test_a_device_with_no_posture_accepts_every_signature_choice);
+    RUN_TEST(test_a_disabled_algorithm_refuses_the_classes_that_use_it);
+    RUN_TEST(test_every_defined_signature_type_maps_to_its_revocation_bit);
+    RUN_TEST(test_an_undefined_signature_type_is_refused_by_the_posture_check);
+    RUN_TEST(test_only_an_intact_group_code_disables_its_group);
+    RUN_TEST(test_the_root_cohort_demands_its_signature_classes);
+    RUN_TEST(test_a_disabled_group_withdraws_its_cohort_demand);
+    RUN_TEST(test_cohort_bits_outside_the_root_demand_are_ignored);
+    RUN_TEST(test_posture_readers_fail_closed);
+    RUN_TEST(test_the_posture_is_inert_when_secure_boot_is_off);
+    RUN_TEST(test_the_posture_check_needs_a_settled_context);
+    RUN_TEST(test_a_refused_posture_check_withdraws_an_earlier_vouching);
+    RUN_TEST(test_a_posture_check_refused_at_the_confirm_withdraws_an_earlier_vouching);
+    RUN_TEST(test_the_signature_check_needs_the_posture_vouching);
+    RUN_TEST(test_validation_applies_the_posture_before_any_key_is_used);
 
     int reverse = (argc > 1 && strcmp(argv[1], "--reverse") == 0);
     unit_run_all(reverse);

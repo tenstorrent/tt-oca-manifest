@@ -3,9 +3,14 @@
 """OCA signing glue.
 
 Wraps the existing `manifest_signing.SigningKey` factory so OCA producers
-reuse the shared `local` / `aws` signing authorities. Translates between
-OCA's on-disk `signature_type_classic` values (0x01 / 0x05) and the
-internal `ManifestSignatureType` enum (1 / 2).
+reuse the shared signing authorities, once per signature class the manifest
+enforces. Translates between OCA's on-disk signature-type values — 0x01 / 0x05
+for `signature_type_classic`, 0x33 for `signature_type_pqc` — and the internal
+`ManifestSignatureType` enum.
+
+For the PQC class the packer signs with ML-DSA-87, in the raw encoding only:
+FIPS 204 defines no bare ASN.1 structure for its key or signature, and both
+lengths are fixed. The classical class is described below.
 
 The OCA spec permits two on-disk encodings, but not symmetrically:
 
@@ -19,33 +24,24 @@ The OCA spec permits two on-disk encodings, but not symmetrically:
 
 Each encoded value is accompanied by a `*_size_classic` field giving its byte
 count, so a consumer can bound its parse instead of guessing from zero padding.
-Vendor-defined encoding (0x03) is deferred to a future feature pass.
+Integrator-defined encodings (0xF0-0xFF) are a deferred feature.
 """
 
 from __future__ import annotations
 
 from collections import namedtuple
 
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa, utils as ec_utils
 
 from .. import key_hygiene
 from .. import manifest_signing
 from ..pack_images_constants import ManifestSignatureType
+from ..utils import CheckError
 from . import constants as oca_consts
 from .validators import OcaConfigError
 
-
-# OCA `signature_type_classic` → internal `ManifestSignatureType` enum value.
-# The OCA RSA value (0x01) coincidentally equals the internal value (1). The
-# OCA ECC value (0x05) does NOT equal the internal value (2) — the table makes
-# that explicit.
-_OCA_TO_INTERNAL_SIG_TYPE = {
-    oca_consts.OcaClassicSignatureType.RSA_3072_PKCS1V15_SHA256.value:
-        ManifestSignatureType.RSA_3072.value,
-    oca_consts.OcaClassicSignatureType.ECDSA_P256_SHA256.value:
-        ManifestSignatureType.ECC_P_256.value,
-}
 
 # Sentinel value for the legacy `manifest_identifier` field used in the adapter
 # dict passed to `prepare_signing_key`. Any value other than 0x314c4254 ("TBL1")
@@ -67,26 +63,44 @@ EncodedField = namedtuple("EncodedField", ["field", "size"])
 
 
 def build_signing_key(config: dict):
-    """Construct a `manifest_signing.SigningKey` from an OCA-classic config.
-
-    Bridges the OCA YAML shape to the adapter dict shape the existing
-    factory expects. Caller must have set `secure_boot == 1` (this function is
-    only invoked on the secure-boot path).
-    """
+    """Construct the classical class's `manifest_signing.SigningKey` from an
+    OCA config. Only invoked when that class is enforced."""
     sig_type_oca = int(config["signature_type"])
-    if sig_type_oca not in _OCA_TO_INTERNAL_SIG_TYPE:
+    if sig_type_oca not in oca_consts.CLASSIC_SIGNING_TYPES:
         # Should be unreachable — reject_deferred_features catches this earlier.
         raise OcaConfigError(
             f"signature_type {sig_type_oca:#x} cannot be mapped to a supported signing key type",
             field_name="signature_type",
         )
+    adapter = _signing_adapter(config, "", oca_consts.CLASSIC_SIGNING_TYPES[sig_type_oca], "oca-key")
+    return _prepare_key(adapter, "signing_key_file")
 
-    adapter = {
-        "signing_key_name": config.get("signing_key_name", "oca-key"),
-        "signing_authority": config["signing_authority"],
-        "signing_key_id": config.get("signing_key_id", ""),
-        "signing_key_file": config.get("signing_key_file"),
-        "signature_type": _OCA_TO_INTERNAL_SIG_TYPE[sig_type_oca],
+
+def build_pqc_signing_key(config: dict):
+    """Construct the PQC class's `manifest_signing.SigningKey` from an OCA-PQC
+    config. Only invoked when that class is enforced."""
+    sig_type_oca = int(config["signature_type_pqc"])
+    if sig_type_oca not in oca_consts.PQC_SIGNING_TYPES:
+        # Should be unreachable — the config validator refuses the type first.
+        raise OcaConfigError(
+            f"signature_type_pqc {sig_type_oca:#x} cannot be mapped to a supported signing key type",
+            field_name="signature_type_pqc",
+        )
+    adapter = _signing_adapter(config, "_pqc", oca_consts.PQC_SIGNING_TYPES[sig_type_oca],
+                               "oca-key-pqc")
+    return _prepare_key(adapter, "signing_key_file_pqc")
+
+
+def _signing_adapter(config: dict, suffix: str, signature_type: int, default_name: str) -> dict:
+    """The adapter dict `prepare_signing_key` expects, from one class's config
+    fields: `signing_authority`, `signing_key_file` and the rest, each carrying
+    `suffix` (empty for the classical class, `_pqc` for the PQC class)."""
+    return {
+        "signing_key_name": config.get(f"signing_key_name{suffix}", default_name),
+        "signing_authority": config[f"signing_authority{suffix}"],
+        "signing_key_id": config.get(f"signing_key_id{suffix}", ""),
+        "signing_key_file": config.get(f"signing_key_file{suffix}"),
+        "signature_type": signature_type,
         "manifest_identifier": _NON_BL1_MANIFEST_IDENTIFIER,
         # The adapter has a fixed key set, so the test-key opt-in has to be
         # forwarded explicitly or `LocalKey` would never see it and no OCA
@@ -94,19 +108,49 @@ def build_signing_key(config: dict):
         key_hygiene.ALLOW_CONFIG_FIELD:
             config.get(key_hygiene.ALLOW_CONFIG_FIELD, False),
     }
+
+
+def _prepare_key(adapter: dict, key_file_field: str):
+    """Build the signing key `adapter` describes, reporting each failure as an
+    OcaConfigError against the config field that caused it.
+
+    A key whose algorithm or size does not match the configured signature type
+    fails the signing layer's own checks, which is the key file's fault.
+    """
     try:
         return manifest_signing.prepare_signing_key(adapter, secure_boot=1)
     except FileNotFoundError as e:
         raise OcaConfigError(
-            f"signing_key_file not found: {e}",
-            field_name="signing_key_file",
+            f"{key_file_field} not found: {e}",
+            field_name=key_file_field,
         ) from e
     except KeyError as e:
         missing = str(e).strip("'\"")
         raise OcaConfigError(
-            f"missing required signing field for oca-classic secure_boot=1: {missing}",
+            f"missing required signing field for secure_boot=1: {missing}",
             field_name=missing,
         ) from e
+    except UnsupportedAlgorithm as e:
+        raise OcaConfigError(
+            _unloadable_key_reason(adapter, key_file_field, e),
+            field_name=key_file_field,
+        ) from e
+    except CheckError as e:
+        raise OcaConfigError(f"{key_file_field}: {e}", field_name=key_file_field) from e
+
+
+def _unloadable_key_reason(adapter: dict, key_file_field: str, error: Exception) -> str:
+    """Explain an UnsupportedAlgorithm raised while loading a signing key.
+
+    The signing layer cannot tell its causes apart, but here the requested
+    signature type is known: a build with no ML-DSA support at all is told apart
+    from a key file this build cannot load.
+    """
+    if adapter["signature_type"] == ManifestSignatureType.ML_DSA_87.value \
+            and not manifest_signing.ml_dsa_87_available():
+        return (f"{key_file_field}: this cryptography build cannot sign with ML-DSA-87; "
+                f"it needs cryptography built against OpenSSL 3.5 or later ({error})")
+    return f"{key_file_field} holds a key this cryptography build cannot load ({error})"
 
 
 # ---------------------------------------------------------------------------
@@ -330,3 +374,49 @@ def _signature_raw(signing_key, der_or_rsa_bytes: bytes) -> bytes:
         f"raw encoding not supported for signature type {type(pk).__name__}",
         field_name="signature_encoding",
     )
+
+
+# ---------------------------------------------------------------------------
+# The PQC class
+# ---------------------------------------------------------------------------
+
+
+def encode_public_key_pqc(signing_key, signature_type: int) -> EncodedField:
+    """Encode the public key into the `public_key_pqc` field: its raw FIPS 204
+    encoding, right-padded with 0x00 to the 2624-byte field, together with the
+    exact length the caller writes to `public_key_size_pqc`."""
+    raw = signing_key.public_key_bytes
+    expected = oca_consts.PQC_RAW_PUBLIC_KEY_LENGTHS[signature_type]
+    if len(raw) != expected:
+        raise OcaConfigError(
+            f"raw PQC public key is {len(raw)} bytes; signature_type_pqc "
+            f"{signature_type:#04x} fixes it at {expected}",
+            field_name="signing_key_file_pqc",
+        )
+    return EncodedField(raw.ljust(oca_consts.LEN_PUBLIC_KEY_PQC, b"\x00"), len(raw))
+
+
+def declared_signature_size_pqc(signature_type: int) -> int:
+    """Return the value to write into `signature_size_pqc`, which, like its
+    classical counterpart, lies inside the signed region and so is fixed before
+    signing. The raw ML-DSA-87 length is exact."""
+    return oca_consts.PQC_RAW_SIGNATURE_LENGTHS[signature_type]
+
+
+def sign_signed_region_pqc(signed_region: bytes, signing_key, declared_size: int) -> bytes:
+    """Sign the signed-region bytes and return the 29824-byte `signature_pqc`
+    field, right-padded with 0x00.
+
+    The signature is pure ML-DSA-87 over the region itself, with the empty
+    context, and is checked against `declared_size` — the value already written
+    into `signature_size_pqc`.
+    """
+    signing_key.generate_verified_signature(signed_region)
+    raw = signing_key.signature_bytes
+    if len(raw) != declared_size:
+        raise OcaConfigError(
+            f"PQC signature is {len(raw)} bytes but signature_size_pqc declares "
+            f"{declared_size}",
+            field_name="signature_type_pqc",
+        )
+    return raw.ljust(oca_consts.LEN_SIGNATURE_PQC, b"\x00")

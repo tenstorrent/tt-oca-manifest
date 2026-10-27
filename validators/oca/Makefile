@@ -4,8 +4,8 @@
 #
 # A single library and a single binary handle every OCA format variant; the
 # format-specific dispatch happens inside the library based on the manifest
-# magic bytes. OCA-Classic is the format implemented today; OCA-PQC and
-# future variants slot in under lib/ without a build-system fork.
+# magic bytes. OCA-Classic and OCA-PQC are both implemented; future variants
+# slot in under lib/ without a build-system fork.
 #
 # Targets:
 #   all        — default; builds the test CLI (depends on lib + test).
@@ -78,6 +78,13 @@ LIB_CFLAGS   := $(CFLAGS) -ffreestanding -nostdlib -fno-builtin -Os \
 OPENSSL_CFLAGS ?= $(shell pkg-config --cflags openssl 2>/dev/null)
 OPENSSL_LIBS   ?= $(shell pkg-config --libs openssl 2>/dev/null || echo "-lcrypto")
 
+# The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. When pkg-config
+# found OpenSSL, its version is checked before the CLI links so an older one
+# fails with the reason; with OPENSSL_CFLAGS supplied by hand, the #error in
+# test/openssl_crypto.c enforces the same minimum at compile time. The library
+# and the unit tests do not use OpenSSL and are not gated.
+OPENSSL_MIN_VERSION ?= 3.5.0
+
 TEST_CFLAGS  := $(CFLAGS) -Ilib -Itest $(OPENSSL_CFLAGS) $(EXTRA_CFLAGS) $(DEPFLAGS)
 TEST_LIBS    := $(OPENSSL_LIBS)
 
@@ -113,7 +120,7 @@ TEST_CLI_OBJS := $(patsubst test/%.c,$(TEST_BUILD)/%.o, \
 TEST_CLI      := $(TEST_BUILD)/oca-validate
 UNIT_TEST_BIN := $(TEST_BUILD)/unit_test
 
-.PHONY: all lib test unit_test check clean
+.PHONY: all lib test unit_test check clean openssl_version
 
 all: $(TEST_CLI)
 
@@ -149,10 +156,6 @@ classic-only:
 pqc-only:
 	$(MAKE) BUILD=build/pqc-only EXTRA_CFLAGS="$(EXTRA_CFLAGS) -DOCA_SUPPORT_CLASSIC=0" all
 
-# Phase-1 stub: the per-target rules below are filled in by later phases.
-# The skeleton commits to the strict-warnings posture so that the moment
-# a real .c file shows up under lib/ or test/ it inherits the right flags.
-
 # Always evaluated, but only writes when the flags differ — so it does not
 # invalidate objects on every invocation.
 .PHONY: FORCE
@@ -186,7 +189,19 @@ $(LIB_ARCHIVE): $(LIB_OBJS) | $(LIB_BUILD)
 		echo "lib: built $@"; \
 	fi
 
-$(TEST_CLI): $(LIB_ARCHIVE) $(TEST_CLI_OBJS) | $(TEST_BUILD)
+openssl_version:
+ifeq ($(origin OPENSSL_CFLAGS),file)
+	@if pkg-config --exists openssl 2>/dev/null; then \
+		pkg-config --atleast-version=$(OPENSSL_MIN_VERSION) openssl \
+		|| { echo "oca-validate needs OpenSSL $(OPENSSL_MIN_VERSION) or later (ML-DSA-87);" \
+		          "pkg-config reports $$(pkg-config --modversion openssl)" >&2; \
+		     exit 1; }; \
+	fi
+endif
+
+$(TEST_CLI_OBJS): | openssl_version
+
+$(TEST_CLI): $(LIB_ARCHIVE) $(TEST_CLI_OBJS) | $(TEST_BUILD) openssl_version
 	@if [ -z "$(TEST_CLI_OBJS)" ]; then \
 		echo "test: no CLI sources yet — skipping link"; \
 	else \

@@ -14,15 +14,16 @@ Build sequence (offsets parameterized by the variant descriptor):
      → bytes [0, variant.signed_region_end) (the signed region, ending in the
        variant trailer).
   2. compute_manifest_hash(signed_region, variant=...) → 64-byte field
-     (digest + zero pad; SHA-256 this pass, per manifest_hash_type).
+     (digest + zero pad; SHA-256, per manifest_hash_type).
   3. build_unsigned_tail(signed_region, manifest_hash, payload_offset, variant=...)
      → bytes [variant.signed_region_end, variant.body_size).
   4. Concatenate → variant.body_size body, asserted at assembly time.
 
-When `secure_boot = 0` the signature_classic / public_key_classic fields stay
-zero. When `secure_boot = 1` the caller supplies `public_key_classic_field`
-and signs the assembled bytes; the signed-region layout is identical either
-way.
+Each signature class's fields stay zero unless the manifest enforces that
+class: secure_boot_classic for public_key_classic / signature_classic,
+secure_boot_pqc for public_key_pqc / signature_pqc. For each enforced class the
+caller supplies the encoded public key and signs the assembled bytes; the
+signed-region layout is identical either way.
 """
 
 from __future__ import annotations
@@ -85,18 +86,21 @@ def build_signed_region(
     signature_size_classic: int = 0,
     encryption: dict = None,
     variant: "oca_consts.OcaVariant" = oca_consts.CLASSIC_VARIANT,
+    public_key_pqc_field: bytes = None,
+    public_key_size_pqc: int = 0,
+    signature_size_pqc: int = 0,
 ) -> bytes:
     """Build the signed region (bytes [0, variant.signed_region_end)) in field-table order.
 
-    `public_key_classic_field`, when provided, is the 532-byte encoding-padded
-    public-key bytes (secure-boot path) — the on-disk encoding (DER or raw) is
-    chosen by the producer via `public_key_encoding`. When None, the secure-boot
-    key fields are all-zero (non-secure path).
+    `public_key_classic_field`, when the classical class is enforced, is the
+    532-byte encoding-padded public-key bytes — the on-disk encoding (DER or raw)
+    is chosen by the producer via `public_key_encoding`. `public_key_pqc_field`,
+    when the PQC class is enforced, is the 2624-byte raw public key. A class the
+    manifest does not enforce has its signing fields all-zero.
 
-    `public_key_size_classic` and `signature_size_classic` are the companion
-    byte counts. Both are emitted here, inside the signed region, so the
-    signature size has to be decided before signing — see
-    `signing.declared_signature_size()`.
+    The `*_size_*` arguments are the companion byte counts. They are emitted
+    here, inside the signed region, so each signature size has to be decided
+    before signing — see `signing.declared_signature_size()`.
 
     Asserts the final length equals `variant.signed_region_end` (3172 for
     Classic, 5903 for PQC).
@@ -148,11 +152,14 @@ def build_signed_region(
     _expect_offset(out, oca_consts.OFF_SECURE_BOOT_CONTROL, "secure_boot_control")
 
     # --- 182:183 secure_boot_control ---
-    secure_boot = normalized["secure_boot"]
+    secure_boot_classic = normalized["secure_boot_classic"]
     secure_boot_byte = 0
-    if secure_boot:
+    if normalized["secure_boot"]:
         secure_boot_byte |= 0x01            # bit 0: secure_boot_enforced
+    if secure_boot_classic:
         secure_boot_byte |= 0x02            # bit 1: secure_boot_classic
+    if normalized["secure_boot_pqc"]:
+        secure_boot_byte |= 0x04            # bit 2: secure_boot_pqc
     out += struct.pack("B", secure_boot_byte)
     out += b"\x00" * oca_consts.LEN_RESERVED_3
     _expect_offset(out, oca_consts.OFF_MANIFEST_SECURITY_CONTROL, "manifest_security_control")
@@ -222,7 +229,7 @@ def build_signed_region(
 
     # --- 2092:2093 signature_type_classic / 2093:2094 signature_encoding_classic /
     #     2094:2096 signature_size_classic ---
-    if secure_boot:
+    if secure_boot_classic:
         out += struct.pack("B", int(normalized["_source"]["signature_type"]))
         out += struct.pack("B", int(normalized["signature_encoding"]))
         out += struct.pack("<H", int(signature_size_classic))
@@ -234,14 +241,14 @@ def build_signed_region(
     # --- 2104:2120 public_key_select_classic (16 B) / 2120:2652 public_key_classic (532 B) /
     #     2652:2653 public_key_encoding_classic / 2653:2655 public_key_size_classic /
     #     2655:2671 public_key_classic_revoke / 2671:2687 reserved ---
-    # When secure_boot == 0 these fields are zeroed in the output even if the
-    # config supplies values — config values must not leak into a non-secure
-    # bundle.
-    if secure_boot:
+    # Zeroed unless the classical class is enforced, even if the config supplies
+    # values. The revocation bitmap is the exception: it is written whenever the
+    # manifest asserts secure boot, whichever class signs it.
+    if secure_boot_classic:
         out += int(normalized["public_key_select_classic"]).to_bytes(16, "little")
         if public_key_classic_field is None:
             raise ValueError(
-                "secure_boot=1 build_signed_region called without public_key_classic_field"
+                "secure_boot_classic build_signed_region called without public_key_classic_field"
             )
         if len(public_key_classic_field) != oca_consts.PUBLIC_KEY_CLASSIC_SIZE:
             raise ValueError(
@@ -251,13 +258,12 @@ def build_signed_region(
         out += public_key_classic_field
         out += struct.pack("B", int(normalized["public_key_encoding"]))
         out += struct.pack("<H", int(public_key_size_classic))
-        out += int(normalized["public_key_classic_revoke"]).to_bytes(16, "little")
     else:
         out += b"\x00" * 16
         out += b"\x00" * oca_consts.PUBLIC_KEY_CLASSIC_SIZE
         out += b"\x00"
         out += b"\x00" * 2      # public_key_size_classic
-        out += b"\x00" * 16
+    out += int(normalized["public_key_classic_revoke"]).to_bytes(16, "little")
     out += b"\x00" * oca_consts.LEN_RESERVED_16
     _expect_offset(out, oca_consts.OFF_VERIFIER_KEY_ID_REVOKE, "verifier_key_id_revoke")
 
@@ -306,17 +312,53 @@ def build_signed_region(
     # --- 3104:3168 reserved / 3168:3172 classic_manifest_trailer ---
     out += b"\x00" * oca_consts.LEN_RESERVED_20
     if variant.format_name == "oca-pqc":
-        # The classic_manifest_trailer slot is 0x35-filled in a PQC manifest,
-        # followed by the PQC-only signed fields (all 0x00 here — PQC-native
-        # crypto is deferred), closed by the 0x96 pqc_manifest_trailer.
+        # The classic_manifest_trailer slot is 0x35-filled in a PQC manifest.
         out += oca_consts.PQC_CLASSIC_TRAILER_FILL
-        out += b"\x00" * oca_consts.PQC_SIGNED_CRYPTO_BLOCK_SIZE
+        _build_pqc_signed_fields(out, normalized, public_key_pqc_field,
+                                 public_key_size_pqc, signature_size_pqc)
         out += oca_consts.PQC_TRAILER
     else:
         out += variant.trailer
     _expect_offset(out, variant.signed_region_end, "the signed-region trailer")
 
     return bytes(out)
+
+
+def _build_pqc_signed_fields(out: bytearray, normalized: Dict[str, Any],
+                             public_key_pqc_field: bytes, public_key_size_pqc: int,
+                             signature_size_pqc: int) -> None:
+    """Append the PQC-only signed fields, 3172:5899, between the 0x35 slot and
+    the pqc_manifest_trailer.
+
+    The signing description is written only when the PQC class is enforced and
+    is zero otherwise; the revocation bitmap is written whenever the manifest
+    asserts secure boot, whichever class signs it.
+    """
+    pqc = normalized["secure_boot_pqc"]
+    if pqc and public_key_pqc_field is None:
+        raise ValueError("secure_boot_pqc build_signed_region called without public_key_pqc_field")
+    _expect_offset(out, oca_consts.OFF_SIGNATURE_TYPE_PQC, "signature_type_pqc")
+    out += struct.pack("B", int(normalized["signature_type_pqc"]) if pqc else 0)
+    out += struct.pack("B", int(normalized["signature_encoding_pqc"]) if pqc else 0)
+    out += struct.pack("<H", int(signature_size_pqc) if pqc else 0)
+    _expect_offset(out, oca_consts.OFF_PUBLIC_KEY_SELECT_PQC, "public_key_select_pqc")
+    out += int(normalized["public_key_select_pqc"] if pqc else 0).to_bytes(
+        oca_consts.LEN_PUBLIC_KEY_SELECT_PQC, "little")
+    _expect_offset(out, oca_consts.OFF_PUBLIC_KEY_PQC, "public_key_pqc")
+    if pqc:
+        _expect_field_size(public_key_pqc_field, oca_consts.LEN_PUBLIC_KEY_PQC, "public_key_pqc")
+        out += public_key_pqc_field
+    else:
+        out += b"\x00" * oca_consts.LEN_PUBLIC_KEY_PQC
+    _expect_offset(out, oca_consts.OFF_PUBLIC_KEY_ENCODING_PQC, "public_key_encoding_pqc")
+    out += struct.pack("B", int(normalized["public_key_encoding_pqc"]) if pqc else 0)
+    out += struct.pack("<H", int(public_key_size_pqc) if pqc else 0)
+    _expect_offset(out, oca_consts.OFF_PUBLIC_KEY_PQC_REVOKE, "public_key_pqc_revoke")
+    out += int(normalized["public_key_pqc_revoke"]).to_bytes(
+        oca_consts.LEN_PUBLIC_KEY_PQC_REVOKE, "little")
+    _expect_offset(out, oca_consts.OFF_RESERVED_PQC, "reserved_pqc")
+    out += b"\x00" * oca_consts.LEN_RESERVED_PQC
+    _expect_offset(out, oca_consts.OFF_PQC_MANIFEST_TRAILER, "pqc_manifest_trailer")
 
 
 # ---------------------------------------------------------------------------
@@ -330,8 +372,12 @@ def build_unsigned_tail(
     payload_offset: int,
     signature_classic_field: bytes = None,
     variant: "oca_consts.OcaVariant" = oca_consts.CLASSIC_VARIANT,
+    signature_pqc_field: bytes = None,
 ) -> bytes:
     """Build the unsigned tail bytes `[signed_region_end, body_size)` and return them.
+
+    `signature_pqc_field`, on a PQC manifest enforcing the PQC class, is the
+    29824-byte signature_pqc field; when None the field is zero.
 
     Asserts the final length equals `body_size - signed_region_end`.
     """
@@ -350,12 +396,18 @@ def build_unsigned_tail(
     out += manifest_hash_field
     # payload_offset (signed int64)
     out += struct.pack("<q", int(payload_offset))
-    # unauthenticated_flags (= 0 in this pass)
+    # unauthenticated_flags (the packer sets none)
     out += struct.pack("<Q", 0)
     if variant.format_name == "oca-pqc":
-        # signature_pqc (0x00 — PQC-native signing deferred), then reserved
-        # 4 + 8 + alignment pad to the 36864-byte PQC body.
-        out += b"\x00" * oca_consts.PQC_SIGNATURE_SIZE
+        # signature_pqc, then reserved 4 + 8 + alignment pad to the 36864-byte
+        # PQC body.
+        _expect_field_size(
+            out, oca_consts.OFF_SIGNATURE_PQC - variant.signed_region_end,
+            "the unsigned tail before signature_pqc")
+        if signature_pqc_field is None:
+            signature_pqc_field = b"\x00" * oca_consts.LEN_SIGNATURE_PQC
+        _expect_field_size(signature_pqc_field, oca_consts.LEN_SIGNATURE_PQC, "signature_pqc")
+        out += signature_pqc_field
         out += b"\x00" * oca_consts.LEN_RESERVED_21
         out += b"\x00" * oca_consts.LEN_RESERVED_22
         out += b"\x00" * oca_consts.PQC_TAIL_ALIGN_SIZE
@@ -380,7 +432,7 @@ def compute_manifest_hash(
     variant: "oca_consts.OcaVariant" = oca_consts.CLASSIC_VARIANT,
 ) -> bytes:
     """Return the 64-byte manifest_hash field: the signed-region digest at
-    offset 0, zero-padded to 64 bytes. This pass emits a SHA-256 digest
+    offset 0, zero-padded to 64 bytes. The packer emits a SHA-256 digest
     (manifest_hash_type = 0x01); the field width accommodates other digest
     types the format permits."""
     if len(signed_region) != variant.signed_region_end:

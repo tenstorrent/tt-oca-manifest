@@ -33,10 +33,12 @@ Two ways to opt in, deliberately different in depending one what needs to be don
   which builds several hundred manifests from inline config dicts. It is set
   once in `tests/conftest.py`.
 
-Note the fingerprint here is NOT the boot-ROM trust anchor digest. That one is
-SHA-256 over the raw 384-byte RSA modulus (see `validators/oca/test/cli_hwid.c`),
-is RSA-only, and answers a different question; whether silicon trusts a particular 
-public key. This one only answers whether a key came out of this repository.
+Note the fingerprint here is NOT a ROOT-key trust-anchor digest. The reference
+validator harness stands in for one per algorithm family and key slot -- SHA-256
+over a whole raw key, 388 bytes for RSA-3072 and 2592 for ML-DSA-87 (see
+`validators/oca/test/cli_hwid.c`) -- and that answers a different question:
+whether silicon trusts a particular public key. This one only answers whether a
+key came out of this repository.
 """
 
 from __future__ import annotations
@@ -61,6 +63,8 @@ COMMITTED_TEST_KEY_FINGERPRINTS = {
         "tests/signing_keys/rsa_private_key.f4.pem",
     "5bd317a0701fc47922f9d1647f4811feb5442b7e337389795607386866484844":
         "tests/signing_keys/rsa_private_key.e3.pem",
+    "de42b881569a28b95aa2eeea0d57d3bae07869d0e11dc5bb3a72edc3b9f6dcb1":
+        "tests/signing_keys/mldsa87_private_key.pem",
 }
 
 # Config field: the supported opt-in, visible in any copy of the config.
@@ -80,8 +84,9 @@ class KeyHygieneError(Exception):
 def public_key_fingerprint(public_key) -> str:
     """Return the SHA-256 hex digest of a public key's SubjectPublicKeyInfo DER.
 
-    SPKI is used because it is defined for every algorithm, so RSA and ECDSA
-    keys are covered by one rule and a future key type needs no new code here.
+    SPKI is used because it is defined for every algorithm, so RSA, ECDSA and
+    ML-DSA keys are covered by one rule and a future key type needs no new code
+    here.
     """
     der = public_key.public_bytes(
         serialization.Encoding.DER,

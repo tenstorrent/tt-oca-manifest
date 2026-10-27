@@ -9,12 +9,14 @@ import subprocess
 import sys
 import textwrap
 
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding
 
 from tt_boot_manifest.utils import load_config, convert_to_int
 from tt_boot_manifest.manifest_signing import *
 from tt_boot_manifest.pack_images_constants import *
+from oca_fixtures import ML_DSA_87_KEY_PATH
 
 # Repo root, so the -O subprocesses below resolve the installed package the same
 # way the test session does.
@@ -217,6 +219,173 @@ def test_digest_message():
     assert len(signing_key.signature_digest) == 32  # SHA256 digest size
     assert signing_key.signature_digest != b''
 
+### ML-DSA-87 Local Signing Tests #####
+
+def _ml_dsa_manifest() -> dict:
+    """A signing config for the committed ML-DSA-87 development key.
+
+    The BL2 identifier sidesteps the BL1-must-use-RSA rule, which is not what
+    these tests are about."""
+    manifest = load_default_config()['primary']['manifest']
+    manifest.update({
+        'manifest_identifier': 0x324c4254,
+        'signature_type': ManifestSignatureType.ML_DSA_87.value,
+        'signing_key_name': 'ml_dsa_87_test_key',
+        'signing_key_file': ML_DSA_87_KEY_PATH,
+    })
+    return manifest
+
+
+def _ml_dsa_signature_valid(public_key_raw: bytes, signature: bytes, message: bytes,
+                            context: bytes = None) -> bool:
+    """Whether `signature` is a valid pure ML-DSA-87 signature over `message`
+    under `context`, checked independently of the signing layer."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric import mldsa
+
+    public_key = mldsa.MLDSA87PublicKey.from_public_bytes(public_key_raw)
+    try:
+        public_key.verify(signature, message, context)
+    except InvalidSignature:
+        return False
+    return True
+
+
+def test_prepare_signing_key_local_ml_dsa_87():
+    from cryptography.hazmat.primitives.asymmetric import mldsa
+
+    signing_key = prepare_signing_key(_ml_dsa_manifest(), 1)
+    assert isinstance(signing_key, LocalKey)
+    assert signing_key.signature_type == ManifestSignatureType.ML_DSA_87.value
+    assert isinstance(signing_key.public_key, mldsa.MLDSA87PublicKey)
+    assert signing_key.public_key_bytes == signing_key.public_key.public_bytes_raw()
+    assert len(signing_key.public_key_bytes) == ML_DSA_87_PUBLIC_KEY_SZ_BYTES
+
+
+def test_generate_verified_signature_local_ml_dsa_87():
+    """The signature is pure ML-DSA-87 over the message itself, with the empty
+    context, and checks out independently of the layer that produced it."""
+    signing_key = prepare_signing_key(_ml_dsa_manifest(), 1)
+    signature = signing_key.generate_verified_signature(dummy_message_to_sign)
+
+    assert len(signature) == ML_DSA_87_SIGNATURE_SZ_BYTES
+    assert _ml_dsa_signature_valid(signing_key.public_key_bytes, signature,
+                                   dummy_message_to_sign)
+
+
+def test_ml_dsa_87_signature_rejects_anything_else():
+    """The same check fails for a tampered message, another key, a pre-hashed
+    message, and a non-empty context — so the positive test above is pinned to
+    exactly the construction the format uses."""
+    import hashlib
+
+    from cryptography.hazmat.primitives.asymmetric import mldsa
+
+    signing_key = prepare_signing_key(_ml_dsa_manifest(), 1)
+    signature = signing_key.generate_verified_signature(dummy_message_to_sign)
+    public_key_raw = signing_key.public_key_bytes
+
+    tampered = bytearray(dummy_message_to_sign)
+    tampered[0] ^= 0x01
+    other_key_raw = mldsa.MLDSA87PrivateKey.generate().public_key().public_bytes_raw()
+
+    assert not _ml_dsa_signature_valid(public_key_raw, signature, bytes(tampered))
+    assert not _ml_dsa_signature_valid(other_key_raw, signature, dummy_message_to_sign)
+    assert not _ml_dsa_signature_valid(public_key_raw, signature,
+                                       hashlib.sha512(dummy_message_to_sign).digest())
+    assert not _ml_dsa_signature_valid(public_key_raw, signature,
+                                       dummy_message_to_sign, context=b"OCA")
+
+
+def test_ml_dsa_87_type_refuses_another_algorithms_key():
+    manifest = _ml_dsa_manifest()
+    manifest['signing_key_file'] = '$ROOT/tests/signing_keys/rsa_private_key.f4.pem'
+    with pytest.raises(AssertionError, match="not an ML-DSA-87 private key"):
+        prepare_signing_key(manifest, 1)
+
+
+def test_rsa_type_refuses_an_ml_dsa_87_key():
+    manifest = load_default_config()['primary']['manifest']
+    manifest['signing_key_file'] = ML_DSA_87_KEY_PATH
+    with pytest.raises(AssertionError, match="not an RSA private key"):
+        prepare_signing_key(manifest, 1)
+
+
+@pytest.mark.parametrize("authority", ["aws", "hsm"])
+def test_ml_dsa_87_refuses_every_authority_but_local(monkeypatch, authority):
+    """Refused before the authority's key is built, so the `aws` case needs no
+    boto3: blocking the import proves it is never reached."""
+    monkeypatch.setitem(sys.modules, "boto3", None)
+    manifest = _ml_dsa_manifest()
+    manifest['signing_authority'] = authority
+    with pytest.raises(SigningError,
+                       match=f"ML_DSA_87 cannot be produced through the '{authority}'"):
+        prepare_signing_key(manifest, 1)
+
+
+def test_every_supported_signature_type_names_its_authorities():
+    """Each supported type is checked against its own authorities, and every
+    authority named is one prepare_signing_key() can build."""
+    assert set(SUPPORTED_SIGNATURE_TYPES) == set(SIGNING_AUTHORITIES_BY_TYPE)
+    assert SIGNING_AUTHORITIES_BY_TYPE[ManifestSignatureType.ML_DSA_87.value] == ("local",)
+    for authorities in SIGNING_AUTHORITIES_BY_TYPE.values():
+        assert authorities and set(authorities) <= {"local", "aws", "hsm"}
+
+
+def test_ml_dsa_87_has_no_message_digest():
+    """Pure ML-DSA hashes inside the signature scheme; a digest computed here
+    would be a pre-hash the format does not use."""
+    signing_key = prepare_signing_key(_ml_dsa_manifest(), 1)
+    with pytest.raises(SigningError, match="no message digest"):
+        signing_key.digest_message(dummy_message_to_sign)
+
+
+@pytest.mark.parametrize("length,valid", [
+    (ML_DSA_87_SIGNATURE_SZ_BYTES, True),
+    (ML_DSA_87_SIGNATURE_SZ_BYTES - 1, False),
+    (ML_DSA_87_SIGNATURE_SZ_BYTES + 1, False),
+    (SIGNATURE_FIELD_SIZE, False),
+])
+def test_ml_dsa_87_signature_size_is_exact(length, valid):
+    signing_key = prepare_signing_key(_ml_dsa_manifest(), 1)
+    signing_key.signature_bytes = b'x' * length
+    if valid:
+        signing_key.validate_signature_size()
+    else:
+        with pytest.raises(ValueError, match="Invalid signature length"):
+            signing_key.validate_signature_size()
+
+
+_UNSUPPORTED_ALGORITHM = UnsupportedAlgorithm("not supported by this backend.")
+
+
+def _raise_unsupported_algorithm(*args, **kwargs):
+    raise _UNSUPPORTED_ALGORITHM
+
+
+def test_unsupported_algorithm_from_key_loading_propagates_unchanged(monkeypatch):
+    """UnsupportedAlgorithm has more than one cause — a backend without ML-DSA, a
+    key of an algorithm cryptography does not support at all — and the signing
+    layer cannot tell which. It passes the exception through untouched for the
+    caller, which knows what was asked for, to interpret."""
+    import tt_boot_manifest.manifest_signing as manifest_signing_module
+
+    monkeypatch.setattr(manifest_signing_module.serialization, "load_pem_private_key",
+                        _raise_unsupported_algorithm)
+    with pytest.raises(UnsupportedAlgorithm) as excinfo:
+        prepare_signing_key(_ml_dsa_manifest(), 1)
+    assert excinfo.value is _UNSUPPORTED_ALGORITHM
+
+
+def test_ml_dsa_87_sizes_agree_with_the_layout_constants():
+    """The signing layer's ML-DSA-87 sizes are the ones the manifest layout
+    reserves and the validator checks."""
+    from tt_boot_manifest.oca import constants as oca_consts
+
+    assert ML_DSA_87_PUBLIC_KEY_SZ_BYTES == oca_consts.ML_DSA_87_PUBLIC_KEY_BYTES
+    assert ML_DSA_87_SIGNATURE_SZ_BYTES == oca_consts.ML_DSA_87_SIGNATURE_BYTES
+
+
 ### AWS KMS Signing Tests #####
 
 @pytest.mark.aws
@@ -372,11 +541,23 @@ def test_generate_verified_signature_kms_ecc():
 ### HSM Signing Tests ###
 
 @pytest.mark.hsm
-def test_hsm_key_not_implemented():
-    test_config = load_default_config()
-    test_manifest = test_config['primary']['manifest']
+@pytest.mark.parametrize("sig_type", [ManifestSignatureType.RSA_3072.value,
+                                      ManifestSignatureType.ECC_P_256.value])
+def test_hsm_signing_authority_is_refused(sig_type):
+    """No signature type can be produced through `hsm` yet, so the request is
+    refused before the reserved key is built."""
+    test_manifest = load_default_config()['primary']['manifest']
     test_manifest['signing_authority'] = 'hsm'
-    hsm_key = prepare_signing_key(test_manifest, 1)
+    test_manifest['signature_type'] = sig_type
+    test_manifest['manifest_identifier'] = 0x324c4254   # BL2: any signature type
+    with pytest.raises(SigningError, match="through the 'hsm' signing authority"):
+        prepare_signing_key(test_manifest, 1)
+
+
+@pytest.mark.hsm
+def test_hsm_key_refuses_every_operation():
+    """The reserved slot itself: a key built directly signs and verifies nothing."""
+    hsm_key = HSMKey(load_default_config()['primary']['manifest'], 1)
 
     with pytest.raises(SigningError, match="HSM Signing Not Yet Supported"):
         hsm_key.sign_data(dummy_message_to_sign)

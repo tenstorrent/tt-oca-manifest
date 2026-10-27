@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import os
 
+from tt_boot_manifest.oca.validators import CLASSIC_SIGNING_FIELDS, PQC_SIGNING_FIELDS
+
 # Resolve project root one directory above tests/
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 
@@ -30,8 +32,22 @@ ECC_P256_KEY_PATH = _key_path("tests/signing_keys/ec_private_key.pem")
 # public_key_size_classic, passes with one key and fails with the other.
 RSA_3072_E3_KEY_PATH = _key_path("tests/signing_keys/rsa_private_key.e3.pem")
 
+# The PQC class's key: ML-DSA-87, stored as a seed-only PKCS#8 PEM.
+ML_DSA_87_KEY_PATH = _key_path("tests/signing_keys/mldsa87_private_key.pem")
+
 # (label, key path, PKCS#1 DER length) for parametrizing over both exponents.
 RSA_EXPONENT_KEYS = [
     ("f4", RSA_3072_KEY_PATH, 398),
     ("e3", RSA_3072_E3_KEY_PATH, 396),
 ]
+
+
+def unsigned_config(config: dict) -> dict:
+    """A copy of `config` with secure boot off and no signing field of either
+    class. A non-secure manifest carries no signature, so the packer refuses a
+    config that names one."""
+    dropped = CLASSIC_SIGNING_FIELDS + PQC_SIGNING_FIELDS + ("secure_boot_classic",
+                                                             "secure_boot_pqc")
+    out = {key: value for key, value in config.items() if key not in dropped}
+    out["secure_boot"] = 0
+    return out

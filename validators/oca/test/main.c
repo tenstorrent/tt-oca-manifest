@@ -5,7 +5,8 @@
  *
  * Reads a manifest file, wires the validator callbacks (OpenSSL for
  * crypto, CLI flags for hardware identity), invokes oca_validate(), and
- * prints a single-line verdict per the cli_surface contract.
+ * prints a single-line verdict: PASS on stdout, or FAIL with its reason on
+ * stderr.
  */
 
 #include <errno.h>
@@ -60,7 +61,8 @@ static uint8_t *read_file(const char *path, size_t *out_len)
 static const cli_options_t *g_cli_opt;
 
 
-/* Map an oca_result_t to a one-line human reason. */
+/* Map an oca_result_t to a one-line human reason. The switch deliberately has no
+ * default, so -Wswitch fails the build when a result code has no reason. */
 static const char *reason_for(oca_result_t r)
 {
     switch (r) {
@@ -99,8 +101,19 @@ static const char *reason_for(oca_result_t r)
         case OCA_FAIL_ROOT_KEY_REVOKED:
             return "selected ROOT key is revoked (manifest or device-stored state)";
         case OCA_FAIL_ROOT_KEY_UNAUTHORIZED:
-            return "ROOT key is not authorized by this device "
-                   "(pass --root-key-digest or --trust-any-root-key)";
+            return "ROOT key is not authorized by this device (pass "
+                   "--root-key-digest / --root-key-digest-pqc for each signature "
+                   "class, or --trust-any-root-key)";
+        case OCA_FAIL_SIGNATURE_COHORT_REQUIRED:
+            return "the device's signature posture demands a cohort (classical or "
+                   "PQC) this manifest is not verified by "
+                   "(see --signature-cohort-enforce)";
+        case OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED:
+            return "a signature this manifest relies on uses an algorithm the "
+                   "device has disabled (see --signature-class-revoke)";
+        case OCA_FAIL_UNSUPPORTED_ALGORITHM:
+            return "manifest declares a hash, key derivation function, or input "
+                   "key source this build does not implement";
         case OCA_FAIL_SIGNATURE_CLASS_CONTROL:
             return "secure_boot_control class bits name a signature policy this "
                    "manifest cannot satisfy (neither class selected under secure "
@@ -132,7 +145,9 @@ static const char *reason_for(oca_result_t r)
         case OCA_FAIL_SIGNATURE:
             return "signature verification failed";
         case OCA_FAIL_CALLBACK_UNAVAILABLE:
-            return "required hardware/crypto value not supplied on CLI";
+            return "a required callback or crypto backend is unavailable (a device "
+                   "value not supplied on the CLI, or an OpenSSL without the "
+                   "manifest's algorithm)";
         case OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT:
             return "encrypted payload declared, but secure boot is not in force "
                    "for this manifest";
@@ -142,12 +157,19 @@ static const char *reason_for(oca_result_t r)
         case OCA_FAIL_SECURE_BOOT_UNDETERMINED:
             return "internal: a gated check ran before the secure-boot "
                    "determination";
+        case OCA_FAIL_GROUP_CODE:
+            return "signature_class_revoke is malformed: a group code is neither "
+                   "0x00 nor its group's constant, or a group sets every class "
+                   "bit without its group code";
+        case OCA_FAIL_CRYPTO_FIELD_SIZE:
+            return "signing fields name an algorithm, encoding or size this "
+                   "library does not accept";
         case OCA_FAIL_INVALID_ARG:
             return "internal: invalid argument";
         case OCA_OK:
-        default:
             return "ok";
     }
+    return "internal: unrecognized result code";
 }
 
 /* Extract a NUL-padded ASCII manifest_identifier from offset 4..12. */
@@ -184,8 +206,9 @@ static void read_content_version(const uint8_t *body,
 }
 
 /* Host validation defaults for device-anchored secure-boot state. This CLI is a
- * host tool, not a device: it reports no revoked ROOT keys and enforces no
- * security-version floor. A real device would report its fuse/OTP state here.
+ * host tool, not a device: it reports the ROOT-key revocation state given on the
+ * command line (none by default) and enforces no security-version floor. A real
+ * device would report its fuse/OTP state here.
  *
  * --secure-boot-active. Off by default, so the manifest's own
  * secure_boot_control bit drives the secure path and a plain invocation behaves
@@ -209,11 +232,40 @@ static oca_secure_bool_t cli_is_secure_boot_disabled(void)
          ? OCA_SECURE_TRUE : OCA_SECURE_FALSE;
 }
 
+/* --revoked-root-keys / --revoked-root-keys-pqc: each family's revocation
+ * state is separate, as on a device. */
 static oca_result_t cli_get_root_key_revocation(oca_key_algorithm_t algo,
                                                 uint8_t out[16])
 {
-    (void)algo;
-    memset(out, 0, 16);
+    if (g_cli_opt == NULL) {
+        memset(out, 0, 16);
+        return OCA_OK;
+    }
+    memcpy(out, (algo == OCA_KEY_ALGO_PQC) ? g_cli_opt->revoked_root_keys_pqc
+                                           : g_cli_opt->revoked_root_keys, 16);
+    return OCA_OK;
+}
+
+/* --signature-cohort-enforce / --signature-class-revoke: the device's signature
+ * posture, in the registers' own layout. Nothing demanded or disabled by
+ * default, as on a part that has never committed a posture. */
+static oca_result_t cli_get_signature_cohort_enforce(uint8_t out[8])
+{
+    if (g_cli_opt == NULL) {
+        memset(out, 0, 8);
+        return OCA_OK;
+    }
+    memcpy(out, g_cli_opt->signature_cohort_enforce, 8);
+    return OCA_OK;
+}
+
+static oca_result_t cli_get_signature_class_revoke(uint8_t out[8])
+{
+    if (g_cli_opt == NULL) {
+        memset(out, 0, 8);
+        return OCA_OK;
+    }
+    memcpy(out, g_cli_opt->signature_class_revoke, 8);
     return OCA_OK;
 }
 
@@ -466,6 +518,8 @@ int main(int argc, char **argv)
     cb.is_secure_boot_disabled = cli_is_secure_boot_disabled;
     cb.get_root_key_revocation = cli_get_root_key_revocation;
     cb.get_security_version    = cli_get_security_version;
+    cb.get_signature_cohort_enforce = cli_get_signature_cohort_enforce;
+    cb.get_signature_class_revoke   = cli_get_signature_class_revoke;
 
     /* Storage-image mode runs the staged flow (manifest, locate, copy, verify);
      * the default treats the file as a contiguous bundle. */
@@ -507,7 +561,7 @@ int main(int argc, char **argv)
         }
         /* Emit the recovered plaintext when the payload was decrypted and an
          * output path was requested. Plaintext goes only to that file — never
-         * to stdout/stderr/logs (Principle V). */
+         * to stdout, stderr or logs. */
         if (opt.payload_out_path != NULL && plaintext.bytes != NULL) {
             FILE *out = fopen(opt.payload_out_path, "wb");
             if (out == NULL) {

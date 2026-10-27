@@ -55,8 +55,13 @@
 /* Appended-entry sizes for this variant (34816 B PQC). */
 #define OCA_PQC_VERIFIER_ENTRY_SIZE        34816u
 #define OCA_PQC_CO_SIGNER_ENTRY_SIZE       34816u
-#define OCA_PQC_OFF_SIGNATURE_PQC           6495u   /* signature_pqc (deferred -> 0x00) */
+#define OCA_PQC_OFF_SIGNATURE_PQC           6495u   /* signature_pqc */
 #define OCA_PQC_LEN_SIGNATURE_PQC          29824u
+
+/* FIPS 204 ML-DSA-87 encodings, which are the format's raw encoding: the public
+ * key is pkEncode(rho, t1), the signature sigEncode(c~, z, h). */
+#define OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES  2592u
+#define OCA_PQC_ML_DSA_87_SIGNATURE_BYTES   4627u
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(
@@ -71,6 +76,12 @@ _Static_assert(
 _Static_assert(
     OCA_PQC_OFF_SIGNATURE_PQC + OCA_PQC_LEN_SIGNATURE_PQC <= OCA_PQC_BODY_SIZE,
     "signature_pqc must fit within the PQC body");
+_Static_assert(
+    OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES <= OCA_PQC_LEN_PUBLIC_KEY,
+    "an ML-DSA-87 public key must fit public_key_pqc");
+_Static_assert(
+    OCA_PQC_ML_DSA_87_SIGNATURE_BYTES <= OCA_PQC_LEN_SIGNATURE_PQC,
+    "an ML-DSA-87 signature must fit signature_pqc");
 #endif
 
 #endif /* OCA_LAYOUT_PQC_H */

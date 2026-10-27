@@ -329,6 +329,31 @@ def test_description_terminating_nul_reserved(tmp_path):
     assert "127" in str(exc.value)
 
 
+@pytest.mark.parametrize("value", [None, ""], ids=["omitted", "empty"])
+def test_every_image_needs_a_type(tmp_path, value):
+    """The boot ROM selects an image by its type, so none is invented for an entry
+    that leaves it out."""
+    cfg = _multi_image_config(tmp_path, [("a", b"A" * 8), ("b", b"B" * 8)])
+    if value is None:
+        del cfg["payload_images"][1]["type"]
+    else:
+        cfg["payload_images"][1]["type"] = value
+    with pytest.raises(OcaConfigError) as exc:
+        pack_oca_bundle(cfg)
+    assert exc.value.field_name == "payload_images"
+    assert "payload_images[1]" in str(exc.value)
+    assert "'type'" in str(exc.value)
+
+
+def test_an_image_type_longer_than_its_field_is_refused(tmp_path):
+    cfg = _multi_image_config(tmp_path, [("a", b"A" * 8)])
+    cfg["payload_images"][0]["type"] = "X" * (oca_consts.LEN_TOC_ENTRY_TYPE + 1)
+    with pytest.raises(OcaConfigError) as exc:
+        pack_oca_bundle(cfg)
+    assert exc.value.field_name == "payload_images"
+    assert str(oca_consts.LEN_TOC_ENTRY_TYPE) in str(exc.value)
+
+
 def test_description_non_ascii_rejected(tmp_path):
     cfg = _multi_image_config(tmp_path, [("a", b"D" * 8)],
                               extra={"description": "imagé"})

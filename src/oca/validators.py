@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from ..manifest_signing import SIGNING_AUTHORITIES_BY_TYPE
+from ..pack_images_constants import ManifestSignatureType
 from . import constants as oca_consts
 
 
@@ -56,13 +58,164 @@ class OcaConfigError(ValueError):
 # ---------------------------------------------------------------------------
 
 
-def _require(config: Dict[str, Any], key: str) -> Any:
+def _require(config: Dict[str, Any], key: str, context: str = "oca-classic") -> Any:
     if key not in config:
         raise OcaConfigError(
-            f"missing required field for oca-classic: {key}",
+            f"missing required field for {context}: {key}",
             field_name=key,
         )
     return config[key]
+
+
+# The fields that describe each signature class's key and signature. A class the
+# manifest does not enforce has no signature, so naming one of these for it is a
+# configuration mistake, not something to zero silently. The revocation bitmaps
+# are not among them: a verified manifest commits every bitmap it carries,
+# whichever class signed it.
+CLASSIC_SIGNING_FIELDS = (
+    "signature_type", "signing_authority", "signing_key_file", "signing_key_id",
+    "public_key_select_classic", "signature_encoding", "public_key_encoding",
+)
+PQC_SIGNING_FIELDS = (
+    "signature_type_pqc", "signing_authority_pqc", "signing_key_file_pqc",
+    "signing_key_id_pqc", "public_key_select_pqc", "signature_encoding_pqc",
+    "public_key_encoding_pqc",
+)
+
+
+def _class_bit(config: Dict[str, Any], field: str, default: int) -> int:
+    value = int(config.get(field, default))
+    if value not in (0, 1):
+        raise OcaConfigError(f"{field} must be 0 or 1; got {value}", field_name=field)
+    return value
+
+
+def _normalize_signature_classes(config: Dict[str, Any], secure_boot: int,
+                                 manifest_format: str) -> tuple:
+    """Resolve secure_boot_classic and secure_boot_pqc, the signature classes
+    secure_boot_control names.
+
+    The classical class defaults on under secure boot, so a config that names
+    neither class enforces the classical one. A PQC manifest
+    may enforce either class or both, a classic manifest the classical class
+    only, and secure boot must name at least one.
+    """
+    classic = _class_bit(config, "secure_boot_classic", 1 if secure_boot == 1 else 0)
+    pqc = _class_bit(config, "secure_boot_pqc", 0)
+    if pqc and manifest_format != "oca-pqc":
+        raise OcaConfigError(
+            "secure_boot_pqc names a PQC signature, which only an oca-pqc manifest "
+            "can carry",
+            field_name="secure_boot_pqc",
+        )
+    if secure_boot == 0:
+        for field, value in (("secure_boot_classic", classic), ("secure_boot_pqc", pqc)):
+            if value:
+                raise OcaConfigError(f"{field} requires secure_boot: 1", field_name=field)
+    elif not (classic or pqc):
+        raise OcaConfigError(
+            "secure_boot: 1 needs at least one signature class: set "
+            "secure_boot_classic or secure_boot_pqc",
+            field_name="secure_boot",
+        )
+    return classic, pqc
+
+
+def _reject_fields_for_disabled_class(config: Dict[str, Any], fields: tuple,
+                                      requirement: str) -> None:
+    """Refuse a signing field named for a signature class that is not enforced,
+    whatever its value: a zero, empty or null value still names the field."""
+    for field in fields:
+        if field in config:
+            raise OcaConfigError(
+                f"{field} describes a signature this manifest does not carry; it "
+                f"requires {requirement}",
+                field_name=field,
+            )
+
+
+def _reject_integrator_encoding(field: str, value: int) -> None:
+    if value in oca_consts.INTEGRATOR_ENCODINGS:
+        raise OcaConfigError(
+            f"OCA feature deferred to future pass: integrator-defined encoding "
+            f"(field {field})",
+            field_name=field,
+            deferred_feature="integrator-defined encoding",
+        )
+
+
+def _classic_encoding(config: Dict[str, Any], field: str) -> int:
+    value = int(config.get(field, oca_consts.OcaClassicSignatureEncoding.RAW_BYTES.value))
+    if value in oca_consts.OCA_SELECTABLE_ENCODINGS:
+        return value
+    _reject_integrator_encoding(field, value)
+    raise OcaConfigError(
+        f"{field} must be one of {oca_consts.OCA_SELECTABLE_ENCODINGS_TEXT}; got {value:#x}",
+        field_name=field,
+    )
+
+
+def _pqc_encoding(config: Dict[str, Any], field: str) -> int:
+    value = int(config.get(field, oca_consts.OcaClassicSignatureEncoding.RAW_BYTES.value))
+    if value in oca_consts.PQC_SELECTABLE_ENCODINGS:
+        return value
+    if value == oca_consts.OcaClassicSignatureEncoding.ASN1_DER.value:
+        raise OcaConfigError(
+            f"{field} 0x01 (DER) is reserved for PQC: FIPS 204 defines no bare ASN.1 "
+            f"structure for an ML-DSA key or signature. Use 0x02 (raw bytes).",
+            field_name=field,
+        )
+    _reject_integrator_encoding(field, value)
+    raise OcaConfigError(f"{field} must be 0x02 (raw bytes); got {value:#x}", field_name=field)
+
+
+def _normalize_pqc_signing(config: Dict[str, Any], out: Dict[str, Any],
+                           secure_boot: int, pqc: int, manifest_format: str) -> None:
+    """Validate the PQC class's signing description and revocation bitmap into
+    `out`."""
+    for field in ("public_key_pqc", "signature_pqc"):
+        if _truthy(config, field):
+            raise OcaConfigError(
+                f"{field} is produced by the packer from the signing key; it is not a "
+                f"config input",
+                field_name=field,
+            )
+
+    if not pqc:
+        _reject_fields_for_disabled_class(
+            config, PQC_SIGNING_FIELDS, "secure_boot: 1 and secure_boot_pqc: 1")
+        out["signature_type_pqc"] = 0
+        out["public_key_select_pqc"] = 0
+        out["signature_encoding_pqc"] = 0
+        out["public_key_encoding_pqc"] = 0
+    else:
+        context = "the PQC signature class"
+        sig_type = int(_require(config, "signature_type_pqc", context))
+        _require(config, "signing_authority_pqc", context)
+        _require(config, "signing_key_file_pqc", context)
+        select = int(_require(config, "public_key_select_pqc", context))
+        if not (0 < select < (1 << 128)):
+            raise OcaConfigError(
+                f"public_key_select_pqc must be a non-zero 128-bit bitmask; got {select}",
+                field_name="public_key_select_pqc",
+            )
+        out["signature_type_pqc"] = sig_type
+        out["public_key_select_pqc"] = select
+        out["signature_encoding_pqc"] = _pqc_encoding(config, "signature_encoding_pqc")
+        out["public_key_encoding_pqc"] = _pqc_encoding(config, "public_key_encoding_pqc")
+
+    revoke = int(config.get("public_key_pqc_revoke", 0))
+    if revoke and manifest_format != "oca-pqc":
+        raise OcaConfigError(
+            "public_key_pqc_revoke is a PQC field, which only an oca-pqc manifest carries",
+            field_name="public_key_pqc_revoke",
+        )
+    if not (0 <= revoke < (1 << 128)):
+        raise OcaConfigError(
+            f"public_key_pqc_revoke must fit in 128 bits; got {revoke}",
+            field_name="public_key_pqc_revoke",
+        )
+    out["public_key_pqc_revoke"] = revoke if secure_boot == 1 else 0
 
 
 def _is_printable_ascii(s: str) -> bool:
@@ -87,6 +240,25 @@ def _check_group_code(value: int, *, shift: int, code: int, label: str, bits: st
             f"or exactly {code:#04x}; got {actual:#04x}. A partial group code is not "
             f"a partial revocation — it carries no meaning and would accumulate into "
             f"an intact code in the device's OR-updated state.",
+            field_name="signature_class_revoke",
+        )
+
+
+def _check_group_not_disabled_by_classes(value: int, *, classes_shift: int, defined: int,
+                                         group_shift: int, label: str, bits: str) -> None:
+    """Refuse a `signature_class_revoke` group whose every defined class bit is
+    set while its group code byte is 0x00.
+
+    Setting every class disables the whole group, which only the intact group
+    code may do: disabling a group is meant to be the explicit act the code
+    records.
+    """
+    classes = (value >> classes_shift) & 0xFF
+    if classes & defined == defined and (value >> group_shift) & 0xFF == 0x00:
+        raise OcaConfigError(
+            f"signature_class_revoke sets every defined {label} class bit ({bits}) "
+            f"without the {label} group code; disabling the whole group takes the "
+            f"group code itself",
             field_name="signature_class_revoke",
         )
 
@@ -160,11 +332,24 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
         )
     out["secure_boot"] = sb
 
-    # public_key_select_classic — 16-byte (128-bit) bitmask. Required when
-    # secure_boot is enabled (≥ 1 bit must be set; otherwise no key is
+    manifest_format = config.get("manifest_format", "oca-classic")
+    sb_classic, sb_pqc = _normalize_signature_classes(config, sb, manifest_format)
+    out["secure_boot_classic"] = sb_classic
+    out["secure_boot_pqc"] = sb_pqc
+    if not sb_classic:
+        _reject_fields_for_disabled_class(
+            config, CLASSIC_SIGNING_FIELDS,
+            "secure_boot_classic: 1" if sb == 1 else "secure_boot: 1")
+    if sb_classic:
+        _require(config, "signature_type", "the classical signature class")
+        _require(config, "signing_authority", "the classical signature class")
+    _normalize_pqc_signing(config, out, sb, sb_pqc, manifest_format)
+
+    # public_key_select_classic — 16-byte (128-bit) bitmask. Required when the
+    # classical class is enforced (≥ 1 bit must be set; otherwise no key is
     # authorized and secure boot would fail at the Consumer).
     pkscl = config.get("public_key_select_classic")
-    if sb == 1:
+    if sb_classic:
         if pkscl is None:
             raise OcaConfigError(
                 "missing required field for oca-classic secure_boot=1: public_key_select_classic",
@@ -182,7 +367,7 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
         out["public_key_select_classic"] = 0
 
     # Encoding selectors for public-key and signature bytes — DER (0x01) or
-    # raw bytes (0x02). Vendor-defined (0x03) is deferred.
+    # raw bytes (0x02). Integrator-defined (0xF0-0xFF) is deferred.
     #
     # Both default to raw, because raw is the only encoding available for every
     # algorithm. DER is defined solely for RSA public keys and ECDSA signatures;
@@ -190,36 +375,10 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
     # hand most configurations an encoding the format does not define. Which
     # (type, encoding) pairs are legal is enforced in signing.py, where the
     # concrete key and signature are produced.
-    pk_enc = int(config.get("public_key_encoding", 0x02))
-    sig_enc = int(config.get("signature_encoding", 0x02))
-    if pk_enc not in oca_consts.OCA_SELECTABLE_ENCODINGS:
-        if pk_enc == 0x03:
-            raise OcaConfigError(
-                "OCA feature deferred to future pass: vendor-defined encoding "
-                "(field public_key_encoding)",
-                field_name="public_key_encoding",
-                deferred_feature="vendor-defined encoding",
-            )
-        raise OcaConfigError(
-            f"public_key_encoding must be one of "
-            f"{oca_consts.OCA_SELECTABLE_ENCODINGS_TEXT}; got {pk_enc:#x}",
-            field_name="public_key_encoding",
-        )
-    if sig_enc not in oca_consts.OCA_SELECTABLE_ENCODINGS:
-        if sig_enc == 0x03:
-            raise OcaConfigError(
-                "OCA feature deferred to future pass: vendor-defined encoding "
-                "(field signature_encoding)",
-                field_name="signature_encoding",
-                deferred_feature="vendor-defined encoding",
-            )
-        raise OcaConfigError(
-            f"signature_encoding must be one of "
-            f"{oca_consts.OCA_SELECTABLE_ENCODINGS_TEXT}; got {sig_enc:#x}",
-            field_name="signature_encoding",
-        )
-    out["public_key_encoding"] = pk_enc if sb == 1 else 0
-    out["signature_encoding"] = sig_enc if sb == 1 else 0
+    pk_enc = _classic_encoding(config, "public_key_encoding")
+    sig_enc = _classic_encoding(config, "signature_encoding")
+    out["public_key_encoding"] = pk_enc if sb_classic else 0
+    out["signature_encoding"] = sig_enc if sb_classic else 0
 
     # public_key_classic_revoke — 16-byte bitmask, default 0.
     pkrev = int(config.get("public_key_classic_revoke", 0))
@@ -305,6 +464,20 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
         code=oca_consts.SIGNATURE_CLASS_REVOKE_PQC_GROUP_CODE,
         label="PQC", bits="b[39:32]",
     )
+    _check_group_not_disabled_by_classes(
+        revoke,
+        classes_shift=oca_consts.SIGNATURE_CLASS_REVOKE_CLASSIC_CLASSES_SHIFT,
+        defined=oca_consts.SIGNATURE_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES,
+        group_shift=oca_consts.SIGNATURE_CLASS_REVOKE_CLASSIC_GROUP_SHIFT,
+        label="classical", bits="b[7:0]",
+    )
+    _check_group_not_disabled_by_classes(
+        revoke,
+        classes_shift=oca_consts.SIGNATURE_CLASS_REVOKE_PQC_CLASSES_SHIFT,
+        defined=oca_consts.SIGNATURE_CLASS_REVOKE_PQC_DEFINED_CLASSES,
+        group_shift=oca_consts.SIGNATURE_CLASS_REVOKE_PQC_GROUP_SHIFT,
+        label="PQC", bits="b[26:24], b[30:28] and b31",
+    )
     out["signature_class_revoke"] = revoke if sb == 1 else 0
 
     # Payload encryption — accept the supported path (AES-256-CBC or AES-128-CBC,
@@ -379,19 +552,69 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
     return out
 
 
-def reject_deferred_features(config: Dict[str, Any]) -> None:
-    """Raise OcaConfigError for any config that enables an OCA capability
-    deferred to a future feature pass.
+def _reject_unsupported_signing(config: Dict[str, Any], *, pqc: bool) -> None:
+    """Refuse a class's signature type when the packer cannot sign it, and its
+    signing authority when that authority cannot produce the type.
 
-    Checked features (per `contracts/yaml-config-schema.md`):
-      - PQC signature/key/control fields (the 'oca-pqc' framing itself is
-        supported; PQC-native signing and KEM are not)
+    Both rules are read from tables: the class's signing-type map in constants,
+    and the signing layer's SIGNING_AUTHORITIES_BY_TYPE. A new algorithm or
+    authority is one table edit. An authority the signing layer knows, but not
+    for this type, is a deferred feature, as is the reserved `hsm`.
+    """
+    suffix = "_pqc" if pqc else ""
+    signing_types = oca_consts.PQC_SIGNING_TYPES if pqc else oca_consts.CLASSIC_SIGNING_TYPES
+    type_field = f"signature_type{suffix}"
+    authority_field = f"signing_authority{suffix}"
+
+    named = None
+    if _truthy(config, type_field):
+        named = signing_types.get(int(config[type_field]))
+        if named is None:
+            raise OcaConfigError(
+                f"OCA feature deferred to future pass: Unsupported signature algorithm "
+                f"(field {type_field})",
+                field_name=type_field,
+                deferred_feature="Unsupported signature algorithm",
+            )
+
+    if not _truthy(config, authority_field):
+        return
+    authority = config[authority_field]
+    candidates = [named] if named is not None else list(signing_types.values())
+    allowed = {a for t in candidates for a in SIGNING_AUTHORITIES_BY_TYPE[t]}
+    if authority in allowed:
+        return
+    known = {a for authorities in SIGNING_AUTHORITIES_BY_TYPE.values() for a in authorities}
+    if authority == "hsm":
+        label = "HSM signing authority"
+    elif authority in known:
+        algorithms = ", ".join(ManifestSignatureType(t).name.replace("_", "-")
+                               for t in candidates)
+        label = f"{authority.upper()} signing authority for {algorithms}"
+    else:
+        raise OcaConfigError(
+            f"{authority_field} must be one of {', '.join(sorted(allowed))}; "
+            f"got {authority!r}",
+            field_name=authority_field,
+        )
+    raise OcaConfigError(
+        f"OCA feature deferred to future pass: {label} (field {authority_field})",
+        field_name=authority_field,
+        deferred_feature=label,
+    )
+
+
+def reject_deferred_features(config: Dict[str, Any]) -> None:
+    """Raise OcaConfigError for any config that enables an OCA capability the
+    packer does not support yet.
+
+    Checked features:
+      - Signature algorithms outside each class's signing table, and signing
+        authorities that cannot produce the algorithm named
       - Payload encryption fields
       - Verifier-key entry fields
       - Co-signer entries
-      - Signature algorithms outside {0x01, 0x05}
       - Hash algorithms outside {0x01} (SHA-256)
-      - HSM signing authority
 
     Designed to run BEFORE validate_and_normalize_oca_classic so deferred
     features fail fast with their *named feature* rather than a downstream
@@ -409,21 +632,11 @@ def reject_deferred_features(config: Dict[str, Any]) -> None:
             field_name="manifest_format",
         )
 
-    # PQC fields (any non-default value triggers).
-    for fname in (
-        "signature_type_pqc",
-        "public_key_pqc",
-        "public_key_select_pqc",
-        "public_key_pqc_revoke",
-        "secure_boot_pqc",
-        "signature_pqc",
-    ):
-        if _truthy(config, fname):
-            raise OcaConfigError(
-                f"OCA feature deferred to future pass: PQC signature fields (field {fname})",
-                field_name=fname,
-                deferred_feature="PQC signature fields",
-            )
+    # Signature algorithms and authorities, for both classes, from the signing
+    # tables. Checked whatever secure_boot says, so an unsupported request is
+    # named before any class rule fires.
+    _reject_unsupported_signing(config, pqc=False)
+    _reject_unsupported_signing(config, pqc=True)
 
     # Payload encryption. The supported path — AES-256-CBC or AES-128-CBC with a key
     # derived from a pre-shared secret via SP 800-108r1 over the expanded input block
@@ -501,23 +714,6 @@ def reject_deferred_features(config: Dict[str, Any]) -> None:
             deferred_feature="Co-signer entries",
         )
 
-    # Signature algorithm.
-    if config.get("secure_boot"):
-        sig_type = config.get("signature_type")
-        if sig_type is not None:
-            sig_type_int = int(sig_type)
-            allowed = {
-                oca_consts.OcaClassicSignatureType.RSA_3072_PKCS1V15_SHA256.value,
-                oca_consts.OcaClassicSignatureType.ECDSA_P256_SHA256.value,
-            }
-            if sig_type_int not in allowed:
-                raise OcaConfigError(
-                    f"OCA feature deferred to future pass: Unsupported signature algorithm "
-                    f"(field signature_type)",
-                    field_name="signature_type",
-                    deferred_feature="Unsupported signature algorithm",
-                )
-
     # Hash algorithms.
     for fname in ("manifest_hash_type", "payload_hash_type"):
         v = config.get(fname)
@@ -528,16 +724,6 @@ def reject_deferred_features(config: Dict[str, Any]) -> None:
                 field_name=fname,
                 deferred_feature="Hash algorithms beyond SHA-256",
             )
-
-    # HSM signing authority.
-    sa = config.get("signing_authority")
-    if sa == "hsm":
-        raise OcaConfigError(
-            "OCA feature deferred to future pass: HSM signing authority "
-            "(field signing_authority)",
-            field_name="signing_authority",
-            deferred_feature="HSM signing authority",
-        )
 
 
 def _truthy(config: Dict[str, Any], key: str) -> bool:

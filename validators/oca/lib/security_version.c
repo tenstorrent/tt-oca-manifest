@@ -19,6 +19,7 @@
 
 #include "oca_compare.h"
 #include "oca_layout.h"
+#include "oca_layout_pqc.h"
 #include "parser.h"
 #include "secure_boot.h"
 
@@ -38,7 +39,12 @@ oca_result_t oca_check_security_version(const uint8_t *body,
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
 
+    /* Pre-filled with every flag set, so a reader that reports success without
+     * writing fails closed as a rollback. */
     uint8_t device[OCA_LEN_MANIFEST_SECURITY_VERSION];
+    for (unsigned i = 0u; i < OCA_LEN_MANIFEST_SECURITY_VERSION; ++i) {
+        device[i] = 0xFFu;
+    }
     if (cb->get_security_version(device) != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
@@ -53,6 +59,60 @@ oca_result_t oca_check_security_version(const uint8_t *body,
     }
     if (oca_ct_any_nonzero(missing, sizeof missing) != 0) {
         return OCA_FAIL_SECURITY_VERSION;
+    }
+    return OCA_OK;
+}
+
+/**
+ * @brief OR one family's manifest revocation bitmap into that family's device
+ *        state.
+ *
+ * The device keeps classic and PQC revocation separately, so each family's
+ * device bitmap is read, OR-ed with the manifest field for the same family, and
+ * written back through the callbacks keyed on that family alone. The whole
+ * 16-byte field is OR-ed, reserved bits included.
+ *
+ * @param[in] body  Whole variant body; a PQC body when @p algo is
+ *                  OCA_KEY_ALGO_PQC.
+ * @param[in] cb    Callback table. cb->get_root_key_revocation and
+ *                  cb->set_root_key_revocation are checked here as well as by
+ *                  the caller, so a path that skipped the caller's check fails
+ *                  closed instead of calling through NULL — on a part with code
+ *                  mapped at address zero, a jump into it.
+ * @param[in] algo  Which family's manifest bitmap and device state to commit.
+ * @retval OCA_OK                          The family's state was written.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   Either callback is not wired, or the
+ *                                         family's state could not be read.
+ * @retval OCA_FAIL_SECURITY_STATE_UPDATE  The write-back failed.
+ */
+static oca_result_t commit_revocation_for_family(const uint8_t *body,
+                                               const oca_callbacks_t *cb,
+                                               oca_key_algorithm_t algo)
+{
+    if (cb == 0 || cb->get_root_key_revocation == 0
+        || cb->set_root_key_revocation == 0) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    size_t off_revoke = (algo == OCA_KEY_ALGO_PQC)
+                            ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_REVOKE
+                            : (size_t)OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE;
+
+    /* Pre-filled with zeros, as every read this commit makes is: a reader that
+     * reports success without writing then burns only the manifest's own
+     * bits, never ones nobody asked for. */
+    uint8_t device[OCA_LEN_ROOT_KEY_BITMAP];
+    for (unsigned i = 0u; i < OCA_LEN_ROOT_KEY_BITMAP; ++i) {
+        device[i] = 0x00u;
+    }
+    if (cb->get_root_key_revocation(algo, device) != OCA_OK) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    const uint8_t *manifest = body + off_revoke;
+    for (unsigned i = 0u; i < OCA_LEN_ROOT_KEY_BITMAP; ++i) {
+        device[i] = (uint8_t)(device[i] | manifest[i]);
+    }
+    if (cb->set_root_key_revocation(algo, device) != OCA_OK) {
+        return OCA_FAIL_SECURITY_STATE_UPDATE;
     }
     return OCA_OK;
 }
@@ -73,26 +133,47 @@ oca_result_t oca_commit_security_state(const uint8_t *body,
         return OCA_OK;
     }
 
+    /* The class record must still describe this body. Its class bits are
+     * signed, so a record that disagrees with them means the body is not the
+     * one that validated — no basis for an irreversible write. */
+    oca_result_t classes = oca_secure_boot_confirm_classes(body, ctx);
+    if (classes != OCA_OK) {
+        return classes;
+    }
+
+    /* Only a manifest whose signatures were actually checked may advance device
+     * state (spec: the automatic updates follow authentication with every
+     * required signature). Secure boot being in force is not enough: a context
+     * whose signature check failed, never ran, or was glitched past arrives
+     * here engaged but not authenticated, and burning fuses on its word would
+     * let an unsigned manifest revoke every key. */
+    if (ctx->secure_boot_authenticated != OCA_SECURE_TRUE) {
+        return OCA_FAIL_SIGNATURE;
+    }
+
     /* Read as u16: bits 4 and 5 govern the signature posture registers below, so
      * a single-byte load would silently ignore any control bit above 7. */
     uint16_t control = oca_le_u16(body + OCA_OFF_MANIFEST_SECURITY_CONTROL);
 
-    /* ROOT-key revocation OR-in, unless suppressed (bit 1). */
+    /* ROOT-key revocation OR-in, unless suppressed (bit 1): every revocation
+     * bitmap the manifest carries, whichever signature class authenticated it —
+     * the classic one always, the PQC one on a PQC manifest. Keyed on the
+     * confirmed variant record, so no PQC offset is read from a body without
+     * PQC fields. */
     if ((control & OCA_SECURITY_CONTROL_REVOKE_KEYS_DISABLE_BIT) == 0u) {
         if (cb == 0 || cb->get_root_key_revocation == 0
             || cb->set_root_key_revocation == 0) {
             return OCA_FAIL_CALLBACK_UNAVAILABLE;
         }
-        uint8_t device[OCA_LEN_PUBLIC_KEY_CLASSIC_REVOKE];
-        if (cb->get_root_key_revocation(OCA_KEY_ALGO_CLASSIC, device) != OCA_OK) {
-            return OCA_FAIL_CALLBACK_UNAVAILABLE;
+        oca_result_t r = commit_revocation_for_family(body, cb, OCA_KEY_ALGO_CLASSIC);
+        if (r != OCA_OK) {
+            return r;
         }
-        const uint8_t *manifest = body + OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE;
-        for (unsigned i = 0u; i < OCA_LEN_PUBLIC_KEY_CLASSIC_REVOKE; ++i) {
-            device[i] = (uint8_t)(device[i] | manifest[i]);
-        }
-        if (cb->set_root_key_revocation(OCA_KEY_ALGO_CLASSIC, device) != OCA_OK) {
-            return OCA_FAIL_SECURITY_STATE_UPDATE;
+        if (ctx->manifest_is_pqc == OCA_SECURE_TRUE) {
+            r = commit_revocation_for_family(body, cb, OCA_KEY_ALGO_PQC);
+            if (r != OCA_OK) {
+                return r;
+            }
         }
     }
 
@@ -103,6 +184,9 @@ oca_result_t oca_commit_security_state(const uint8_t *body,
             return OCA_FAIL_CALLBACK_UNAVAILABLE;
         }
         uint8_t device[OCA_LEN_MANIFEST_SECURITY_VERSION];
+        for (unsigned i = 0u; i < OCA_LEN_MANIFEST_SECURITY_VERSION; ++i) {
+            device[i] = 0x00u;
+        }
         if (cb->get_security_version(device) != OCA_OK) {
             return OCA_FAIL_CALLBACK_UNAVAILABLE;
         }
@@ -122,6 +206,9 @@ oca_result_t oca_commit_security_state(const uint8_t *body,
             return OCA_FAIL_CALLBACK_UNAVAILABLE;
         }
         uint8_t device[OCA_LEN_SIGNATURE_COHORT_ENFORCE];
+        for (unsigned i = 0u; i < OCA_LEN_SIGNATURE_COHORT_ENFORCE; ++i) {
+            device[i] = 0x00u;
+        }
         if (cb->get_signature_cohort_enforce(device) != OCA_OK) {
             return OCA_FAIL_CALLBACK_UNAVAILABLE;
         }
@@ -151,6 +238,9 @@ oca_result_t oca_commit_security_state(const uint8_t *body,
             return OCA_FAIL_CALLBACK_UNAVAILABLE;
         }
         uint8_t device[OCA_LEN_SIGNATURE_CLASS_REVOKE];
+        for (unsigned i = 0u; i < OCA_LEN_SIGNATURE_CLASS_REVOKE; ++i) {
+            device[i] = 0x00u;
+        }
         if (cb->get_signature_class_revoke(device) != OCA_OK) {
             return OCA_FAIL_CALLBACK_UNAVAILABLE;
         }

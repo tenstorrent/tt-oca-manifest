@@ -68,4 +68,42 @@ oca_result_t oca_secure_boot_confirm(const uint8_t *body,
                                      const oca_validation_context_t *ctx,
                                      oca_secure_bool_t *out_engaged);
 
+/**
+ * @brief Confirm the context's signature-class record against the manifest.
+ *
+ * Three checks, in order: the record matches the classic and PQC class bits of
+ * the manifest's secure_boot_control byte; at least one class is enforced; and
+ * the PQC class is enforced only on a PQC manifest.
+ *
+ * ROOT-key authorization, revocation, and signature verification each act once
+ * per enforced class, reading which classes from the context, so the record is
+ * confirmed at time of use exactly as the secure-boot determination is: one
+ * glitched context word must not downgrade a hybrid manifest to single-class
+ * verification. The device-state commit runs it too, because a record that the
+ * signed class bits contradict means the body is not the one that validated.
+ *
+ * Call it only after oca_secure_boot_confirm() has reported secure boot engaged.
+ * It does not itself check that @p ctx holds a determination, nor re-check the
+ * variant record it reads for the PQC test; the confirm has done both.
+ *
+ * @param[in] body  Whole variant body.
+ * @param[in] ctx   The determination being acted on.
+ * @retval OCA_OK                             The record matches the manifest's
+ *                                            class bits, enforces at least one
+ *                                            class, and enforces the PQC class
+ *                                            only on a PQC manifest.
+ * @retval OCA_FAIL_INVALID_ARG               @p body was NULL.
+ * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED @p ctx was NULL, or its recorded
+ *                                            enforcement disagrees with the
+ *                                            manifest's class bits.
+ * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL   No class is enforced, or the PQC
+ *                                            class is enforced on a body with
+ *                                            no PQC fields. The determination
+ *                                            never settles either state, so a
+ *                                            context holding one was composed
+ *                                            by hand around its rejection.
+ */
+oca_result_t oca_secure_boot_confirm_classes(const uint8_t *body,
+                                             const oca_validation_context_t *ctx);
+
 #endif /* OCA_SECURE_BOOT_H */

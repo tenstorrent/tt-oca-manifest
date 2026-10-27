@@ -43,13 +43,35 @@ typedef struct cli_options {
      * per-check confirm that guards it, have no end-to-end expression.
      * Outranked by --secure-boot-disabled, exactly as on a real part. */
     bool secure_boot_active;
-    /* Root-key trust anchor. --root-key-digest supplies a SHA-256 of the key's
-     * modulus to authorize against; --trust-any-root-key authorizes whatever the
-     * manifest carries, which is only ever right for structural checks on a
-     * fixture whose key is not the point. */
+    /* Root-key trust anchors, one per algorithm family, each a SHA-256 over a
+     * whole encoded key held for one select slot: --root-key-digest for a
+     * classical key (raw or PKCS#1 DER RSA-3072, or a raw P-256 point),
+     * --root-key-digest-pqc for a raw PQC key. Each family is authorized by its
+     * own anchor only, and only for a
+     * manifest that selects the anchor's slot. --trust-any-root-key authorizes
+     * whatever the manifest carries, which is only ever right for structural
+     * checks on a fixture whose key is not the point. */
     bool     trust_any_root_key;
     bool     root_key_digest_present;
     uint8_t  root_key_digest[32];
+    unsigned root_key_slot;
+    bool     root_key_digest_pqc_present;
+    uint8_t  root_key_digest_pqc[32];
+    unsigned root_key_slot_pqc;
+
+    /* Device-stored ROOT-key revocation state, per family, from
+     * --revoked-root-keys and --revoked-root-keys-pqc: 128-bit bitmaps held
+     * little-endian, as the manifest's revoke fields are. All zero (nothing
+     * revoked) when the flag is absent. */
+    uint8_t  revoked_root_keys[16];
+    uint8_t  revoked_root_keys_pqc[16];
+
+    /* The device's signature posture, from --signature-cohort-enforce and
+     * --signature-class-revoke: the two 8-byte registers in the manifest
+     * fields' own layout, held little-endian. All zero (nothing demanded,
+     * nothing disabled) when the flag is absent. */
+    uint8_t  signature_cohort_enforce[8];
+    uint8_t  signature_class_revoke[8];
 
     /* Storage-image mode. When --manifest-addr is given, --manifest names a whole
      * storage image rather than a bundle: the manifest is read from that address

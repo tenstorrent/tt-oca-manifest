@@ -12,8 +12,6 @@
 
 #include "oca_validator.h"
 
-#include "crypto_dispatch.h"
-#include "demotion.h"
 #include "identity.h"
 #include "lifecycle.h"
 #include "oca_layout.h"
@@ -64,6 +62,10 @@ const char *oca_result_str(oca_result_t r)
         case OCA_FAIL_CRYPTO_FIELD_SIZE:        return "CRYPTO_FIELD_SIZE";
         case OCA_FAIL_ROOT_KEY_UNAUTHORIZED:    return "ROOT_KEY_UNAUTHORIZED";
         case OCA_FAIL_SIGNATURE_CLASS_CONTROL:  return "SIGNATURE_CLASS_CONTROL";
+        case OCA_FAIL_SIGNATURE_COHORT_REQUIRED: return "SIGNATURE_COHORT_REQUIRED";
+        case OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED:
+                                                return "SIGNATURE_ALGORITHM_REVOKED";
+        case OCA_FAIL_UNSUPPORTED_ALGORITHM:    return "UNSUPPORTED_ALGORITHM";
     }
     return "UNKNOWN";
 }
@@ -72,8 +74,9 @@ const char *oca_result_str(oca_result_t r)
 /* Public oca_check_* wrappers                                        */
 /* ------------------------------------------------------------------ */
 
-/* The structural checks live in parser.c with the same name and are
- * exported through that translation unit; nothing to add here. */
+/* The structural checks live in parser.c, demotion_control in demotion.c, and
+ * the manifest hash and signature in crypto_dispatch.c, each under its public
+ * name; nothing to add here. */
 
 oca_result_t oca_check_identity(const uint8_t *body,
                                 oca_id_kind_t kind,
@@ -148,24 +151,6 @@ oca_result_t oca_check_version_range(const uint8_t *body,
     return oca_version_range_check(body, level, min_specified, max_specified, cb);
 }
 
-oca_result_t oca_check_demotion_control(const uint8_t *body)
-{
-    return oca_demotion_check(body);
-}
-
-oca_result_t oca_check_manifest_hash(const uint8_t *body,
-                                     const oca_callbacks_t *cb)
-{
-    return oca_manifest_hash_check(body, cb);
-}
-
-oca_result_t oca_check_signature(const uint8_t *body,
-                                 const oca_callbacks_t *cb,
-                                 oca_validation_context_t *ctx)
-{
-    return oca_signature_check(body, cb, ctx);
-}
-
 void oca_validation_context_init(oca_validation_context_t *ctx)
 {
     if (ctx == 0) {
@@ -179,6 +164,7 @@ void oca_validation_context_init(oca_validation_context_t *ctx)
     ctx->secure_boot_enforce_pqc             = OCA_SECURE_FALSE;
     ctx->secure_boot_key_authorized_classic  = OCA_SECURE_FALSE;
     ctx->secure_boot_key_authorized_pqc      = OCA_SECURE_FALSE;
+    ctx->secure_boot_posture_met             = OCA_SECURE_FALSE;
     ctx->secure_boot_authenticated           = OCA_SECURE_FALSE;
     ctx->secure_boot_device_disabled         = OCA_SECURE_FALSE;
 }
@@ -238,13 +224,15 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
     if (variant == 0) return variant_status;
     if (body_length < variant->body_size) return OCA_FAIL_TRUNCATED;
 
-    r = oca_check_trailer(body);
-    if (r != OCA_OK) return r;
+    /* The format requires manifest_length to be verified right after the magic
+     * and the major version, before any further field is parsed. The version
+     * comes first because a newer major could redefine field semantics, the
+     * length among them; the trailer follows. */
     r = oca_check_format_version(body);
     if (r != OCA_OK) return r;
-    /* After format_version: a newer major could redefine field semantics, so the
-     * version is settled before the manifest's self-description is trusted. */
     r = oca_check_manifest_length(body);
+    if (r != OCA_OK) return r;
+    r = oca_check_trailer(body);
     if (r != OCA_OK) return r;
 
     /* Integrity check , before anything utilizes the contents. manifest_hash covers
@@ -262,23 +250,12 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
 
     /* Structural statements about the manifest's own fields, decided from the
      * manifest alone and therefore ahead of the determination — neither asks
-     * what secure boot resolved to.
-     *
-     * oca_check_secure_boot_invariant() in particular reads the RAW
-     * secure_boot_control bit and MUST keep doing so. Its question is "did a
-     * manifest declaring itself non-secure zero its signing fields?", a
-     * producer-side property of these bytes. Rewiring it to the determination
-     * would silently change it into a different question on any part whose
-     * device state disagrees with the manifest — and on a disabled part the two
-     * usually agree, so nothing would notice. */
+     * what secure boot resolved to. The signing fields are not among them: they
+     * are Secure-Boot-only, ignored while secure boot is disabled, and validated
+     * by oca_check_signing_description() once the determination is made. */
     r = oca_check_reserved_bits(body);
     if (r != OCA_OK) return r;
-    r = oca_check_secure_boot_invariant(body);
-    if (r != OCA_OK) return r;
-    /* The positive counterpart of the invariant above: where that one requires a
-     * non-secure manifest to zero its signing fields, this requires a secure one
-     * to describe them consistently. */
-    r = oca_check_crypto_field_sizes(body);
+    r = oca_check_signature_class_variant(body);
     if (r != OCA_OK) return r;
     /* Confirm the consistency of the signature revocation group codes; if these
     values are mal-formed then the manifest is suspect. We don't care what
@@ -301,7 +278,7 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
      * disarm all of them at once. Doing both costs an attacker a consistent fault
      * at the determination AND at every confirm.
      *
-     * Placed after framing, integrity, and the invariant, because the
+     * Placed after framing, integrity, and the structural checks, because the
      * determination's highest-priority input is a manifest bit and settling the
      * question out of a body that failed its integrity check would settle it from
      * damage. Placed before every check that consults it, because there is
@@ -322,6 +299,22 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
      * Necessary but not sufficient — the confirmed form runs at the end, once
      * the signature has actually been checked. */
     r = oca_check_payload_encryption_precondition(body, cb, vctx);
+    if (r != OCA_OK) return r;
+
+    /* The signing description, under secure boot only, keyed on the
+     * determination rather than the manifest's enforced bit: a part that
+     * enforces secure boot itself uses these fields whatever that bit says. A
+     * manifest read, no device or key operation, and it must precede ROOT-key
+     * authorization, which presents these fields to the trust anchor. */
+    r = oca_check_signing_description(body, cb, vctx);
+    if (r != OCA_OK) return r;
+
+    /* The device's signature posture: an algorithm it has disabled, or a
+     * cohort it demands that this manifest does not enforce, is refused here —
+     * a manifest read and two device-state reads, before any identity, key or
+     * public-key work. Follows the signing-description check, which makes the
+     * signature_type bytes meaningful. */
+    r = oca_check_signature_posture(body, cb, vctx);
     if (r != OCA_OK) return r;
 
     /* Identity-byte checks per family. The check functions short-circuit

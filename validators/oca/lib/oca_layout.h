@@ -133,10 +133,12 @@
 #define OCA_OFF_MANIFEST_SECURITY_VERSION  2042u /* 16 bytes — 128 independent security flags */
 #define OCA_LEN_MANIFEST_SECURITY_VERSION    16u
 #define OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE  2655u /* 16 bytes — classic ROOT-key revoke bitmap */
-#define OCA_LEN_PUBLIC_KEY_CLASSIC_REVOKE    16u
-/* public_key_select_classic and public_key_classic_revoke are 128-bit bitmaps:
+/* Every ROOT-key select and revoke bitmap — public_key_select_classic,
+ * public_key_classic_revoke, and their PQC counterparts — is a 128-bit field, as
+ * is each family's device revocation state the revocation callbacks exchange:
  * bits 0..111 are seven 16-bit key groups (bytes 0..13); bits 127:112
  * (bytes 14..15) are reserved and ignored. Comparisons use the used bytes only. */
+#define OCA_LEN_ROOT_KEY_BITMAP              16u
 #define OCA_ROOT_KEY_BITMAP_USED_BYTES       14u /* bytes 0..13 = 112 used bits */
 
 /* ------------------------------------------------------------------ */
@@ -164,6 +166,21 @@
 #define OCA_CLASS_REVOKE_OFF_PQC_GROUP_CODE      4u    /* b[39:32] = byte 4 */
 #define OCA_CLASS_REVOKE_CLASSIC_GROUP_CODE   0xCAu
 #define OCA_CLASS_REVOKE_PQC_GROUP_CODE       0xACu
+
+/* Each group's per-algorithm class bits, and which of them the format defines.
+ * Every classical bit is a class; in the PQC byte b27 is reserved for FN-DSA
+ * and is not. */
+#define OCA_CLASS_REVOKE_OFF_CLASSIC_CLASSES     0u    /* b[7:0]   = byte 0 */
+#define OCA_CLASS_REVOKE_OFF_PQC_CLASSES         3u    /* b[31:24] = byte 3 */
+#define OCA_CLASS_REVOKE_CLASSIC_DEFINED_CLASSES 0xFFu /* b[7:0] */
+#define OCA_CLASS_REVOKE_PQC_DEFINED_CLASSES     0xF7u /* b[26:24], b[30:28], b31 */
+
+/* signature_cohort_enforce carries a 4-bit nibble per signed entity; the ROOT
+ * key's signatures are b[3:0]. Within a nibble, bit 0 demands a classical
+ * signature and bit 1 a PQC one; bits 3:2 are reserved. */
+#define OCA_COHORT_ROOT_NIBBLE_MASK          0x0Fu  /* byte 0, b[3:0] */
+#define OCA_COHORT_CLASSICAL_BIT             0x01u
+#define OCA_COHORT_PQC_BIT                   0x02u
 
 /* ------------------------------------------------------------------ */
 /* Appended-entry controls (shared offsets)                           */
@@ -199,7 +216,9 @@
 
 #define OCA_LEN_SIGNATURE                  512u  /* classic signature_classic */
 #define OCA_LEN_MANIFEST_HASH               64u  /* manifest-hash digest + zero pad; digest type per manifest_hash_type */
-#define OCA_MANIFEST_HASH_DIGEST_SIZE       32u  /* digest size this pass validates (SHA-256, manifest_hash_type=0x01) */
+#define OCA_MANIFEST_HASH_DIGEST_SIZE       32u  /* digest size the library validates (SHA-256, manifest_hash_type=0x01) */
+#define OCA_OFF_MANIFEST_HASH_TYPE        2067u  /* u8; the algorithm manifest_hash is computed with */
+#define OCA_HASH_TYPE_SHA2_256            0x01u  /* the one manifest_hash_type / payload_hash_type this library computes */
 
 /* ------------------------------------------------------------------ */
 /* Payload encryption + payload-hash fields (shared offsets)          */
@@ -210,6 +229,14 @@
 
 #define OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL 201u  /* u16 LE */
 #define OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT 0x0001u  /* bit[0] of payload_encryption_control */
+/* input_key_source, bits[5:3] of payload_encryption_control. Pre-shared secret
+ * (b001) is the one source this library supports; the KEM-unwrapped DEK (b010)
+ * and every other pattern are refused. */
+#define OCA_ENCRYPTION_INPUT_KEY_SOURCE_MASK  0x0038u
+#define OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT     3u
+#define OCA_ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED 0x1u  /* after the shift */
+#define OCA_OFF_ENCRYPTION_KDF             203u  /* u16 LE; encryption_key_derivation_function */
+#define OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256 0x0001u  /* the one KDF the decrypt contract defines */
 #define OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT 205u  /* u16 LE; which provisioned secret */
 #define OCA_OFF_ENCRYPTION_IV              235u  /* 32-byte field; AES-CBC uses the low 16 */
 #define OCA_LEN_ENCRYPTION_IV               16u
@@ -222,6 +249,7 @@
 #define OCA_OFF_PAYLOAD_HASH              2775u  /* 64-byte field; digest over the stored payload */
 #define OCA_OFF_PAYLOAD_HASH_CHAIN        2847u  /* 64-byte field; chained digest over the plaintext */
 #define OCA_OFF_PAYLOAD_HASHED_LENGTH     2911u  /* u64 LE; ciphertext length when encrypted, TOC byte count otherwise */
+#define OCA_OFF_PAYLOAD_HASH_TYPE         2919u  /* u8; the algorithm of payload_hash, the chain, and every entry hash */
 #define OCA_OFF_PAYLOAD_LENGTH            2960u  /* u64 LE; total stored payload length */
 
 /* ------------------------------------------------------------------ */

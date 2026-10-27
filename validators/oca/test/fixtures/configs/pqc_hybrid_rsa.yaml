@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+# Hybrid OCA-PQC manifest (secure_boot_control 0x07): RSA-3072 AND ML-DSA-87
+# over the same signed region. Both signatures must verify.
+manifest_format: oca-pqc
+manifest_identifier: "PQCHYRSA"
+description: "RSA-3072 + ML-DSA-87 hybrid PQC fixture"
+secure_boot: 1
+secure_boot_classic: 1
+secure_boot_pqc: 1
+allow_test_signing_key: true   # committed development keys — never for a real build
+signature_type: 0x01
+signing_authority: local
+signing_key_file: "tests/signing_keys/rsa_private_key.f4.pem"
+public_key_select_classic: 0x01
+signature_type_pqc: 0x33
+signing_authority_pqc: local
+signing_key_file_pqc: "tests/signing_keys/mldsa87_private_key.pem"
+public_key_select_pqc: 0x01
+timestamp: 1764633600
+manifest_content_version:
+  major: 1
+  minor: 0
+  patch: 0
+payload_images:
+  - type: "PQCHYRSABLSTAGE1"
+    path: "examples/oca_classic_basic/dummy_image.bin"

@@ -3,8 +3,8 @@
 """Known-answer + domain-separation tests for the payload-decryption KDF.
 
 The payload key is derived via NIST SP 800-108r1 Counter Mode (HMAC-SHA-256)
-over a 192-byte expanded input block, reproducing the OCAH Key Manager
-PREPARE_BL_DECRYPT_KEY flow. These tests anchor the derivation to the reference
+over a 192-byte expanded input block, per the payload-key derivation contract
+in validators/oca/README.md. These tests anchor the derivation to the reference
 design's known-answer vectors (so producer + consumer are correct against the
 silicon, not merely self-consistent) and prove the structured block gives real
 cryptographic domain separation.
@@ -96,7 +96,7 @@ def test_prf_framing_matches_reference_pure_vectors():
 
 def test_classkey_frozen_vector_aes256():
     """The full AES-256 CLASS_BL derivation (fixed header/label/entropy + the
-    64-byte context) reproduces the reference PREPARE_BL_DECRYPT_KEY output."""
+    64-byte context) reproduces the reference known-answer output."""
     assert len(_CLASS_SECRET) == 32 and len(_CLASS_CONTEXT) == 64
     got = enc.derive_payload_key(_CLASS_SECRET, _CLASS_CONTEXT,
                                  OcaEncryptionType.AES_256_CBC.value)

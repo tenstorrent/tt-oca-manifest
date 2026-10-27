@@ -168,11 +168,8 @@ def test_description_nul_terminated_at_byte_127(minimal_config):
 
 
 def test_secure_boot_disabled_zeroes_signature_fields(minimal_config):
-    # Carry signature-related keys in the config to ensure they're explicitly
-    # zeroed in the output (not leaked from the input config).
-    minimal_config["secure_boot"] = 0
-    minimal_config["signature_type"] = 0x01
-    minimal_config["public_key_select_classic"] = 0xABCD
+    # Every signing field of a non-secure manifest is zero. A config that names
+    # one is refused outright, so no value from it can reach the output.
     body = _manifest_body(_generate(minimal_config))
 
     # signature_classic (512 bytes)

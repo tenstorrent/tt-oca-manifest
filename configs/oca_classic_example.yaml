@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 # OCA-classic example configuration — minimal non-secure-boot single-image bundle.
-# Mirrors quickstart.md Scenario A. Used by tests under tests/test_oca_*.
+# See README.md ("Quick Start") for packing it; tests under tests/test_oca_* build it.
 
 manifest_format: oca-classic
 manifest_identifier: "OCADEMO1"          # 1-8 printable ASCII chars (right-padded if shorter)

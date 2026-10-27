@@ -79,6 +79,11 @@ def assemble_multi_image_payload(
                 f"payload_images[{idx}]: missing required field 'path'",
                 field_name="payload_images",
             )
+        if not image.get("type"):
+            raise OcaConfigError(
+                f"payload_images[{idx}]: missing required field 'type'",
+                field_name="payload_images",
+            )
         with open(path, "rb") as fh:
             data = fh.read()
         explicit_offset = image.get("offset")
@@ -99,7 +104,7 @@ def assemble_multi_image_payload(
             {
                 "idx": idx,
                 "path": path,
-                "type": image.get("type", "_VENDOR1 BLSTAGE1"),
+                "type": image["type"],
                 "group": int(image.get("group", 0)),
                 "version": image.get("version") or {},
                 "bytes": data,
@@ -263,7 +268,7 @@ def compute_payload_hashes(
                            manifest. Computed identically on both paths.
 
     Returns (payload_hash_field, payload_hash_chain_field), each 64 bytes with
-    the digest at offset 0 and trailing 0x00 bytes. This pass uses SHA-256
+    the digest at offset 0 and trailing 0x00 bytes. The packer uses SHA-256
     (payload_hash_type = 0x01); the field width accommodates other digest types
     the format permits.
     """
