@@ -26,3 +26,13 @@ ml_dsa_87 = false
 [der]
 rsa_public_key = true
 ecdsa_signature = true
+
+[encryption_cipher]
+aes_128_cbc = true
+aes_256_cbc = true
+
+[encryption_kdf]
+sp800_108_hmac_sha256 = true
+
+[encryption_key_source]
+preshared = true

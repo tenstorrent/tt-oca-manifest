@@ -519,13 +519,21 @@ ciphertext, so take both values from the report.
 ### Writing the decryption callback
 
 Everything the operation reads arrives in one read-only descriptor, so the
-callback needs nothing else:
+callback needs nothing else. `in->cipher`, `in->kdf` and `in->key_source` name
+the algorithms the manifest declares; the library hands over only ones the
+build configuration enables, so a backend that implements fewer returns
+`OCA_FAIL_CALLBACK_UNAVAILABLE` for the rest:
 
 ```c
 static oca_result_t my_decrypt_payload(
     const oca_decrypt_input_t *in,
     const uint8_t **out_pt, size_t *out_pt_len)
 {
+    if (in->kdf != OCA_KDF_SP800_108_HMAC_SHA256
+        || in->key_source != OCA_KEY_SOURCE_PRESHARED) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+
     /* The selector is a 1-based INDEX into your provisioned secrets, never a
      * secret. Resolving it is this callback's job, which is what keeps key
      * material out of the library entirely. */
@@ -1073,13 +1081,17 @@ Changes an existing integration should check. Most show only at run time.
   configuration can also turn off DER RSA keys or DER ECDSA signatures. The
   posture check reports an undefined type as `ALGORITHM_RESERVED` too.
 - **Declared algorithms are checked.** A `manifest_hash_type` or
-  `payload_hash_type` other than SHA2-256, and on an encrypted payload an
-  `encryption_key_derivation_function` other than SP 800-108r1 with
-  HMAC-SHA-256 or an `input_key_source` other than the pre-shared secret, is
-  refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` before anything is hashed or
-  decrypted. Such a manifest was previously hashed or decrypted as if it named
-  the supported algorithm. A `switch` over `oca_result_t` with no `default`
-  needs both new cases.
+  `payload_hash_type` other than SHA2-256, and on an encrypted payload a
+  cipher, key derivation function or input-key source the build does not
+  enable, is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` — or
+  `OCA_FAIL_ALGORITHM_RESERVED` for a value the format reserves — before
+  anything is hashed or decrypted. Such a manifest was previously hashed or
+  decrypted as if it named the supported algorithm, and an unsupported cipher
+  reported `OCA_FAIL_DECRYPT` after the payload hash. A `switch` over
+  `oca_result_t` with no `default` needs both new cases.
+- **The decryption input names the derivation.** `oca_decrypt_input_t` gains
+  `kdf` and `key_source` (new enums `oca_kdf_t`, `oca_key_source_t`), so a
+  backend dispatches on what the manifest declares instead of assuming it.
 - **Padding past a declared size must be zero.** Under secure boot, a key or
   signature field of an enforced class that holds a non-zero byte past its
   declared size is `CRYPTO_FIELD_SIZE`. This packer has always written zeros

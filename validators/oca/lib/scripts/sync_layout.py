@@ -141,11 +141,7 @@ MAPPING: dict[str, tuple[str, str]] = {
     "OCA_LEN_ENCRYPTION_KDF_INPUT":        ("ENCRYPTION_KDF_INPUT_SIZE", "dec"),
     "OCA_OFF_ENCRYPTION_TYPE":             ("OFF_ENCRYPTION_TYPE", "dec"),
     "OCA_OFF_ENCRYPTION_KDF":              ("OFF_ENCRYPTION_KDF", "dec"),
-    "OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256":
-        ("OcaEncryptionKdf.SP800_108_CTR_HMAC_SHA256", "hex"),
     "OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT": ("ENCRYPTION_INPUT_KEY_SOURCE_SHIFT", "dec"),
-    "OCA_ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED":
-        ("ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED", "hex"),
     # The declared algorithms of manifest_hash and of the payload digests.
     "OCA_OFF_MANIFEST_HASH_TYPE":          ("OFF_MANIFEST_HASH_TYPE", "dec"),
     "OCA_OFF_PAYLOAD_HASH_TYPE":           ("OFF_PAYLOAD_HASH_TYPE", "dec"),

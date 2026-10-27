@@ -64,3 +64,24 @@ def encodings_required_size_accepts() -> set[str]:
         f"changed shape, update this parser rather than deleting the gates that "
         f"use it")
     return set(re.findall(r"OCA_ENCODING_\w+", match.group("body")))
+
+
+_CIPHER_ROW = re.compile(r"\{\s*(?P<type>0x[0-9A-Fa-f]+)u,\s*\w+\s*\}")
+
+
+def cipher_table_types() -> set[int]:
+    """The encryption_type values algorithms.c has cipher rows for.
+
+    The table ends in a 0x00 row the lookup never matches; it is required to be
+    last and left out, so a 0x00 row anywhere else is still reported.
+    """
+    with open(VALIDATOR_ALGORITHMS) as handle:
+        text = handle.read()
+    match = re.search(r"\bCIPHERS\[\]\s*=\s*\{(?P<body>.*?)\n\};", text, re.S)
+    assert match, (
+        f"CIPHERS was not found in {VALIDATOR_ALGORITHMS}; if it moved or changed "
+        f"shape, update this parser rather than deleting the gates that use it")
+    types = [int(row["type"], 16) for row in _CIPHER_ROW.finditer(match.group("body"))]
+    assert types and types[-1] == 0x00, "CIPHERS does not end in its 0x00 sentinel row"
+    assert types[:-1], "CIPHERS has no cipher rows"
+    return set(types[:-1])

@@ -7,6 +7,7 @@
 
 #include "algorithms.h"
 
+#include "oca_layout.h"
 #include "oca_layout_pqc.h"
 
 /* Each table ends in a row whose type is 0x00, a value every class reserves,
@@ -93,4 +94,70 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
                             : classical_signature_defined(type);
     *status = defined ? OCA_FAIL_ALGORITHM_NOT_ENABLED : OCA_FAIL_ALGORITHM_RESERVED;
     return 0;
+}
+
+/** The payload ciphers this build enables. */
+static const oca_cipher_algorithm_t CIPHERS[] = {
+#if OCA_CFG_CIPHER_AES_128_CBC
+    { 0x01u, OCA_AES_BLOCK_SIZE },
+#endif
+#if OCA_CFG_CIPHER_AES_256_CBC
+    { 0x02u, OCA_AES_BLOCK_SIZE },
+#endif
+    { 0x00u, 0u },
+};
+
+/**
+ * @brief Whether the format defines an encryption_type value.
+ *
+ * The AES CBC, CBC-HMAC and GCM-SIV modes, the two SM4 modes, and the range
+ * left to integrators. 0x13 is explicitly reserved, like every other gap.
+ *
+ * @param[in] type  The encryption_type value.
+ * @return Non-zero for a defined cipher; zero for a reserved value.
+ */
+static int cipher_defined(uint8_t type)
+{
+    return (type >= 0x01u && type <= 0x06u) || type == 0x11u || type == 0x12u
+           || type >= 0xF0u;
+}
+
+const oca_cipher_algorithm_t *oca_cipher_algorithm(uint8_t type, oca_result_t *status)
+{
+    if (type != 0x00u) {
+        for (const oca_cipher_algorithm_t *row = CIPHERS; row->type != 0x00u; ++row) {
+            if (row->type == type) {
+                *status = OCA_OK;
+                return row;
+            }
+        }
+    }
+    *status = cipher_defined(type) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                   : OCA_FAIL_ALGORITHM_RESERVED;
+    return 0;
+}
+
+oca_result_t oca_kdf_status(uint16_t kdf)
+{
+#if OCA_CFG_KDF_SP800_108_HMAC_SHA256
+    if (kdf == 0x0001u) {
+        return OCA_OK;
+    }
+#endif
+    /* NONE, the SP 800-108r1 HMAC, CMAC and KMAC variants and HKDF, and the
+     * range left to integrators. */
+    return (kdf <= 0x0008u || kdf >= 0xFF00u) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                              : OCA_FAIL_ALGORITHM_RESERVED;
+}
+
+oca_result_t oca_key_source_status(unsigned source)
+{
+#if OCA_CFG_KEY_SOURCE_PRESHARED
+    if (source == 0x1u) {
+        return OCA_OK;
+    }
+#endif
+    /* The pre-shared secret and the KEM-unwrapped DEK. */
+    return (source == 0x1u || source == 0x2u) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                              : OCA_FAIL_ALGORITHM_RESERVED;
 }

@@ -68,12 +68,18 @@ DEFAULT_VALUES = {
     "OCA_CFG_SIG_ML_DSA_87": 1,
     "OCA_CFG_DER_RSA_PUBLIC_KEY": 1,
     "OCA_CFG_DER_ECDSA_SIGNATURE": 1,
+    "OCA_CFG_CIPHER_AES_128_CBC": 1,
+    "OCA_CFG_CIPHER_AES_256_CBC": 1,
+    "OCA_CFG_KDF_SP800_108_HMAC_SHA256": 1,
+    "OCA_CFG_KEY_SOURCE_PRESHARED": 1,
 }
 
 
 def config_text(classic="true", pqc="true", toc_max_images="256",
                 recheck_security_version="true", rsa="true", ecdsa="true",
-                ml_dsa_87="true", der_rsa="true", der_ecdsa="true", extra=""):
+                ml_dsa_87="true", der_rsa="true", der_ecdsa="true",
+                aes_128="true", aes_256="true", kdf="true", preshared="true",
+                extra=""):
     """A complete configuration, every value given as its TOML text."""
     return (
         "[variants]\n"
@@ -91,6 +97,14 @@ def config_text(classic="true", pqc="true", toc_max_images="256",
         "\n[der]\n"
         f"rsa_public_key = {der_rsa}\n"
         f"ecdsa_signature = {der_ecdsa}\n"
+        "\n[encryption_cipher]\n"
+        f"aes_128_cbc = {aes_128}\n"
+        f"aes_256_cbc = {aes_256}\n"
+        "\n[encryption_kdf]\n"
+        f"sp800_108_hmac_sha256 = {kdf}\n"
+        "\n[encryption_key_source]\n"
+        f"preshared = {preshared}\n"
+        "\n[encryption_kem]\n"
         f"{extra}"
     )
 
@@ -249,13 +263,21 @@ def test_an_algorithm_the_library_has_no_rules_for_may_be_stated_off(setting):
 def test_every_algorithm_is_listed_by_its_format_code():
     """Each class lists the format's algorithms once each, so a configuration can
     name every one."""
-    for group in (gen_config.CLASSICAL_SIGNATURES, gen_config.PQC_SIGNATURES):
+    for group in (gen_config.CLASSICAL_SIGNATURES, gen_config.PQC_SIGNATURES,
+                  gen_config.CIPHERS, gen_config.KDFS, gen_config.KEY_SOURCES,
+                  gen_config.KEMS):
         codes = [setting.code for setting in group]
         assert len(codes) == len(set(codes))
     assert {s.code for s in gen_config.CLASSICAL_SIGNATURES} == {
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0A, 0x0B}
     assert {s.code for s in gen_config.PQC_SIGNATURES} == {
         0x31, 0x32, 0x33, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56}
+    assert {s.code for s in gen_config.CIPHERS} == {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x11, 0x12}
+    assert {s.code for s in gen_config.KDFS} == set(range(0x0000, 0x0009))
+    assert {s.code for s in gen_config.KEY_SOURCES} == {0x1, 0x2}
+    assert {s.code for s in gen_config.KEMS} == {
+        0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0101, 0x0102}
 
 
 def test_a_build_with_no_signature_algorithm_is_refused():
@@ -297,6 +319,29 @@ def test_each_der_encoding_can_be_turned_off_on_its_own(der_rsa, der_ecdsa):
     values = gen_config.resolve_settings(gen_config.tomllib.loads(text))
     assert values["OCA_CFG_DER_RSA_PUBLIC_KEY"] == (der_rsa == "true")
     assert values["OCA_CFG_DER_ECDSA_SIGNATURE"] == (der_ecdsa == "true")
+
+
+def test_a_build_may_turn_payload_encryption_off():
+    """Every encrypted payload is then refused; signed cleartext still boots."""
+    text = config_text(aes_128="false", aes_256="false", kdf="false", preshared="false")
+    assert problems_for(text) == []
+
+
+@pytest.mark.parametrize("changes, empty", [
+    ({"kdf": "false"}, "[encryption_kdf]"),
+    ({"preshared": "false"}, "[encryption_key_source]"),
+    ({"aes_128": "false", "aes_256": "false"}, "[encryption_cipher]"),
+    ({"aes_128": "false", "aes_256": "false", "kdf": "false"}, "[encryption_cipher]"),
+], ids=["no-kdf", "no-key-source", "no-cipher", "key-source-alone"])
+def test_payload_encryption_is_enabled_whole_or_not_at_all(changes, empty):
+    problems = problems_for(config_text(**changes))
+    assert problems and all("enable a cipher, a KDF and a key source together, "
+                            "or none of them" in p for p in problems)
+    assert any(p.startswith(f"{empty} enables nothing") for p in problems)
+
+
+def test_one_cipher_is_enough():
+    assert problems_for(config_text(aes_128="false")) == []
 
 
 def test_an_unimplemented_algorithm_generates_no_macro(tmp_path):
@@ -500,11 +545,15 @@ def test_every_configuration_macro_the_library_reads_is_generated():
 
 
 def _table_rows():
-    """{macro: format code} for every row of the C algorithm tables."""
+    """{macro: format code} for every algorithm algorithms.c compiles in under a
+    configuration macro: a table row, or a value a status function accepts."""
     with open(os.path.join(LIB_DIR, "algorithms.c")) as handle:
         text = handle.read()
-    return {macro: int(code, 16) for macro, code in re.findall(
-        r"#if (OCA_CFG_SIG_\w+)\n(?:\s*/\*.*?\*/\n)?\s*\{ (0x[0-9A-Fa-f]+)u,", text, re.S)}
+    rows = re.findall(r"#if (OCA_CFG_(?:SIG|CIPHER)_\w+)\n(?:\s*/\*.*?\*/\n)?"
+                      r"\s*\{ (0x[0-9A-Fa-f]+)u,", text, re.S)
+    accepted = re.findall(r"#if (OCA_CFG_(?:KDF|KEY_SOURCE)_\w+)\n"
+                          r"\s*if \(\w+ == (0x[0-9A-Fa-f]+)u\)", text)
+    return {macro: int(code, 16) for macro, code in rows + accepted}
 
 
 def test_every_implemented_algorithm_has_a_table_row_with_its_code():
@@ -520,6 +569,9 @@ def test_every_algorithm_the_packer_writes_is_enabled_by_default():
         "signature_classic": oca_constants.CLASSIC_SIGNING_TYPES,
         "signature_pqc": oca_constants.PQC_SIGNING_TYPES,
     }
+    by_code["encryption_cipher"] = oca_constants.ENCRYPTION_TYPES_SUPPORTED
+    by_code["encryption_kdf"] = {kdf.value for kdf in oca_constants.OcaEncryptionKdf}
+    by_code["encryption_key_source"] = {oca_constants.ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED}
     for section, codes in by_code.items():
         for code in codes:
             setting = next(s for s in gen_config.SETTINGS
@@ -615,6 +667,16 @@ UNGENERATED_HEADERS = [
     pytest.param({"values": {"OCA_CFG_VARIANT_PQC": "0"}},
                  "enables a PQC signature algorithm without [variants] pqc",
                  id="pqc-signature-without-pqc"),
+    pytest.param({"values": {"OCA_CFG_KDF_SP800_108_HMAC_SHA256": "0"}},
+                 "enables only part of payload encryption",
+                 id="cipher-without-kdf"),
+    pytest.param({"values": {"OCA_CFG_CIPHER_AES_128_CBC": "0",
+                             "OCA_CFG_CIPHER_AES_256_CBC": "0"}},
+                 "enables only part of payload encryption",
+                 id="kdf-without-cipher"),
+    pytest.param({"values": {"OCA_CFG_KEY_SOURCE_PRESHARED": "0"}},
+                 "enables only part of payload encryption",
+                 id="no-key-source"),
 ]
 
 

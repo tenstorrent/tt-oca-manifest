@@ -340,9 +340,8 @@ typedef enum oca_result {
      *  with this code. It covers a signature_type of an enforced class, a DER
      *  encoding the configuration turns off, a manifest_hash_type or
      *  payload_hash_type other than SHA2-256, and, for an encrypted payload,
-     *  an encryption_key_derivation_function other than SP 800-108r1 counter
-     *  mode with HMAC-SHA-256 or an input_key_source other than the pre-shared
-     *  secret.
+     *  an encryption_type, encryption_key_derivation_function or
+     *  input_key_source the build does not enable.
      *
      *  Refused before the field is acted on, so the manifest is not reported as
      *  corrupt for an algorithm this build never computes: it may be valid for
@@ -350,8 +349,10 @@ typedef enum oca_result {
      *  OCA_FAIL_ALGORITHM_RESERVED, which no Consumer accepts. */
     OCA_FAIL_ALGORITHM_NOT_ENABLED      = 39,
     /** The manifest names an algorithm value the format reserves: a
-     *  signature_type of an enforced class that the format assigns to no
-     *  algorithm and does not leave to integrators. No Consumer can accept it,
+     *  signature_type of an enforced class, or for an encrypted payload an
+     *  encryption_type, encryption_key_derivation_function or
+     *  input_key_source, that the format assigns to nothing and does not leave
+     *  to integrators. No Consumer can accept it,
      *  so unlike OCA_FAIL_ALGORITHM_NOT_ENABLED it says the manifest is
      *  malformed rather than outside this build's portfolio. */
     OCA_FAIL_ALGORITHM_RESERVED         = 40
@@ -828,6 +829,27 @@ typedef enum oca_encryption_type {
 } oca_encryption_type_t;
 
 /**
+ * @brief Key derivation function named by encryption_key_derivation_function.
+ *
+ * As with the other on-disk enums here, the values ARE the field's values. Only
+ * the functions a build can enable are listed; the decryption callback is never
+ * handed any other.
+ */
+typedef enum oca_kdf {
+    OCA_KDF_SP800_108_HMAC_SHA256 = 0x0001  /**< NIST SP 800-108r1 counter mode, HMAC-SHA-256. */
+} oca_kdf_t;
+
+/**
+ * @brief Where a payload's input key comes from, as input_key_source names it.
+ *
+ * The values ARE the three-bit field's values. Only the sources a build can
+ * enable are listed; the decryption callback is never handed any other.
+ */
+typedef enum oca_key_source {
+    OCA_KEY_SOURCE_PRESHARED = 0x1  /**< A provisioned secret, chosen by encryption_shared_secret_select. */
+} oca_key_source_t;
+
+/**
  * @brief Everything the payload-decryption callback reads, in one place.
  *
  * Follows the same principle as oca_crypto_blob_t: a callback should not have to
@@ -849,8 +871,8 @@ typedef struct oca_decrypt_input {
      *  before this callback is reached. */
     const uint8_t         *ciphertext;
     /** Length of @c ciphertext. Guaranteed non-zero and a whole number of
-     *  16-byte blocks: the library enforces that shared block-mode invariant so
-     *  each backend does not have to re-check it. */
+     *  the cipher's blocks: the library enforces that shared block-mode
+     *  invariant so each backend does not have to re-check it. */
     size_t                 ciphertext_len;
     /** 16-byte AES-CBC initialisation vector. Points into the MANIFEST BODY,
      *  never the payload, which is what makes decrypting in place over the
@@ -858,10 +880,15 @@ typedef struct oca_decrypt_input {
     const uint8_t         *iv;
     /** 64-byte KDF context. Also in the manifest body, same reasoning. */
     const uint8_t         *kdf_input;
-    /** Which cipher the manifest names. A value outside oca_encryption_type_t
-     *  cannot reach here: the library rejects an unsupported cipher before
-     *  invoking the callback. */
+    /** Which cipher the manifest names. Only a cipher the build enables reaches
+     *  here: the library refuses any other before invoking the callback. */
     oca_encryption_type_t  cipher;
+    /** How the manifest says to derive the payload key from the input key.
+     *  Only a function the build enables reaches here. */
+    oca_kdf_t              kdf;
+    /** Where the manifest says the input key comes from. Only a source the
+     *  build enables reaches here. */
+    oca_key_source_t       key_source;
     /** Which provisioned secret the manifest selects, 1-based.
      *
      *  An INDEX, never a secret. Resolving it against the part's key store is
@@ -976,11 +1003,15 @@ struct oca_callbacks {
     /**
      * @brief Derive the payload key and decrypt the payload.
      *
-     * Resolve @c in->secret_select against the part's provisioned secrets,
-     * derive the AES payload key from that secret and @c in->kdf_input via
-     * SP 800-108r1 Counter Mode over the expanded input block, then
-     * AES-CBC-decrypt @c in->ciphertext with @c in->iv, removing PKCS#7 padding.
-     * The cipher and key length follow @c in->cipher.
+     * Obtain the input key from @c in->key_source — for the pre-shared source,
+     * resolve @c in->secret_select against the part's provisioned secrets —
+     * derive the payload key from it and @c in->kdf_input with @c in->kdf, then
+     * decrypt @c in->ciphertext with @c in->cipher and @c in->iv. The library
+     * hands over only what the build configuration enables: today SP 800-108r1
+     * counter mode with HMAC-SHA-256 over the expanded input block, the
+     * pre-shared source, and AES-CBC with PKCS#7 padding removed, the key length
+     * following @c in->cipher. A backend that implements fewer reports the rest
+     * with OCA_FAIL_CALLBACK_UNAVAILABLE.
      *
      * Everything the operation reads is a named field on @p in, so the callback
      * never re-reads the manifest and never needs state handed to it from
@@ -2367,9 +2398,10 @@ oca_result_t oca_check_payload_encryption_policy(
  *                                           oca_locate_payload() with
  *                                           oca_check_payload_at() instead.
  * @return Otherwise the result of the payload checks it composes —
- *         OCA_FAIL_ALGORITHM_NOT_ENABLED for a payload_hash_type, or an
- *         encrypted payload's key derivation or input-key source, this build
- *         does not enable, checked before any digest or decryption;
+ *         OCA_FAIL_ALGORITHM_NOT_ENABLED or OCA_FAIL_ALGORITHM_RESERVED for a
+ *         payload_hash_type, or an encrypted payload's cipher, key derivation
+ *         or input-key source, this build does not enable, checked before any
+ *         digest or decryption;
  *         OCA_FAIL_PAYLOAD_HASH, OCA_FAIL_DECRYPT, OCA_FAIL_PAYLOAD_TOC,
  *         OCA_FAIL_PAYLOAD_TOO_MANY_IMAGES, OCA_FAIL_PAYLOAD_HASH_CHAIN,
  *         OCA_FAIL_PAYLOAD_ENTRY_HASH — or the magic or variant failure from

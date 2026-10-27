@@ -70,4 +70,64 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
                                                          uint8_t type,
                                                          oca_result_t *status);
 
+/**
+ * @brief The format's rules for one payload cipher.
+ *
+ * Every cipher a build can enable today is a block mode with PKCS#7 padding,
+ * so its ciphertext is a whole number of blocks and runs 1 to block_size bytes
+ * longer than the plaintext.
+ */
+typedef struct oca_cipher_algorithm {
+    uint8_t type;        /**< The encryption_type value. */
+    uint8_t block_size;  /**< The cipher's block size in bytes. */
+} oca_cipher_algorithm_t;
+
+/**
+ * @brief Resolve an encryption_type value against the format and this build.
+ *
+ * Only an encrypted payload names a cipher; 0x00, which a cleartext manifest
+ * carries, is reserved here like every other value the format leaves unused.
+ *
+ * @param[in]  type    The encryption_type value.
+ * @param[out] status  Receives OCA_OK, OCA_FAIL_ALGORITHM_NOT_ENABLED or
+ *                     OCA_FAIL_ALGORITHM_RESERVED.
+ * @return The cipher's row when this build enables it; NULL when the format
+ *         defines it but this build does not enable it, or reserves the value.
+ */
+const oca_cipher_algorithm_t *oca_cipher_algorithm(uint8_t type, oca_result_t *status);
+
+/**
+ * @brief Resolve an encryption_key_derivation_function value.
+ *
+ * The derivation itself is the decryption callback's; this decides only
+ * whether the callback may be asked for it.
+ *
+ * @param[in] kdf  The encryption_key_derivation_function value.
+ * @retval OCA_OK                          This build enables it.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  The format defines it; this build
+ *                                         does not enable it.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     The format reserves the value.
+ * @return One of the codes above, by how the format and the build treat @p kdf.
+ */
+oca_result_t oca_kdf_status(uint16_t kdf);
+
+/**
+ * @brief Resolve an input_key_source value.
+ *
+ * The field must select exactly one source, so the empty pattern and every
+ * combination of sources are reserved along with the unassigned values.
+ *
+ * @param[in] source  The three-bit input_key_source value, already shifted
+ *                    down from payload_encryption_control.
+ * @retval OCA_OK                          This build enables it.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  The format defines it; this build
+ *                                         does not enable it.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     The format reserves the value — every
+ *                                         pattern but exactly one source,
+ *                                         including none.
+ * @return One of the codes above, by how the format and the build treat
+ *         @p source.
+ */
+oca_result_t oca_key_source_status(unsigned source);
+
 #endif /* OCA_ALGORITHMS_H */

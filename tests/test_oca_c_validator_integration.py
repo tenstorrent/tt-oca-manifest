@@ -1254,7 +1254,8 @@ def _toml_bool(value: bool) -> str:
 
 
 def _build_config_text(toc_max_images=256, rsa=True, ecdsa=True, ml_dsa=True,
-                       der_rsa=True, der_ecdsa=True) -> str:
+                       der_rsa=True, der_ecdsa=True, aes_128=True, aes_256=True,
+                       encryption=True) -> str:
     """A complete build configuration: the default, with the given changes."""
     return (
         "[variants]\nclassic = true\npqc = true\n"
@@ -1265,6 +1266,10 @@ def _build_config_text(toc_max_images=256, rsa=True, ecdsa=True, ml_dsa=True,
         f"[signature_pqc]\nml_dsa_87 = {_toml_bool(ml_dsa)}\n"
         f"[der]\nrsa_public_key = {_toml_bool(der_rsa)}\n"
         f"ecdsa_signature = {_toml_bool(der_ecdsa)}\n"
+        f"[encryption_cipher]\naes_128_cbc = {_toml_bool(encryption and aes_128)}\n"
+        f"aes_256_cbc = {_toml_bool(encryption and aes_256)}\n"
+        f"[encryption_kdf]\nsp800_108_hmac_sha256 = {_toml_bool(encryption)}\n"
+        f"[encryption_key_source]\npreshared = {_toml_bool(encryption)}\n"
     )
 
 
@@ -1359,10 +1364,19 @@ def ecdsa_raw_only_cli(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def rsa_raw_only_cli(tmp_path_factory):
-    """RSA-3072 with raw public keys only: no ECDSA, no ML-DSA, no DER."""
+    """RSA-3072 with raw public keys only, and AES-256-CBC only: no ECDSA, no
+    ML-DSA, no DER, no AES-128-CBC."""
     return _configured_cli(str(tmp_path_factory.mktemp("rsa-raw-only")),
                            _build_config_text(ecdsa=False, ml_dsa=False,
-                                              der_rsa=False, der_ecdsa=False))
+                                              der_rsa=False, der_ecdsa=False,
+                                              aes_128=False))
+
+
+@pytest.fixture(scope="module")
+def no_encryption_cli(tmp_path_factory):
+    """The default signature algorithms, with payload encryption turned off."""
+    return _configured_cli(str(tmp_path_factory.mktemp("no-encryption")),
+                           _build_config_text(encryption=False))
 
 
 @pytest.mark.parametrize("cli_fixture, fixture, outcome", [
@@ -1375,6 +1389,11 @@ def rsa_raw_only_cli(tmp_path_factory):
     ("rsa_raw_only_cli", "secure_rsa_der", "ALGORITHM_NOT_ENABLED"),
     ("rsa_raw_only_cli", "secure_ecdsa", "ALGORITHM_NOT_ENABLED"),
     ("rsa_raw_only_cli", "pqc_hybrid_rsa", "ALGORITHM_NOT_ENABLED"),
+    ("rsa_raw_only_cli", "encrypted_aes", "PASS"),
+    ("rsa_raw_only_cli", "encrypted_aes_pqc", "ALGORITHM_NOT_ENABLED"),
+    ("no_encryption_cli", "secure_rsa", "PASS"),
+    ("no_encryption_cli", "encrypted_aes", "ALGORITHM_NOT_ENABLED"),
+    ("no_encryption_cli", "encrypted_aes_pqc_mldsa", "ALGORITHM_NOT_ENABLED"),
 ])
 def test_a_build_refuses_what_its_configuration_turns_off(request, cli_fixture,
                                                           fixture, outcome):
@@ -3077,6 +3096,8 @@ def _encrypted_with(field: str, value: int) -> bytearray:
     data = _fixture_bytes("encrypted_aes")
     if field == "kdf":
         _set_le(data, oca_constants.OFF_ENCRYPTION_KDF, 2, value)
+    elif field == "cipher":
+        data[oca_constants.OFF_ENCRYPTION_TYPE] = value
     else:
         control = struct.unpack_from("<H", data,
                                      oca_constants.OFF_PAYLOAD_ENCRYPTION_CONTROL)[0]
@@ -3095,22 +3116,27 @@ def test_cli_a_resigned_encrypted_bundle_still_decrypts(tmp_path):
                                flags=_read_flags("encrypted_aes")))
 
 
-@pytest.mark.parametrize("field,value", [
-    ("kdf", 0x0000),     # NONE: the input key used directly
-    ("kdf", 0x0002),     # SP 800-108r1 with HMAC-SHA-512
-    ("kdf", 0xFF00),     # integrator defined
-    ("key_source", 0b010),   # a KEM-unwrapped DEK
-    ("key_source", 0b000),   # no source selected
-    ("key_source", 0b011),   # two sources at once
+@pytest.mark.parametrize("field,value,code", [
+    ("kdf", 0x0000, "ALGORITHM_NOT_ENABLED"),       # NONE: the input key used directly
+    ("kdf", 0x0002, "ALGORITHM_NOT_ENABLED"),       # SP 800-108r1 with HMAC-SHA-512
+    ("kdf", 0xFF00, "ALGORITHM_NOT_ENABLED"),       # integrator defined
+    ("kdf", 0x0009, "ALGORITHM_RESERVED"),
+    ("key_source", 0b010, "ALGORITHM_NOT_ENABLED"),  # a KEM-unwrapped DEK
+    ("key_source", 0b000, "ALGORITHM_RESERVED"),     # no source selected
+    ("key_source", 0b011, "ALGORITHM_RESERVED"),     # two sources at once
+    ("cipher", 0x03, "ALGORITHM_NOT_ENABLED"),       # AES-128-CBC-HMAC-SHA256
+    ("cipher", 0x05, "ALGORITHM_NOT_ENABLED"),       # AES-128-GCM-SIV
+    ("cipher", 0x13, "ALGORITHM_RESERVED"),
 ])
-def test_cli_refuses_an_encrypted_payload_it_cannot_derive_a_key_for(tmp_path, field, value):
+def test_cli_refuses_an_encrypted_payload_it_cannot_derive_a_key_for(tmp_path, field,
+                                                                      value, code):
     """The reference backend always derives through SP 800-108r1 HMAC-SHA-256
     from the pre-shared secret, so without this refusal a manifest naming any
     other derivation decrypts as if it named that one."""
     data = _encrypted_with(field, value)
     result = _run_bundle(tmp_path, data, f"encrypted_{field}_{value:#x}",
                          flags=_read_flags("encrypted_aes"))
-    _assert_refused(result, "ALGORITHM_NOT_ENABLED")
+    _assert_refused(result, code)
 
 
 def _unreachable_openssl_minimum() -> str:

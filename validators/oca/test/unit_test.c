@@ -171,16 +171,16 @@ static void declare_supported_algorithms(uint8_t *buf)
     buf[OCA_OFF_MANIFEST_HASH_TYPE] = OCA_HASH_TYPE_SHA2_256;
     buf[OCA_OFF_PAYLOAD_HASH_TYPE] = OCA_HASH_TYPE_SHA2_256;
     buf[OCA_OFF_ENCRYPTION_KDF] =
-        (uint8_t)(OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256 & 0xFFu);
+        (uint8_t)(OCA_KDF_SP800_108_HMAC_SHA256 & 0xFFu);
     buf[OCA_OFF_ENCRYPTION_KDF + 1] =
-        (uint8_t)(OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256 >> 8);
+        (uint8_t)(OCA_KDF_SP800_108_HMAC_SHA256 >> 8);
 }
 
 /* payload_encryption_control for an encrypted payload keyed by the pre-shared
  * secret, as the packer writes it. */
 #define ENCRYPTED_PRESHARED \
     (OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT \
-     | (OCA_ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT))
+     | (OCA_KEY_SOURCE_PRESHARED << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT))
 
 static void build_minimal_manifest(uint8_t buf[OCA_CLASSIC_BODY_SIZE])
 {
@@ -498,6 +498,8 @@ typedef struct {
      * a stale observation from an earlier case is indistinguishable from this
      * case's. */
     oca_encryption_type_t seen_cipher;
+    oca_kdf_t             seen_kdf;
+    oca_key_source_t      seen_key_source;
     uint16_t              seen_secret_select;
     const uint8_t        *seen_iv;
     const uint8_t        *seen_kdf_input;
@@ -1823,6 +1825,8 @@ static oca_result_t decrypt_capturing(const oca_decrypt_input_t *in,
 {
     g_fx.decrypt_calls++;
     g_fx.seen_cipher         = in->cipher;
+    g_fx.seen_kdf            = in->kdf;
+    g_fx.seen_key_source     = in->key_source;
     g_fx.seen_secret_select  = in->secret_select;
     g_fx.seen_iv             = in->iv;
     g_fx.seen_kdf_input      = in->kdf_input;
@@ -1849,6 +1853,8 @@ TEST(test_decrypt_receives_cipher_and_selector_as_named_fields)
     ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL), OCA_OK);
     ASSERT_EQ_INT(g_fx.decrypt_calls, 1);
     ASSERT_EQ_INT(g_fx.seen_cipher, OCA_ENCRYPTION_TYPE_AES_256_CBC);
+    ASSERT_EQ_INT(g_fx.seen_kdf, OCA_KDF_SP800_108_HMAC_SHA256);
+    ASSERT_EQ_INT(g_fx.seen_key_source, OCA_KEY_SOURCE_PRESHARED);
     ASSERT_EQ_INT(g_fx.seen_secret_select, 3);
     ASSERT_EQ_INT(g_fx.seen_ciphertext_len, ENC_CT_LEN);
 }
@@ -2289,15 +2295,36 @@ static oca_result_t check_encrypted_algorithms(uint8_t *buf, size_t len)
     return oca_check_payload(buf, len, &cb, &g_authenticated, NULL);
 }
 
-/* An encrypted payload's key derivation and input-key source must be the ones
- * the decrypt contract defines — SP 800-108r1 counter mode with HMAC-SHA-256,
- * from the pre-shared secret — and its payload_hash_type SHA2-256. Each other
- * value is refused before the ciphertext is hashed or decrypted. The supported
+/* Set an encrypted bundle's input_key_source, keeping it marked encrypted. */
+static void set_key_source(uint8_t *buf, uint8_t source)
+{
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = (uint8_t)(
+        OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT
+        | (source << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT));
+}
+
+/* Assert one edit to an encrypted bundle is refused with a code, before the
+ * ciphertext is hashed or decrypted. */
+static void assert_refused_before_hashing(uint8_t *buf, size_t len, oca_result_t code)
+{
+    ASSERT_EQ_INT(check_encrypted_algorithms(buf, len), code);
+    ASSERT_EQ_INT(g_sha_calls, 0);
+    ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
+}
+
+/* An encrypted payload's cipher, key derivation and input-key source must each
+ * be one this build enables, and its payload_hash_type SHA2-256. A value the
+ * format defines but the build does not enable, and one the format reserves,
+ * are each refused before the ciphertext is hashed or decrypted. The enabled
  * combination reaches the payload hash, which is the control. */
 TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
 {
-    static const uint16_t kdfs[] = { 0x0000u, 0x0002u, 0x0008u, 0x0009u, 0xFF00u };
-    static const uint8_t key_sources[] = { 0x0u, 0x2u, 0x3u, 0x7u };
+    static const uint8_t ciphers_not_enabled[] = { 0x03u, 0x05u, 0x06u, 0x11u, 0x12u, 0xF0u };
+    static const uint8_t ciphers_reserved[] = { 0x00u, 0x07u, 0x10u, 0x13u, 0xEFu };
+    static const uint16_t kdfs_not_enabled[] = { 0x0000u, 0x0002u, 0x0008u, 0xFF00u, 0xFFFFu };
+    static const uint16_t kdfs_reserved[] = { 0x0009u, 0x0100u, 0xFEFFu };
+    static const uint8_t sources_not_enabled[] = { 0x2u };
+    static const uint8_t sources_reserved[] = { 0x0u, 0x3u, 0x4u, 0x7u };
     uint8_t buf[OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN];
     uint8_t ph[32]; memset(ph, 0x11, 32);
     uint8_t chain[32]; memset(chain, 0, 32);
@@ -2306,23 +2333,35 @@ TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
     ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf), OCA_FAIL_PAYLOAD_HASH);
     ASSERT_EQ_INT(g_sha_calls, 1);
 
-    for (size_t i = 0u; i < sizeof kdfs / sizeof kdfs[0]; ++i) {
+    for (size_t i = 0u; i < sizeof ciphers_not_enabled; ++i) {
         build_encrypted_bundle(buf, ph, chain);
-        toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, kdfs[i]);
-        ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
-                      OCA_FAIL_ALGORITHM_NOT_ENABLED);
-        ASSERT_EQ_INT(g_sha_calls, 0);
-        ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
+        buf[OCA_OFF_ENCRYPTION_TYPE] = ciphers_not_enabled[i];
+        assert_refused_before_hashing(buf, sizeof buf, OCA_FAIL_ALGORITHM_NOT_ENABLED);
     }
-    for (size_t i = 0u; i < sizeof key_sources; ++i) {
+    for (size_t i = 0u; i < sizeof ciphers_reserved; ++i) {
         build_encrypted_bundle(buf, ph, chain);
-        buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = (uint8_t)(
-            OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT
-            | (key_sources[i] << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT));
-        ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
-                      OCA_FAIL_ALGORITHM_NOT_ENABLED);
-        ASSERT_EQ_INT(g_sha_calls, 0);
-        ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
+        buf[OCA_OFF_ENCRYPTION_TYPE] = ciphers_reserved[i];
+        assert_refused_before_hashing(buf, sizeof buf, OCA_FAIL_ALGORITHM_RESERVED);
+    }
+    for (size_t i = 0u; i < sizeof kdfs_not_enabled / sizeof kdfs_not_enabled[0]; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, kdfs_not_enabled[i]);
+        assert_refused_before_hashing(buf, sizeof buf, OCA_FAIL_ALGORITHM_NOT_ENABLED);
+    }
+    for (size_t i = 0u; i < sizeof kdfs_reserved / sizeof kdfs_reserved[0]; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, kdfs_reserved[i]);
+        assert_refused_before_hashing(buf, sizeof buf, OCA_FAIL_ALGORITHM_RESERVED);
+    }
+    for (size_t i = 0u; i < sizeof sources_not_enabled; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        set_key_source(buf, sources_not_enabled[i]);
+        assert_refused_before_hashing(buf, sizeof buf, OCA_FAIL_ALGORITHM_NOT_ENABLED);
+    }
+    for (size_t i = 0u; i < sizeof sources_reserved; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        set_key_source(buf, sources_reserved[i]);
+        assert_refused_before_hashing(buf, sizeof buf, OCA_FAIL_ALGORITHM_RESERVED);
     }
     for (size_t i = 0u; i < sizeof UNSUPPORTED_HASH_TYPES; ++i) {
         build_encrypted_bundle(buf, ph, chain);
@@ -2330,6 +2369,42 @@ TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
         ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
                       OCA_FAIL_ALGORITHM_NOT_ENABLED);
         ASSERT_EQ_INT(g_sha_calls, 0);
+    }
+}
+
+/* Every encryption_type, KDF and key source resolves to exactly one outcome,
+ * checked against the format's values written out one by one. */
+TEST(test_every_payload_algorithm_resolves_against_the_format_and_the_build)
+{
+    static const uint8_t defined_ciphers[] = {
+        0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u, 0x11u, 0x12u,
+    };
+    for (unsigned type = 0u; type <= 0xFFu; ++type) {
+        int defined = type >= 0xF0u;
+        for (size_t i = 0u; i < sizeof defined_ciphers; ++i) {
+            defined |= defined_ciphers[i] == type;
+        }
+        oca_result_t status = OCA_OK;
+        const oca_cipher_algorithm_t *row = oca_cipher_algorithm((uint8_t)type, &status);
+        if (type == 0x01u || type == 0x02u) {
+            ASSERT_EQ_INT(status, OCA_OK);
+            ASSERT_TRUE(row != NULL && row->type == type && row->block_size == 16u);
+        } else {
+            ASSERT_TRUE(row == NULL);
+            ASSERT_EQ_INT(status, defined ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                          : OCA_FAIL_ALGORITHM_RESERVED);
+        }
+    }
+    for (unsigned kdf = 0u; kdf <= 0xFFFFu; ++kdf) {
+        oca_result_t expected = (kdf <= 0x0008u || kdf >= 0xFF00u)
+                                ? OCA_FAIL_ALGORITHM_NOT_ENABLED : OCA_FAIL_ALGORITHM_RESERVED;
+        ASSERT_EQ_INT(oca_kdf_status((uint16_t)kdf), kdf == 0x0001u ? OCA_OK : expected);
+    }
+    ASSERT_EQ_INT(oca_key_source_status(0x1u), OCA_OK);
+    ASSERT_EQ_INT(oca_key_source_status(0x2u), OCA_FAIL_ALGORITHM_NOT_ENABLED);
+    static const unsigned reserved_sources[] = { 0x0u, 0x3u, 0x4u, 0x5u, 0x6u, 0x7u };
+    for (size_t i = 0u; i < sizeof reserved_sources / sizeof reserved_sources[0]; ++i) {
+        ASSERT_EQ_INT(oca_key_source_status(reserved_sources[i]), OCA_FAIL_ALGORITHM_RESERVED);
     }
 }
 
@@ -8063,6 +8138,7 @@ int main(int argc, char **argv)
     /* Cleartext payload stage */
     RUN_TEST(test_cleartext_payload_happy_path);
     RUN_TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing);
+    RUN_TEST(test_every_payload_algorithm_resolves_against_the_format_and_the_build);
     RUN_TEST(test_cleartext_payload_judges_only_its_hash_type);
     RUN_TEST(test_encrypted_plaintext_reported_after_success);
     RUN_TEST(test_cleartext_plaintext_reported_after_success);

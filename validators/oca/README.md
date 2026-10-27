@@ -114,6 +114,13 @@ make BUILD=build/cap32 CONFIG=path/to/cap32.toml all
 | `[signature_pqc] ml_dsa_87` | `true` | Verify FIPS 204 ML-DSA-87. Needs `[variants] pqc`. |
 | `[der] rsa_public_key` | `true` | Accept DER (PKCS#1) RSA public keys. Needs an RSA algorithm. |
 | `[der] ecdsa_signature` | `true` | Accept DER ECDSA signatures. Needs an ECDSA algorithm. |
+| `[encryption_cipher] aes_128_cbc` | `true` | Decrypt AES-128-CBC payloads. |
+| `[encryption_cipher] aes_256_cbc` | `true` | Decrypt AES-256-CBC payloads. |
+| `[encryption_kdf] sp800_108_hmac_sha256` | `true` | Derive the payload key with SP 800-108r1 counter mode, HMAC-SHA-256. |
+| `[encryption_key_source] preshared` | `true` | Take the input key from a provisioned secret. |
+
+A cipher, a KDF and a key source are enabled together or not at all. A build
+that enables none of them refuses every encrypted payload.
 
 At least one variant must be on. A variant turned off is refused with
 `OCA_FAIL_UNSUPPORTED_VARIANT` instead of validated.
@@ -257,9 +264,9 @@ upon on the current boot path is rejected too.
 | `signature_type_pqc` | ML-DSA-87 (`0x33`) | pure FIPS 204 over the signed region, empty context; the host `verify_signature` callback owns the math. ML-DSA-44 / -65 and SLH-DSA are refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, a reserved value (including `0x41` / `0x42`, held for FN-DSA) with `OCA_FAIL_ALGORITHM_RESERVED` |
 | `signature_encoding_pqc` / `public_key_encoding_pqc` | raw (`0x02`) only, with exact sizes: 4627-byte signature, 2592-byte key | any other encoding or size is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
 | device signature posture (`signature_class_revoke`, `signature_cohort_enforce` as committed) | per-algorithm class bits and the `0xCA` / `0xAC` group codes; the ROOT key's cohort nibble | applied at every secure boot by `oca_check_signature_posture()`: an enforced class whose algorithm the device has disabled is refused with `OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED`, and a manifest that does not enforce a cohort the device demands of the ROOT key with `OCA_FAIL_SIGNATURE_COHORT_REQUIRED` |
-| `encryption_type` | AES-128-CBC (`0x01`) or AES-256-CBC (`0x02`) + PKCS#7 | payload decryption is delegated to the host `decrypt_payload` callback; the key length follows the type |
-| `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below). Any other value on an encrypted payload is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` |
-| `input_key_source` | pre-shared secret (b001) | any other source on an encrypted payload, the KEM-unwrapped DEK included, is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` |
+| `encryption_type` | AES-128-CBC (`0x01`) or AES-256-CBC (`0x02`) + PKCS#7 | payload decryption is delegated to the host `decrypt_payload` callback; the key length follows the type. Any other cipher is refused before the ciphertext is hashed: `OCA_FAIL_ALGORITHM_NOT_ENABLED` for one the format defines, `OCA_FAIL_ALGORITHM_RESERVED` otherwise |
+| `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below). Any other value on an encrypted payload is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, or `OCA_FAIL_ALGORITHM_RESERVED` for one the format reserves |
+| `input_key_source` | pre-shared secret (b001) | the KEM-unwrapped DEK (b010) is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`; every other pattern, including none and two sources at once, with `OCA_FAIL_ALGORITHM_RESERVED` |
 | payload `image_count` | 1 .. `toc_max_images` (default **256**) | a consumer resource limit, not a format limit — see below |
 
 **Payload TOC size limit.** The format sets no upper bound on `image_count`, so
@@ -312,9 +319,11 @@ integrator knows the current boundary:
   on (the generator stops the build). Manifests naming them are refused with
   `OCA_FAIL_ALGORITHM_NOT_ENABLED`. Adding one means adding its row to
   `lib/algorithms.c` and marking it implemented in `lib/scripts/gen_config.py`.
-- **Composite CBC-HMAC and AEAD (e.g. GCM-SIV) encryption modes**, and
-  **KEM-unwrapped DEK** (`input_key_source` b010) — only plain AES-128-CBC and
-  AES-256-CBC with a pre-shared secret are handled.
+- **Composite CBC-HMAC and AEAD (e.g. GCM-SIV) encryption modes, SM4, KDFs
+  other than SP 800-108r1 with HMAC-SHA-256, and the KEM-unwrapped DEK**
+  (`input_key_source` b010) — only plain AES-128-CBC and AES-256-CBC, derived
+  from a pre-shared secret, can be enabled. The others are listed in the build
+  configuration and refused there as not implemented.
 - **Verifier key entry and co-signer entry verification** — the appended-entry
   trust chain is not walked.
 - **Cohort enforcement for the verifier key and co-signers** — the device's

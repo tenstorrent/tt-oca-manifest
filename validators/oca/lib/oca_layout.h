@@ -229,14 +229,10 @@
 
 #define OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL 201u  /* u16 LE */
 #define OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT 0x0001u  /* bit[0] of payload_encryption_control */
-/* input_key_source, bits[5:3] of payload_encryption_control. Pre-shared secret
- * (b001) is the one source this library supports; the KEM-unwrapped DEK (b010)
- * and every other pattern are refused. */
+/* input_key_source, bits[5:3] of payload_encryption_control. */
 #define OCA_ENCRYPTION_INPUT_KEY_SOURCE_MASK  0x0038u
 #define OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT     3u
-#define OCA_ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED 0x1u  /* after the shift */
 #define OCA_OFF_ENCRYPTION_KDF             203u  /* u16 LE; encryption_key_derivation_function */
-#define OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256 0x0001u  /* the one KDF the decrypt contract defines */
 #define OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT 205u  /* u16 LE; which provisioned secret */
 #define OCA_OFF_ENCRYPTION_IV              235u  /* 32-byte field; AES-CBC uses the low 16 */
 #define OCA_LEN_ENCRYPTION_IV               16u

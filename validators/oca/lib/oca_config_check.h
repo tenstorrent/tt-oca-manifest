@@ -47,7 +47,11 @@
     || !defined(OCA_CFG_SIG_ECDSA_P256_SHA256) \
     || !defined(OCA_CFG_SIG_ML_DSA_87) \
     || !defined(OCA_CFG_DER_RSA_PUBLIC_KEY) \
-    || !defined(OCA_CFG_DER_ECDSA_SIGNATURE)
+    || !defined(OCA_CFG_DER_ECDSA_SIGNATURE) \
+    || !defined(OCA_CFG_CIPHER_AES_128_CBC) \
+    || !defined(OCA_CFG_CIPHER_AES_256_CBC) \
+    || !defined(OCA_CFG_KDF_SP800_108_HMAC_SHA256) \
+    || !defined(OCA_CFG_KEY_SOURCE_PRESHARED)
 #error "oca_config.h is missing a setting; regenerate it"
 #endif
 
@@ -66,7 +70,11 @@
     || !OCA_CFG_IS_SWITCH(OCA_CFG_SIG_ECDSA_P256_SHA256) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_SIG_ML_DSA_87) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_DER_RSA_PUBLIC_KEY) \
-    || !OCA_CFG_IS_SWITCH(OCA_CFG_DER_ECDSA_SIGNATURE)
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_DER_ECDSA_SIGNATURE) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_CIPHER_AES_128_CBC) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_CIPHER_AES_256_CBC) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_KDF_SP800_108_HMAC_SHA256) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_KEY_SOURCE_PRESHARED)
 #error "oca_config.h holds a true/false setting that is neither 0 nor 1; regenerate it"
 #endif
 #undef OCA_CFG_IS_SWITCH
@@ -78,6 +86,12 @@
 #if !OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256 && !OCA_CFG_SIG_ECDSA_P256_SHA256 \
     && !OCA_CFG_SIG_ML_DSA_87
 #error "oca_config.h enables no signature algorithm"
+#endif
+
+#if (OCA_CFG_CIPHER_AES_128_CBC || OCA_CFG_CIPHER_AES_256_CBC) \
+    != OCA_CFG_KDF_SP800_108_HMAC_SHA256 \
+    || OCA_CFG_KDF_SP800_108_HMAC_SHA256 != OCA_CFG_KEY_SOURCE_PRESHARED
+#error "oca_config.h enables only part of payload encryption; a cipher, a KDF and a key source go together"
 #endif
 
 #if OCA_CFG_SIG_ML_DSA_87 && !OCA_CFG_VARIANT_PQC

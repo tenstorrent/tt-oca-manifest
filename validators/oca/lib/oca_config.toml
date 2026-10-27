@@ -49,3 +49,21 @@ ml_dsa_87 = true
 # OCA_FAIL_ALGORITHM_NOT_ENABLED; each needs an algorithm of its family.
 rsa_public_key = true
 ecdsa_signature = true
+
+[encryption_cipher]
+# Payload ciphers this build decrypts. A cipher, a KDF and a key source are
+# enabled together, or none of them, in which case every encrypted payload is
+# refused with OCA_FAIL_ALGORITHM_NOT_ENABLED. The format also defines the
+# AES CBC-HMAC and GCM-SIV modes and two SM4 modes, not implemented yet.
+aes_128_cbc = true
+aes_256_cbc = true
+
+[encryption_kdf]
+# How the payload key is derived from the input key. The format also defines
+# none, the other SP 800-108r1 variants, KMAC and HKDF, not implemented yet.
+sp800_108_hmac_sha256 = true
+
+[encryption_key_source]
+# Where the input key comes from. The KEM-unwrapped DEK (kem), and with it every
+# [encryption_kem] function, is not implemented yet.
+preshared = true

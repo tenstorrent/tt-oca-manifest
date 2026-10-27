@@ -142,6 +142,66 @@ PQC_SIGNATURES = (
                "FIPS 205 SLH-DSA-SHAKE-256s"),
 )
 
+CIPHERS = (
+    _algorithm("encryption_cipher", "aes_128_cbc", 0x01, "AES-128-CBC",
+               "OCA_CFG_CIPHER_AES_128_CBC"),
+    _algorithm("encryption_cipher", "aes_256_cbc", 0x02, "AES-256-CBC",
+               "OCA_CFG_CIPHER_AES_256_CBC"),
+    _algorithm("encryption_cipher", "aes_128_cbc_hmac_sha256", 0x03,
+               "AES-128-CBC-HMAC-SHA256"),
+    _algorithm("encryption_cipher", "aes_256_cbc_hmac_sha256", 0x04,
+               "AES-256-CBC-HMAC-SHA256"),
+    _algorithm("encryption_cipher", "aes_128_gcm_siv", 0x05, "AES-128-GCM-SIV"),
+    _algorithm("encryption_cipher", "aes_256_gcm_siv", 0x06, "AES-256-GCM-SIV"),
+    _algorithm("encryption_cipher", "sm4_128_cbc", 0x11, "SM4-128-CBC"),
+    _algorithm("encryption_cipher", "sm4_128_cbc_hmac_sha256", 0x12,
+               "SM4-128-CBC-HMAC-SHA256"),
+)
+
+KDFS = (
+    _algorithm("encryption_kdf", "none", 0x0000,
+               "no KDF: the input key is the payload key"),
+    _algorithm("encryption_kdf", "sp800_108_hmac_sha256", 0x0001,
+               "NIST SP 800-108r1 counter mode, HMAC-SHA-256",
+               "OCA_CFG_KDF_SP800_108_HMAC_SHA256"),
+    _algorithm("encryption_kdf", "sp800_108_hmac_sha512", 0x0002,
+               "NIST SP 800-108r1 counter mode, HMAC-SHA-512"),
+    _algorithm("encryption_kdf", "sp800_108_hmac_sha3_256", 0x0003,
+               "NIST SP 800-108r1 counter mode, HMAC-SHA3-256"),
+    _algorithm("encryption_kdf", "sp800_108_hmac_sha3_512", 0x0004,
+               "NIST SP 800-108r1 counter mode, HMAC-SHA3-512"),
+    _algorithm("encryption_kdf", "sp800_108_cmac_aes_128", 0x0005,
+               "NIST SP 800-108r1 counter mode, CMAC-AES-128"),
+    _algorithm("encryption_kdf", "sp800_108_cmac_aes_256", 0x0006,
+               "NIST SP 800-108r1 counter mode, CMAC-AES-256"),
+    _algorithm("encryption_kdf", "sp800_108_kmac_256", 0x0007,
+               "NIST SP 800-108r1 KMAC mode, KMAC-256"),
+    _algorithm("encryption_kdf", "hkdf_sha256", 0x0008, "RFC 5869 HKDF, SHA-256"),
+)
+
+KEY_SOURCES = (
+    _algorithm("encryption_key_source", "preshared", 0x1,
+               "a provisioned secret, chosen by encryption_shared_secret_select",
+               "OCA_CFG_KEY_SOURCE_PRESHARED"),
+    _algorithm("encryption_key_source", "kem", 0x2,
+               "a DEK unwrapped from encryption_kem_dek"),
+)
+
+# Used only by the KEM key source, which is not implemented, so none of these
+# can be turned on yet.
+KEMS = (
+    _algorithm("encryption_kem", "ecdhe_p256_aes_kw_256", 0x0001,
+               "ECDHE-P256+AES-KW-256"),
+    _algorithm("encryption_kem", "ecdhe_p384_aes_kw_256", 0x0002,
+               "ECDHE-P384+AES-KW-256"),
+    _algorithm("encryption_kem", "ecdhe_x25519_aes_kw_256", 0x0003,
+               "ECDHE-X25519+AES-KW-256"),
+    _algorithm("encryption_kem", "rsa_oaep_3072", 0x0004, "RSA-OAEP, RSA-3072"),
+    _algorithm("encryption_kem", "rsa_oaep_4096", 0x0005, "RSA-OAEP, RSA-4096"),
+    _algorithm("encryption_kem", "ml_kem_768", 0x0101, "ML-KEM-768"),
+    _algorithm("encryption_kem", "ml_kem_1024", 0x0102, "ML-KEM-1024"),
+)
+
 ENCODINGS = (
     _encoding("rsa_public_key", "OCA_CFG_DER_RSA_PUBLIC_KEY",
               "Accept DER (PKCS#1 RSAPublicKey) RSA public keys",
@@ -167,6 +227,10 @@ SETTINGS = (
     *CLASSICAL_SIGNATURES,
     *PQC_SIGNATURES,
     *ENCODINGS,
+    *CIPHERS,
+    *KDFS,
+    *KEY_SOURCES,
+    *KEMS,
 )
 
 
@@ -277,6 +341,22 @@ def _cross_setting_problems(values: dict[str, int], enabled: set[str]) -> list[s
             if setting.name in enabled:
                 problems.append(f"{setting.name} needs [variants] pqc, the only "
                                 f"variant that carries a PQC signature")
+    # A cipher is usable only with a key to decrypt under, so the three are
+    # enabled together or not at all; a build that enables none refuses every
+    # encrypted payload.
+    encryption = {
+        "[encryption_cipher]": [s for s in CIPHERS if s.name in enabled],
+        "[encryption_kdf]": [s for s in KDFS if s.name in enabled],
+        "[encryption_key_source]": [s for s in KEY_SOURCES if s.name in enabled],
+    }
+    if any(encryption.values()):
+        for section, chosen in encryption.items():
+            if not chosen:
+                problems.append(
+                    f"{section} enables nothing, but "
+                    f"{', '.join(k for k, v in encryption.items() if v)} "
+                    f"enables payload encryption; enable a cipher, a KDF and a "
+                    f"key source together, or none of them")
     for setting in SETTINGS:
         if setting.requires and setting.name in enabled \
                 and not enabled.intersection(setting.requires):
