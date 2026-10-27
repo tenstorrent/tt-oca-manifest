@@ -2308,6 +2308,46 @@ TEST(test_cleartext_payload_happy_path)
     ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL), OCA_OK);
 }
 
+/* The table self_unwiring_hash clears its own entry from, and after how many
+ * digests. */
+static oca_callbacks_t *g_unwire_table;
+static int g_unwire_after;
+
+/* Digests everything to all-zero, then unwires itself from g_unwire_table once
+ * it has answered g_unwire_after times. */
+static oca_result_t self_unwiring_hash(oca_hash_type_t type,
+                                       const uint8_t *msg, size_t msg_len,
+                                       uint8_t *out, size_t digest_len)
+{
+    (void)type; (void)msg; (void)msg_len;
+    memset(out, 0, digest_len);
+    if (++g_sha_calls == g_unwire_after) {
+        g_unwire_table->hash = 0;
+    }
+    return OCA_OK;
+}
+
+/* A hash callback unwired after the entry point checked it — by the callback
+ * itself here, by a fault on a part — fails closed at whichever digest comes
+ * next instead of calling through NULL. The one-image cleartext payload
+ * digests four times: payload_hash, the chain seed, the entry, the chain step. */
+TEST(test_a_hash_callback_unwired_mid_payload_fails_closed)
+{
+    for (int after = 1; after <= 3; ++after) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE + CLEAR_PAYLOAD_LEN];
+        build_cleartext_bundle(buf);
+        oca_callbacks_t cb;
+        cleartext_cb(&cb);
+        cb.hash = self_unwiring_hash;
+        g_unwire_table = &cb;
+        g_unwire_after = after;
+        g_sha_calls = 0;
+        ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL),
+                      OCA_FAIL_CALLBACK_UNAVAILABLE);
+        ASSERT_EQ_INT(g_sha_calls, after);
+    }
+}
+
 /* Run an encrypted bundle whose declared algorithms the test has edited, and
  * report what oca_check_payload() returned. Counts digests and decryptions, so
  * the caller can assert a refusal came before either. */
@@ -8215,6 +8255,7 @@ int main(int argc, char **argv)
 
     /* Cleartext payload stage */
     RUN_TEST(test_cleartext_payload_happy_path);
+    RUN_TEST(test_a_hash_callback_unwired_mid_payload_fails_closed);
     RUN_TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing);
     RUN_TEST(test_every_payload_algorithm_resolves_against_the_format_and_the_build);
     RUN_TEST(test_cleartext_payload_judges_only_its_hash_type);

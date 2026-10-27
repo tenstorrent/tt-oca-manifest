@@ -221,13 +221,17 @@ static oca_result_t compare_digest(const uint8_t *field, const uint8_t *digest,
  * payload_hash_type, so one helper keeps the type and the digest size from
  * ever disagreeing between them.
  *
- * @param[in]  cb      Callback table, cb->hash already checked non-NULL.
+ * @param[in]  cb      Callback table. cb->hash is checked before every
+ *                     digest, not only by the callers: the table can change
+ *                     between digests, and an unwired callback then fails
+ *                     closed instead of being called through NULL.
  * @param[in]  hash    The payload's resolved hash algorithm.
  * @param[in]  msg     Bytes to digest.
  * @param[in]  len     Length of @p msg.
  * @param[out] digest  Receives hash->digest_size bytes.
  * @retval OCA_OK                         Digest written.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE  The callback could not compute it.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE  The callback is unwired or could not
+ *                                        compute the digest.
  * @return One of the two codes above; any failure the callback reports is
  *         collapsed to OCA_FAIL_CALLBACK_UNAVAILABLE.
  */
@@ -236,6 +240,9 @@ static oca_result_t payload_digest(const oca_callbacks_t *cb,
                                    const uint8_t *msg, size_t len,
                                    uint8_t digest[OCA_HASH_MAX_DIGEST_SIZE])
 {
+    if (cb == 0 || cb->hash == 0) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
     return cb->hash((oca_hash_type_t)hash->type, msg, len, digest,
                     hash->digest_size) == OCA_OK
         ? OCA_OK : OCA_FAIL_CALLBACK_UNAVAILABLE;
