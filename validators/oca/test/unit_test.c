@@ -1885,6 +1885,82 @@ TEST(test_decrypt_receives_cipher_and_selector_as_named_fields)
     ASSERT_EQ_INT(g_fx.seen_ciphertext_len, ENC_CT_LEN);
 }
 
+/* A manifest field rewritten while the payload is being hashed, after the
+ * payload's algorithms were checked and before the decryption input is built:
+ * the change a fault, or another bus master, makes to a checked manifest. */
+static uint8_t *g_rewrite_at;
+static uint8_t  g_rewrite_bytes[2];
+static size_t   g_rewrite_len;
+
+static oca_result_t body_rewriting_hash(oca_hash_type_t type,
+                                        const uint8_t *msg, size_t msg_len,
+                                        uint8_t *out, size_t digest_len)
+{
+    if (g_rewrite_at != NULL) {
+        memcpy(g_rewrite_at, g_rewrite_bytes, g_rewrite_len);
+        g_rewrite_at = NULL;
+    }
+    return payload_hash_stub(type, msg, msg_len, out, digest_len);
+}
+
+/* A payload algorithm field and what each rewrite of it earns. */
+typedef struct payload_algorithm_rewrite {
+    size_t       off;
+    uint8_t      bytes[2];
+    size_t       len;
+    oca_result_t want;
+} payload_algorithm_rewrite_t;
+
+static const payload_algorithm_rewrite_t g_payload_algorithm_rewrites[] = {
+    /* AES-128-CBC-HMAC-SHA256: defined, implemented by no build. */
+    { OCA_OFF_ENCRYPTION_TYPE, { 0x03u, 0x00u }, 1u,
+      OCA_FAIL_ALGORITHM_NOT_ENABLED },
+    /* SP 800-108r1 with HMAC-SHA-512: likewise. */
+    { OCA_OFF_ENCRYPTION_KDF, { 0x02u, 0x00u }, 2u,
+      OCA_FAIL_ALGORITHM_NOT_ENABLED },
+    { OCA_OFF_ENCRYPTION_KDF, { 0x09u, 0x00u }, 2u,
+      OCA_FAIL_ALGORITHM_RESERVED },
+    /* The KEM-unwrapped DEK: defined, implemented by no build. */
+    { OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL,
+      { (uint8_t)(OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT
+                  | (0x2u << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT)), 0x00u },
+      1u, OCA_FAIL_ALGORITHM_NOT_ENABLED },
+    /* No source at all. */
+    { OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL,
+      { (uint8_t)OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT, 0x00u }, 1u,
+      OCA_FAIL_ALGORITHM_RESERVED },
+};
+
+/* Every algorithm the decryption input names is resolved against the build
+ * where the input is built, not only before the payload is hashed, so the
+ * callback is never handed a cipher, KDF or key source it has no case for. */
+TEST(test_decrypt_input_holds_only_algorithms_the_build_enables)
+{
+    for (size_t i = 0u; i < sizeof g_payload_algorithm_rewrites
+                            / sizeof g_payload_algorithm_rewrites[0]; ++i) {
+        const payload_algorithm_rewrite_t *w = &g_payload_algorithm_rewrites[i];
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN];
+        uint8_t ph[32]; memset(ph, 0x5A, 32);
+        uint8_t chain[32]; memset(chain, 0, 32);
+        build_encrypted_bundle(buf, ph, chain);
+        build_plaintext_toc();
+        payload_sha_ctx_init(buf + OCA_CLASSIC_BODY_SIZE, true, 0x5A);
+        oca_callbacks_t cb;
+        payload_cb(&cb, decrypt_capturing);
+        cb.hash = body_rewriting_hash;
+        g_rewrite_at = buf + w->off;
+        memcpy(g_rewrite_bytes, w->bytes, sizeof g_rewrite_bytes);
+        g_rewrite_len = w->len;
+        g_fx.decrypt_calls = 0;
+
+        ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated,
+                                        NULL),
+                      w->want);
+        ASSERT_TRUE(g_rewrite_at == NULL);
+        ASSERT_EQ_INT(g_fx.decrypt_calls, 0);
+    }
+}
+
 /* The derivation inputs must point into the manifest body, not the payload —
  * that is what makes decrypting in place over the ciphertext safe. */
 TEST(test_decrypt_descriptor_points_derivation_inputs_at_the_manifest)
@@ -8296,6 +8372,7 @@ int main(int argc, char **argv)
 
     /* Encryption requires confirmed secure boot */
     RUN_TEST(test_decrypt_receives_cipher_and_selector_as_named_fields);
+    RUN_TEST(test_decrypt_input_holds_only_algorithms_the_build_enables);
     RUN_TEST(test_decrypt_descriptor_points_derivation_inputs_at_the_manifest);
     RUN_TEST(test_no_provisioned_secret_is_distinct_from_other_decrypt_failures);
     RUN_TEST(test_result_string_covers_the_no_provisioned_secret_code);

@@ -523,11 +523,11 @@ static unsigned input_key_source(const uint8_t *body)
  * @retval OCA_FAIL_PAYLOAD_TOC            payload_hashed_length is unusable.
  * @retval OCA_FAIL_PAYLOAD_HASH           Ciphertext hash mismatch, detected
  *                                         BEFORE any decryption.
- * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  payload_hash_type or encryption_type
- *                                         names an algorithm this build does
- *                                         not enable.
- * @retval OCA_FAIL_ALGORITHM_RESERVED     payload_hash_type or encryption_type
- *                                         holds a reserved value.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  payload_hash_type, the cipher, the
+ *                                         input key source or the KDF names an
+ *                                         algorithm this build does not
+ *                                         enable.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     One of them holds a reserved value.
  * @retval OCA_FAIL_DECRYPT                Derivation, cipher, or padding failure.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   A required callback is unavailable.
  * @return Otherwise the result of the shared plaintext checks.
@@ -573,12 +573,23 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
         return r;
     }
 
-    /* The payload's algorithms were resolved before anything was hashed; the
-     * cipher is resolved again at the point of use, so the callback cannot be
-     * handed one this build does not enable. */
+    /* The payload's algorithms were resolved before anything was hashed; each
+     * is resolved again at the point of use, from the value the decryption
+     * input will carry, so the callback cannot be handed one this build does
+     * not enable. */
     uint8_t enc_type = body[OCA_OFF_ENCRYPTION_TYPE];
     const oca_cipher_algorithm_t *cipher = oca_cipher_algorithm(enc_type, &r);
     if (cipher == 0) {
+        return r;
+    }
+    unsigned key_source = input_key_source(body);
+    r = oca_key_source_status(key_source);
+    if (r != OCA_OK) {
+        return r;
+    }
+    uint16_t kdf = oca_le_u16(body + OCA_OFF_ENCRYPTION_KDF);
+    r = oca_kdf_status(kdf);
+    if (r != OCA_OK) {
         return r;
     }
 
@@ -594,17 +605,15 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
     }
     const uint8_t *plaintext = 0;
     size_t plaintext_len = 0u;
-    /* Every value the callback reads, gathered from fields this function or
-     * check_payload_algorithms() has already decoded and resolved against the
-     * build, so the callback cannot be handed an algorithm it has no case for. */
+    /* Every algorithm the callback reads is the value resolved above. */
     oca_decrypt_input_t in;
     in.ciphertext     = ciphertext;
     in.ciphertext_len = (size_t)cipher_len;
     in.iv             = body + OCA_OFF_ENCRYPTION_IV;
     in.kdf_input      = body + OCA_OFF_ENCRYPTION_KDF_INPUT;
     in.cipher         = (oca_encryption_type_t)enc_type;
-    in.kdf            = (oca_kdf_t)oca_le_u16(body + OCA_OFF_ENCRYPTION_KDF);
-    in.key_source     = (oca_key_source_t)input_key_source(body);
+    in.kdf            = (oca_kdf_t)kdf;
+    in.key_source     = (oca_key_source_t)key_source;
     in.secret_select  = oca_le_u16(body + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT);
     r = cb->decrypt_payload(&in, &plaintext, &plaintext_len);
     /* Codes that name a specific cause pass through by name; everything else
