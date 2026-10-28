@@ -166,7 +166,12 @@ oca_result_t oca_check_signature_posture(const uint8_t *body,
     for (unsigned i = 0u; i < OCA_LEN_SIGNATURE_COHORT_ENFORCE; ++i) {
         cohort[i] = 0xFFu;
     }
-    if (cb->get_signature_class_revoke(revoke) != OCA_OK
+    if (cb->get_signature_class_revoke(revoke) != OCA_OK) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    /* Checked again where it is called: the first reader can change the
+     * table. */
+    if (cb->get_signature_cohort_enforce == 0
         || cb->get_signature_cohort_enforce(cohort) != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }

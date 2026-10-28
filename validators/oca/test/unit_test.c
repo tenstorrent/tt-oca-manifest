@@ -6953,6 +6953,116 @@ TEST(test_commit_write_failure_surfaced)
     ASSERT_EQ_INT(oca_commit_security_state(buf, &cb, &ctx), OCA_FAIL_SECURITY_STATE_UPDATE);
 }
 
+/* Device-state readers that answer, then unwire the callback the library calls
+ * next from g_unwire_table: the reader whose answer a writer or a second reader
+ * follows. */
+static oca_result_t unwiring_get_revoke(oca_key_algorithm_t algo, uint8_t out[16])
+{
+    oca_result_t r = dev_get_revoke(algo, out);
+    g_unwire_table->set_root_key_revocation = 0;
+    return r;
+}
+
+static oca_result_t unwiring_get_secver(uint8_t out[16])
+{
+    oca_result_t r = dev_get_secver(out);
+    g_unwire_table->set_security_version = 0;
+    return r;
+}
+
+static oca_result_t unwiring_get_cohort(uint8_t out[8])
+{
+    oca_result_t r = dev_get_cohort(out);
+    g_unwire_table->set_signature_cohort_enforce = 0;
+    return r;
+}
+
+static oca_result_t unwiring_get_class_revoke(uint8_t out[8])
+{
+    oca_result_t r = dev_get_class_revoke(out);
+    g_unwire_table->set_signature_class_revoke = 0;
+    return r;
+}
+
+static oca_result_t class_revoke_reader_unwiring_cohort(uint8_t out[8])
+{
+    oca_result_t r = dev_get_class_revoke(out);
+    g_unwire_table->get_signature_cohort_enforce = 0;
+    return r;
+}
+
+static void install_unwiring_revocation_reader(oca_callbacks_t *cb)
+{
+    cb->get_root_key_revocation = unwiring_get_revoke;
+}
+
+static void install_unwiring_security_version_reader(oca_callbacks_t *cb)
+{
+    cb->get_security_version = unwiring_get_secver;
+}
+
+static void install_unwiring_cohort_reader(oca_callbacks_t *cb)
+{
+    cb->get_signature_cohort_enforce = unwiring_get_cohort;
+}
+
+static void install_unwiring_class_revoke_reader(oca_callbacks_t *cb)
+{
+    cb->get_signature_class_revoke = unwiring_get_class_revoke;
+}
+
+/* Commits a verified secure manifest after install() swaps one reader for one
+ * that unwires its writer, so only that pair is exercised past its guard. */
+static oca_result_t commit_with_a_reader_that_unwires(
+    void (*install)(oca_callbacks_t *cb))
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    test_fixture_reset();
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_t ctx = verified_for(buf, &cb);
+    install(&cb);
+    g_unwire_table = &cb;
+    return oca_commit_security_state(buf, &cb, &ctx);
+}
+
+/* Each device-state writer is checked where it is called, not only before
+ * its reader runs: the reader can change the table, and the writer is then
+ * refused instead of being called through NULL. */
+TEST(test_a_writer_unwired_by_its_reader_fails_closed)
+{
+    ASSERT_EQ_INT(commit_with_a_reader_that_unwires(
+                      install_unwiring_revocation_reader),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(commit_with_a_reader_that_unwires(
+                      install_unwiring_security_version_reader),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(commit_with_a_reader_that_unwires(
+                      install_unwiring_cohort_reader),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_EQ_INT(commit_with_a_reader_that_unwires(
+                      install_unwiring_class_revoke_reader),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+}
+
+/* The posture check reads two registers; the second reader is checked where
+ * it is called, after the first has run. */
+TEST(test_a_posture_reader_unwired_by_the_first_fails_closed)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    test_fixture_reset();
+    oca_callbacks_t cb;
+    build_devstate_cb(&cb, buf);
+    cb.get_signature_class_revoke = class_revoke_reader_unwiring_cohort;
+    g_unwire_table = &cb;
+    oca_validation_context_t ctx = g_determined_secure;
+    ASSERT_EQ_INT(oca_check_signature_posture(buf, &cb, &ctx),
+                  OCA_FAIL_CALLBACK_UNAVAILABLE);
+    ASSERT_TRUE(ctx.secure_boot_posture_met != OCA_SECURE_TRUE);
+}
+
 /* ---- a device-asserted disable reaches every gated path ----
  *
  * The disable answer creates a NEW route to "secure boot off". Everything gated
@@ -8639,6 +8749,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_commit_refuses_a_class_record_it_cannot_trust);
     RUN_TEST(test_commit_disable_revoke_only);
     RUN_TEST(test_commit_write_failure_surfaced);
+    RUN_TEST(test_a_writer_unwired_by_its_reader_fails_closed);
+    RUN_TEST(test_a_posture_reader_unwired_by_the_first_fails_closed);
     RUN_TEST(test_commit_secure_boot_disabled_noop);
     RUN_TEST(test_device_disable_reaches_every_gated_check);
     RUN_TEST(test_encryption_with_bit_clear_refused_on_a_disabled_device);
