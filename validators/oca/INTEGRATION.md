@@ -79,11 +79,42 @@ add_dependencies(oca_validator oca_config)
 target_include_directories(oca_validator PUBLIC ${OCA_LIB} ${OCA_CONFIG_DIR})
 ```
 
+In GNU Make, run the generator on every build through a phony prerequisite and
+let its write-only-on-change keep objects up to date. Depending on the
+configuration file alone would miss a switch to a different file older than
+the header:
+
+```make
+OCA_LIB        := third_party/oca_validator
+OCA_CONFIG     ?= board/oca_config.toml
+OCA_CONFIG_DIR := $(BUILD_DIR)/oca_gen
+OCA_CONFIG_H   := $(OCA_CONFIG_DIR)/oca_config.h
+OCA_SOURCES    := $(wildcard $(OCA_LIB)/*.c)
+CPPFLAGS       += -I$(OCA_LIB) -I$(OCA_CONFIG_DIR)
+
+.PHONY: oca-config
+oca-config:
+
+$(OCA_CONFIG_H): oca-config
+	python3 $(OCA_LIB)/scripts/gen_config.py --config $(OCA_CONFIG) --out $@
+
+# Every object whose source includes oca_validator.h, not only the library's.
+$(OBJS): $(OCA_CONFIG_H)
+```
+
+The generator creates the output directory. Make the header a prerequisite of
+your own objects as well as the library's: an object's compiler-generated
+dependency file names the header only after its first compile, and the header
+must exist before then. Place that rule after `OBJS` is defined, because Make
+expands a rule's targets when it reads the rule.
+
 **Compile your own code against the same header.** `OCA_TOC_MAX_IMAGES` and
 `OCA_RECHECK_SECURITY_VERSION` are part of the public header and come from the
 configuration, so every translation unit that includes `oca_validator.h` must
-see the header the library was built with. The `PUBLIC` include directory above
-does that.
+see the header the library was built with. The `PUBLIC` include directory in
+the CMake example and the `CPPFLAGS` in the Make example do that. Two builds
+that share a configuration file, such as firmware and its host tests, each
+generate the same header from it.
 
 **A build host without Python** can generate the header elsewhere and commit
 it. Nothing then notices if the header falls behind its configuration file, so
