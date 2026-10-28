@@ -27,7 +27,7 @@ validators/oca/
 │   ├── oca_validator.c     # entry point — dispatches on magic
 │   ├── oca_layout.h        # field offsets (mirrors the packer constants)
 │   ├── oca_config.toml     # the default build configuration
-│   ├── oca_config_check.h  # refuses a missing, stale or hand-edited oca_config.h
+│   ├── oca_config_check.h  # refuses a missing, malformed or wrong-version oca_config.h
 │   ├── ...                 # per-format decoders
 │   └── scripts/
 │       ├── gen_config.py   # generates oca_config.h from a build configuration

@@ -7,8 +7,9 @@ Three layers, each catching what the others cannot:
 - `gen_config.py` turns a TOML configuration into `oca_config.h`, refusing
   anything it cannot describe. Pure Python, no compiler.
 - `lib/oca_config_check.h` refuses a header the generator would never write —
-  hand-edited, stale, or from another library version — and the settings'
-  former -D forms. Exercised by compiling against deliberately broken headers.
+  missing a setting, malformed, or from another library version — and the
+  settings' former -D forms. Exercised by compiling against deliberately
+  broken headers.
 - The Makefile regenerates the header on every build, rebuilds when it changes,
   and stops before compiling anything when the configuration is invalid.
 """
@@ -561,10 +562,9 @@ def test_the_check_header_requires_the_format_the_generator_writes():
 
 @pytest.mark.parametrize("setting", IMPLEMENTED, ids=[s.name for s in IMPLEMENTED])
 def test_the_check_header_requires_every_setting(setting):
-    guard = re.search(r"#if (!defined\(OCA_CFG_VARIANT_CLASSIC\).*?)\n#error",
-                      _check_header_text(), re.S)
-    assert guard and f"!defined({setting.macro})" in guard.group(1)
-
+    assert re.search(rf"^#ifndef {setting.macro}\n#error \"oca_config.h is missing "
+                     rf"{setting.macro}; regenerate it\"\n#endif$",
+                     _check_header_text(), re.M)
 
 @pytest.mark.parametrize("setting", IMPLEMENTED, ids=[s.name for s in IMPLEMENTED])
 def test_every_setting_reaches_the_library(setting):
@@ -758,9 +758,11 @@ def test_a_header_the_generator_would_not_write_is_refused(tmp_path, edits, mess
 
 @pytest.mark.parametrize("setting", IMPLEMENTED, ids=[s.name for s in IMPLEMENTED])
 def test_a_header_missing_a_setting_is_refused(tmp_path, setting):
+    """Named, so a header kept by hand through a library upgrade says which
+    setting the upgrade added."""
     result = compile_probe(tmp_path, drop_define(default_header(), setting.macro))
     assert result.returncode != 0
-    assert "oca_config.h is missing a setting" in result.stderr
+    assert f"oca_config.h is missing {setting.macro}" in result.stderr
 
 
 @pytest.mark.parametrize("define, key", [

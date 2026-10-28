@@ -228,15 +228,17 @@ make -C validators/oca CONFIG=path/to/board.toml test
 ```
 
 `lib/scripts/gen_config.py` generates `build/gen/oca_config.h` from it before anything
-compiles, and `lib/oca_config_check.h` refuses a header that is missing, hand-edited or from
-another library version. A configuration **replaces** the default: every setting must be
-stated, unknown keys are errors, and the settings' former `-D` forms
-(`-DOCA_TOC_MAX_IMAGES=32`, `-DOCA_SUPPORT_PQC=0`) fail the compile naming the key that
-replaced each. To add a setting, add it to `SETTINGS` in `gen_config.py`, to every file that
-states settings (`lib/oca_config.toml` and `test/build_configs/*.toml`), and to the
-missing-setting guard in `oca_config_check.h`; `tests/test_oca_build_config.py` fails until all
-three agree and a library source reads it. `README.md`, "Build configuration", lists the
-settings.
+compiles, and `lib/oca_config_check.h` refuses a header that is missing, malformed or from
+another library version, naming any setting it lacks. It does not tie a header to its
+configuration file, so a hand edit that leaves a valid configuration compiles;
+`gen_config.py --check` is what catches a header that has drifted from its file. A
+configuration **replaces** the default: every setting must be stated, unknown keys are errors,
+and the settings' former `-D` forms (`-DOCA_TOC_MAX_IMAGES=32`, `-DOCA_SUPPORT_PQC=0`) fail the
+compile naming the key that replaced each. To add a setting, add it to `SETTINGS` in
+`gen_config.py`, to every file that states settings (`lib/oca_config.toml` and
+`test/build_configs/*.toml`), and a missing-setting guard for its macro to
+`oca_config_check.h`; `tests/test_oca_build_config.py` fails until all three agree and a
+library source reads it. `README.md`, "Build configuration", lists the settings.
 
 The algorithm sections are the build's portfolio: an algorithm the file does not name is off.
 The generator lists every algorithm the format defines, but only those with a row in

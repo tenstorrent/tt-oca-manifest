@@ -8,8 +8,8 @@
 A TOML configuration file is the single source of truth for every compile-time
 setting of the library. This script turns one into `oca_config.h`, which the
 library reaches through the include path; `lib/oca_config_check.h` then refuses
-a header that is missing, hand-edited out of range, or generated for another
-version of the library.
+a header that is missing, malformed, or generated for another version of the
+library. Only `--check` compares a header with its configuration file.
 
 A configuration REPLACES the shipped default (`lib/oca_config.toml`); it is
 never layered on top of it. Every setting must therefore be stated, so a library
