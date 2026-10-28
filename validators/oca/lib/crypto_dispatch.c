@@ -81,13 +81,20 @@ oca_result_t oca_check_manifest_hash(const uint8_t *body,
  *                                         the manifest.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The verifier is not wired, or could
  *                                         not run.
- * @return cb->verify_signature's verdict, normalized to the three codes above.
+ * @return Otherwise oca_check_class_description()'s refusal, checked here so
+ *         the verifier is only ever handed an algorithm the build enables and
+ *         lengths held to their fields; else cb->verify_signature's verdict,
+ *         normalized to the three codes above.
  */
 static oca_result_t verify_signature_by_class(const uint8_t *body,
                                      const oca_variant_t *v,
                                      const oca_callbacks_t *cb,
                                      oca_key_algorithm_t algo)
 {
+    oca_result_t described = oca_check_class_description(body, algo);
+    if (described != OCA_OK) {
+        return described;
+    }
     if (cb == 0 || cb->verify_signature == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }

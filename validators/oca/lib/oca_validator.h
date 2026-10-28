@@ -2023,7 +2023,9 @@ oca_result_t oca_check_manifest_hash(
  * oca_check_root_key_authorized() recorded that class's OWN anchor vouching for
  * its key; a classical vouching never unlocks a PQC verify. The recorded
  * enforcement is confirmed against the manifest's class bits before it is
- * acted on, the same time-of-use rule the secure-boot determination gets.
+ * acted on, the same time-of-use rule the secure-boot determination gets, and
+ * each class's signing description is held to this build again, as
+ * oca_check_signing_description() holds it, before that class's verifier runs.
  *
  * @param[in]     body  Whole variant body. See the length contract above.
  * @param[in]     cb    Callback table; cb->verify_signature is required under
@@ -2055,6 +2057,16 @@ oca_result_t oca_check_manifest_hash(
  *                                         variant with no PQC fields — both
  *                                         only reachable around the checks
  *                                         that reject them earlier.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An enforced class's algorithm, or a
+ *                                         DER encoding it uses, is not
+ *                                         enabled in this build.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     An enforced class's signature_type
+ *                                         is reserved.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE      An enforced class's size or encoding
+ *                                         does not fit its algorithm, or its
+ *                                         padding is not zero. This and the
+ *                                         two above are only reachable around
+ *                                         oca_check_signing_description().
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   Verify callback missing under secure boot.
  * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED  @p ctx holds no determination.
  * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination — or the
@@ -2143,7 +2155,10 @@ oca_result_t oca_check_signature_posture(
  * to cb->is_key_authorized — the classical key when secure_boot_classic is set,
  * the PQC key when secure_boot_pqc is, both for a hybrid manifest, each blob
  * carrying its key_algorithm so the implementation knows which anchor family to
- * consult — and rejects unless the device claims every one of them.
+ * consult — and rejects unless the device claims every one of them. Each
+ * class's signing description is held to this build first, as
+ * oca_check_signing_description() holds it, so the anchor is only ever shown a
+ * key of an enabled algorithm whose length is held to its field.
  *
  * Compose this FIRST of the key checks, before oca_check_root_key_revocation()
  * and oca_check_signature(). Verifying a signature establishes only that some
@@ -2182,6 +2197,16 @@ oca_result_t oca_check_signature_posture(
  *                                         variant with no PQC fields — both
  *                                         only reachable around the checks
  *                                         that reject them earlier.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An enforced class's algorithm, or a
+ *                                         DER encoding it uses, is not
+ *                                         enabled in this build.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     An enforced class's signature_type
+ *                                         is reserved.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE      An enforced class's size or encoding
+ *                                         does not fit its algorithm, or its
+ *                                         padding is not zero. This and the
+ *                                         two above are only reachable around
+ *                                         oca_check_signing_description().
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   Callback missing under secure boot, or
  *                                         the anchor could not be read.
  * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED  @p ctx holds no determination.

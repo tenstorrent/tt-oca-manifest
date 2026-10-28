@@ -324,6 +324,50 @@ static oca_result_t check_class_description(const uint8_t *body,
     return OCA_OK;
 }
 
+oca_result_t oca_check_class_description(const uint8_t *body,
+                                         oca_key_algorithm_t algo)
+{
+    oca_result_t status;
+    const oca_variant_t *v = oca_variant_for_body(body, &status);
+    if (v == 0) {
+        return status;
+    }
+    if (algo == OCA_KEY_ALGO_PQC) {
+        /* Never read PQC offsets out of a body that has none. */
+        if (v->len_pqc_signature == 0u) {
+            return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
+        }
+        const class_description_t pqc = {
+            .family                  = OCA_KEY_ALGO_PQC,
+            .off_type                = OCA_PQC_OFF_SIGNATURE_TYPE,
+            .off_signature_encoding  = OCA_PQC_OFF_SIGNATURE_ENCODING,
+            .off_public_key_encoding = OCA_PQC_OFF_PUBLIC_KEY_ENCODING,
+            .off_signature_size      = OCA_PQC_OFF_SIGNATURE_SIZE,
+            .off_public_key_size     = OCA_PQC_OFF_PUBLIC_KEY_SIZE,
+            .off_signature           = OCA_PQC_OFF_SIGNATURE_PQC,
+            .len_signature           = OCA_PQC_LEN_SIGNATURE_PQC,
+            .off_public_key          = OCA_PQC_OFF_PUBLIC_KEY,
+            .len_public_key          = OCA_PQC_LEN_PUBLIC_KEY,
+        };
+        return check_class_description(body, &pqc);
+    }
+    /* signature_classic is the one variant-positioned field here, so its
+     * offset comes from the descriptor. */
+    const class_description_t classical = {
+        .family                  = OCA_KEY_ALGO_CLASSIC,
+        .off_type                = OCA_OFF_SIGNATURE_TYPE,
+        .off_signature_encoding  = OCA_OFF_SIGNATURE_ENCODING,
+        .off_public_key_encoding = OCA_OFF_PUBLIC_KEY_ENCODING,
+        .off_signature_size      = OCA_OFF_SIGNATURE_SIZE,
+        .off_public_key_size     = OCA_OFF_PUBLIC_KEY_SIZE,
+        .off_signature           = v->off_signature,
+        .len_signature           = OCA_LEN_SIGNATURE,
+        .off_public_key          = OCA_OFF_PUBLIC_KEY,
+        .len_public_key          = OCA_LEN_PUBLIC_KEY,
+    };
+    return check_class_description(body, &classical);
+}
+
 oca_result_t oca_check_signing_description(const uint8_t *body,
                                           const oca_callbacks_t *cb,
                                           const oca_validation_context_t *ctx)
@@ -359,45 +403,19 @@ oca_result_t oca_check_signing_description(const uint8_t *body,
     /* Skipped only on an exact OCA_SECURE_FALSE, so a corrupted
      * enforcement word runs a class's check rather than skipping it. */
     if (ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE) {
-        /* signature_classic is the one variant-positioned field here, so its
-         * offset comes from the descriptor. */
-        const class_description_t classical = {
-            .family                  = OCA_KEY_ALGO_CLASSIC,
-            .off_type                = OCA_OFF_SIGNATURE_TYPE,
-            .off_signature_encoding  = OCA_OFF_SIGNATURE_ENCODING,
-            .off_public_key_encoding = OCA_OFF_PUBLIC_KEY_ENCODING,
-            .off_signature_size      = OCA_OFF_SIGNATURE_SIZE,
-            .off_public_key_size     = OCA_OFF_PUBLIC_KEY_SIZE,
-            .off_signature           = v->off_signature,
-            .len_signature           = OCA_LEN_SIGNATURE,
-            .off_public_key          = OCA_OFF_PUBLIC_KEY,
-            .len_public_key          = OCA_LEN_PUBLIC_KEY,
-        };
-        status = check_class_description(body, &classical);
+        status = oca_check_class_description(body, OCA_KEY_ALGO_CLASSIC);
         if (status != OCA_OK) {
             return status;
         }
     }
 
     if (ctx->secure_boot_enforce_pqc != OCA_SECURE_FALSE) {
-        /* Never read PQC offsets out of a body that has none. The confirm
-         * above already refused this; it is repeated at the point of use. */
+        /* The confirm above already refused a PQC class on a body with no PQC
+         * fields; the record is checked again at the point of use. */
         if (ctx->manifest_is_pqc != OCA_SECURE_TRUE) {
             return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
         }
-        const class_description_t pqc = {
-            .family                  = OCA_KEY_ALGO_PQC,
-            .off_type                = OCA_PQC_OFF_SIGNATURE_TYPE,
-            .off_signature_encoding  = OCA_PQC_OFF_SIGNATURE_ENCODING,
-            .off_public_key_encoding = OCA_PQC_OFF_PUBLIC_KEY_ENCODING,
-            .off_signature_size      = OCA_PQC_OFF_SIGNATURE_SIZE,
-            .off_public_key_size     = OCA_PQC_OFF_PUBLIC_KEY_SIZE,
-            .off_signature           = OCA_PQC_OFF_SIGNATURE_PQC,
-            .len_signature           = OCA_PQC_LEN_SIGNATURE_PQC,
-            .off_public_key          = OCA_PQC_OFF_PUBLIC_KEY,
-            .len_public_key          = OCA_PQC_LEN_PUBLIC_KEY,
-        };
-        status = check_class_description(body, &pqc);
+        status = oca_check_class_description(body, OCA_KEY_ALGO_PQC);
         if (status != OCA_OK) {
             return status;
         }

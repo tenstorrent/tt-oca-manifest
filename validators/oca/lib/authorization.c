@@ -59,13 +59,19 @@
  *                                         unrelated verdict.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The anchor is not wired, or could
  *                                         not be read.
- * @return Otherwise cb->is_key_authorized's verdict, normalized to the three
- *         codes above.
+ * @return Otherwise oca_check_class_description()'s refusal, checked here so
+ *         the anchor is only ever shown a key of an algorithm the build
+ *         enables, its length held to its field; else cb->is_key_authorized's
+ *         verdict, normalized to the three codes above.
  */
 static oca_result_t authorize_key_by_class(const uint8_t *body,
                                         const oca_callbacks_t *cb,
                                         oca_key_algorithm_t algo)
 {
+    oca_result_t described = oca_check_class_description(body, algo);
+    if (described != OCA_OK) {
+        return described;
+    }
     if (cb == 0 || cb->is_key_authorized == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }

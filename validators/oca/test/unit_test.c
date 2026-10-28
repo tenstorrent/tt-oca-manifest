@@ -4862,6 +4862,118 @@ TEST(test_signature_refuses_a_context_without_authorization)
     ASSERT_EQ_INT(g_fx.sig_calls, 0);
 }
 
+/* One field of a sound secure manifest's signing description, changed to
+ * something this build cannot accept, and the result that earns. */
+typedef struct description_case {
+    size_t       off;
+    uint16_t     value;
+    bool         wide;   /* a 16-bit size field rather than a byte */
+    oca_result_t want;
+} description_case_t;
+
+static const description_case_t g_classic_description_cases[] = {
+    /* RSA-3072 PSS: defined by the format, implemented by no build. */
+    { OCA_OFF_SIGNATURE_TYPE, 0x02u, false, OCA_FAIL_ALGORITHM_NOT_ENABLED },
+    { OCA_OFF_SIGNATURE_TYPE, 0x08u, false, OCA_FAIL_ALGORITHM_RESERVED },
+    /* The format defines no DER form for an RSA signature. */
+    { OCA_OFF_SIGNATURE_ENCODING, OCA_ENCODING_DER, false,
+      OCA_FAIL_CRYPTO_FIELD_SIZE },
+    { OCA_OFF_SIGNATURE_SIZE, 0xFFFFu, true, OCA_FAIL_CRYPTO_FIELD_SIZE },
+    { OCA_OFF_PUBLIC_KEY_SIZE, 0xFFFFu, true, OCA_FAIL_CRYPTO_FIELD_SIZE },
+    { OCA_CLASSIC_OFF_SIGNATURE + 384u, 0x01u, false,
+      OCA_FAIL_CRYPTO_FIELD_SIZE },
+};
+
+/* ML-DSA-44: defined by the format, implemented by no build. */
+static const description_case_t g_pqc_description_case = {
+    OCA_PQC_OFF_SIGNATURE_TYPE, 0x31u, false, OCA_FAIL_ALGORITHM_NOT_ENABLED
+};
+
+static void apply_description_case(uint8_t *buf, const description_case_t *c)
+{
+    if (c->wide) {
+        toc_put_u16(buf + c->off, c->value);
+    } else {
+        buf[c->off] = (uint8_t)c->value;
+    }
+}
+
+/* The key the trust anchor is shown is held to the signing description where
+ * it is shown, so a hand-composed sequence that skipped
+ * oca_check_signing_description() still never presents a key of an algorithm
+ * this build leaves off, or one whose length nothing has bounded. */
+TEST(test_authorization_refuses_a_description_the_build_does_not_accept)
+{
+    oca_callbacks_t cb;
+    for (size_t i = 0u; i < sizeof g_classic_description_cases
+                            / sizeof g_classic_description_cases[0]; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_secure_manifest(buf);
+        apply_description_case(buf, &g_classic_description_cases[i]);
+        test_fixture_reset();
+        build_devstate_cb(&cb, buf);
+        g_authorize_calls = 0;
+        oca_validation_context_t ctx = g_determined_secure;
+        ASSERT_EQ_INT(oca_check_root_key_authorized(buf, &cb, &ctx),
+                      g_classic_description_cases[i].want);
+        ASSERT_EQ_INT(g_authorize_calls, 0);
+        ASSERT_TRUE(ctx.secure_boot_key_authorized_classic != OCA_SECURE_TRUE);
+    }
+
+    static uint8_t pqc[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(pqc, 0x05u);
+    apply_description_case(pqc, &g_pqc_description_case);
+    test_fixture_reset();
+    build_devstate_cb(&cb, pqc);
+    g_authorize_calls = 0;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(pqc, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_root_key_authorized(pqc, &cb, &ctx),
+                  g_pqc_description_case.want);
+    ASSERT_EQ_INT(g_authorize_calls, 0);
+    ASSERT_TRUE(ctx.secure_boot_key_authorized_pqc != OCA_SECURE_TRUE);
+}
+
+/* The signature check holds each class to its signing description at the
+ * point of use, so the build's portfolio stands even when the description
+ * check was skipped or its refusal glitched past: the contexts here record
+ * authorization and a met posture, and nothing about the description. */
+TEST(test_signature_refuses_a_description_the_build_does_not_accept)
+{
+    oca_callbacks_t cb;
+    for (size_t i = 0u; i < sizeof g_classic_description_cases
+                            / sizeof g_classic_description_cases[0]; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_secure_manifest(buf);
+        apply_description_case(buf, &g_classic_description_cases[i]);
+        test_fixture_reset();
+        build_devstate_cb(&cb, buf);
+        g_fx.sig_calls = 0;
+        oca_validation_context_t ctx = g_authorized_secure;
+        ASSERT_EQ_INT(oca_check_signature(buf, &cb, &ctx),
+                      g_classic_description_cases[i].want);
+        ASSERT_EQ_INT(g_fx.sig_calls, 0);
+        ASSERT_TRUE(ctx.secure_boot_authenticated != OCA_SECURE_TRUE);
+    }
+
+    static uint8_t pqc[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(pqc, 0x05u);
+    apply_description_case(pqc, &g_pqc_description_case);
+    test_fixture_reset();
+    build_devstate_cb(&cb, pqc);
+    g_fx.sig_calls = 0;
+    oca_validation_context_t ctx;
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_determine_secure_boot(pqc, &cb, &ctx), OCA_OK);
+    ASSERT_EQ_INT(oca_check_signature_posture(pqc, &cb, &ctx), OCA_OK);
+    ctx.secure_boot_key_authorized_pqc = OCA_SECURE_TRUE;
+    ASSERT_EQ_INT(oca_check_signature(pqc, &cb, &ctx),
+                  g_pqc_description_case.want);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
+    ASSERT_TRUE(ctx.secure_boot_authenticated != OCA_SECURE_TRUE);
+}
+
 /* Authorization is a no-op on a part where secure boot is not in force, and
  * costs no callback: there is no key to anchor.
  *
@@ -6271,15 +6383,13 @@ TEST(test_authorization_presents_the_key_the_verifier_receives)
 {
     static uint8_t buf[OCA_PQC_BODY_SIZE];
     build_secure_pqc_manifest(buf, 0x07u);
-    /* Every confusable encoding byte gets a DISTINCT value, so a blob built
-     * from the wrong offset differs by value instead of coinciding — the
-     * builder's uniform RAW would let a signature-encoding/key-encoding mixup
-     * slip through this comparison unseen. Nothing on the direct-call path
-     * below interprets these bytes, so the values need not be legal. */
-    buf[OCA_OFF_SIGNATURE_ENCODING]      = 0x11u;
-    buf[OCA_OFF_PUBLIC_KEY_ENCODING]     = 0x22u;
-    buf[OCA_PQC_OFF_SIGNATURE_ENCODING]  = 0x33u;
-    buf[OCA_PQC_OFF_PUBLIC_KEY_ENCODING] = 0x44u;
+    /* The classical key is DER, so it differs from the classical signature and
+     * from the PQC key, both raw: a blob built from either wrong offset
+     * differs by value instead of coinciding. Both checks hold the description
+     * to the build, so the values must be legal; ML-DSA defines no DER, so the
+     * PQC signature and key encodings cannot be told apart this way. A DER RSA
+     * key declares its own size, so 388 stands. */
+    buf[OCA_OFF_PUBLIC_KEY_ENCODING] = OCA_ENCODING_DER;
     test_fixture_reset();
     g_authorize_calls = 0;
     g_verify_fail_enabled = false;
@@ -8337,6 +8447,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_authorization_precedes_revocation);
     RUN_TEST(test_a_missing_authorization_callback_fails_closed);
     RUN_TEST(test_signature_refuses_a_context_without_authorization);
+    RUN_TEST(test_authorization_refuses_a_description_the_build_does_not_accept);
+    RUN_TEST(test_signature_refuses_a_description_the_build_does_not_accept);
     RUN_TEST(test_authorization_is_a_noop_when_secure_boot_is_off);
     RUN_TEST(test_revoked_key_skips_signature_in_pipeline);
     RUN_TEST(test_rollback_violation_rejected_before_signature_verification);

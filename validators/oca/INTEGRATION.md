@@ -726,6 +726,11 @@ at every use" below.
   boot itself validates them even on a manifest that leaves the bit clear, and
   while secure boot is not in force they are ignored, whatever they hold — a
   manifest that does not assert secure boot is not refused for carrying them.
+  `oca_check_root_key_authorized()` and `oca_check_signature()` hold each class
+  to the same rules again before handing its key or signature to a callback,
+  so a hand-composed sequence that skipped this check still never puts an
+  algorithm the build leaves off, or an unchecked length, in front of the trust
+  anchor or the verifier.
 - **Signature posture** (`oca_check_signature_posture()`) — the device's
   signature class revocation and cohort enforcement, as
   `get_signature_class_revoke` and `get_signature_cohort_enforce` report them,
