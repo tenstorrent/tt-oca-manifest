@@ -247,7 +247,10 @@ an algorithm the build leaves off is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLE
 a value the format reserves with `OCA_FAIL_ALGORITHM_RESERVED`. To implement an algorithm, add
 its row with the sizes the format fixes, give its `Setting` in `gen_config.py` a macro, and add
 that macro to the check header; the lock-step tests in `tests/test_oca_build_config.py` hold
-the table rows, the generator and the packer's signing tables together.
+the table rows, the generator and the packer's signing tables together. They also compile the
+library and resolve every value of every algorithm field, holding each to the generator's
+lists and the format's integrator ranges, and each signature type to a revocation bit, so a
+code point changed in one place fails until every copy agrees.
 
 The C unit tests must pass under any configuration, not only the default. A test whose fixture
 needs something a configuration can turn off registers with `RUN_TEST_IF(needs, test)` instead
