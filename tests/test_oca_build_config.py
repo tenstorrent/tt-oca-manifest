@@ -829,12 +829,24 @@ def test_no_hash_row_may_outgrow_the_digest_buffers(tmp_path, size, fits):
 # ---------------------------------------------------------------------------
 
 
-def run_make(build_dir, *args):
+def run_make(build_dir, *args, environment=None):
     require_tools("make", "cc")
     return subprocess.run(
         ["make", "-C", VALIDATOR_DIR, f"BUILD={build_dir}", *args],
         capture_output=True, text=True,
-        env={**os.environ, "PYTHON": sys.executable})
+        env={**os.environ, "PYTHON": sys.executable, **(environment or {})})
+
+
+def test_a_config_variable_in_the_environment_does_not_choose_the_configuration(
+        tmp_path):
+    """CONFIG is a common name for an unrelated environment variable, so only the
+    make command line names the build configuration."""
+    build = tmp_path / "build"
+    stray = write_config(tmp_path, config_text(pqc="false", ml_dsa_87="false"))
+    result = run_make(build, str(build / "gen" / "oca_config.h"),
+                      environment={"CONFIG": stray})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (build / "gen" / "oca_config.h").read_text() == default_header()
 
 
 def test_an_invalid_configuration_stops_the_build_before_any_compile(tmp_path):

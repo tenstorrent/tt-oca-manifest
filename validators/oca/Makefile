@@ -22,9 +22,9 @@
 #
 # Build configuration:
 #   Every compile-time setting of the library comes from one TOML file,
-#   CONFIG (default lib/oca_config.toml; relative paths resolve from this
-#   directory). lib/scripts/gen_config.py generates $(BUILD)/gen/oca_config.h
-#   from it before anything compiles:
+#   CONFIG on the make command line (default lib/oca_config.toml; relative
+#   paths resolve from this directory). lib/scripts/gen_config.py generates
+#   $(BUILD)/gen/oca_config.h from it before anything compiles:
 #     make CONFIG=path/to/board.toml
 #   A configuration replaces the default rather than adjusting it, so it states
 #   every setting. The library refuses the settings' former -D forms.
@@ -88,7 +88,9 @@ TEST_BUILD   := $(BUILD)/test
 FIXTURE_BUILD := $(BUILD)/fixtures
 GEN_BUILD    := $(BUILD)/gen
 
-CONFIG       ?= lib/oca_config.toml
+# Assigned with :=, so an unrelated CONFIG in the environment cannot choose the
+# configuration; a CONFIG on the make command line still overrides it.
+CONFIG       := lib/oca_config.toml
 CONFIG_HEADER := $(GEN_BUILD)/oca_config.h
 
 LIB_CFLAGS   := $(CFLAGS) -ffreestanding -nostdlib -fno-builtin -Os \
