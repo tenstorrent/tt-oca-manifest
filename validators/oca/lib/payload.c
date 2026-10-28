@@ -198,9 +198,10 @@ static oca_result_t validate_toc_structure(
  *
  * @param[in] field        The stored hash field, OCA_LEN_HASH_FIELD bytes.
  * @param[in] digest       The recomputed digest.
- * @param[in] digest_size  Its length, the leading part of @p field compared:
- *                         a hash row's digest_size, which algorithms.h holds
- *                         within the field.
+ * @param[in] digest_size  Its length, the leading part of @p field compared,
+ *                         from oca_hash_digest_size(). A size of zero, or one
+ *                         wider than the digest buffers, compares as a
+ *                         mismatch rather than as nothing.
  * @param[in] on_mismatch  Result code to return when they differ, so one
  *                         comparison serves the manifest, payload, chain, and
  *                         per-entry checks while each still reports its own
@@ -211,6 +212,9 @@ static oca_result_t validate_toc_structure(
 static oca_result_t compare_digest(const uint8_t *field, const uint8_t *digest,
                                    size_t digest_size, oca_result_t on_mismatch)
 {
+    if (digest_size == 0u || digest_size > OCA_HASH_MAX_DIGEST_SIZE) {
+        return on_mismatch;
+    }
     return oca_ct_diff(field, digest, digest_size) != 0 ? on_mismatch : OCA_OK;
 }
 
@@ -226,25 +230,31 @@ static oca_result_t compare_digest(const uint8_t *field, const uint8_t *digest,
  *                     between digests, and an unwired callback then fails
  *                     closed instead of being called through NULL.
  * @param[in]  hash    The payload's resolved hash algorithm.
+ * @param[in]  size    Its digest size, from oca_hash_digest_size(): read once
+ *                     by the caller, so the size written is the size the
+ *                     caller compares.
  * @param[in]  msg     Bytes to digest.
  * @param[in]  len     Length of @p msg.
- * @param[out] digest  Receives hash->digest_size bytes.
+ * @param[out] digest  Receives @p size bytes.
  * @retval OCA_OK                         Digest written.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE  The callback is unwired or could not
- *                                        compute the digest.
+ *                                        compute the digest, or @p size does
+ *                                        not fit @p digest.
  * @return One of the two codes above; any failure the callback reports is
  *         collapsed to OCA_FAIL_CALLBACK_UNAVAILABLE.
  */
 static oca_result_t payload_digest(const oca_callbacks_t *cb,
-                                   const oca_hash_algorithm_t *hash,
+                                   const oca_hash_algorithm_t *hash, size_t size,
                                    const uint8_t *msg, size_t len,
                                    uint8_t digest[OCA_HASH_MAX_DIGEST_SIZE])
 {
+    if (size == 0u || size > OCA_HASH_MAX_DIGEST_SIZE) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
     if (cb == 0 || cb->hash == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    return cb->hash((oca_hash_type_t)hash->type, msg, len, digest,
-                    hash->digest_size) == OCA_OK
+    return cb->hash((oca_hash_type_t)hash->type, msg, len, digest, size) == OCA_OK
         ? OCA_OK : OCA_FAIL_CALLBACK_UNAVAILABLE;
 }
 
@@ -314,9 +324,12 @@ static oca_result_t check_payload_hash_chain_and_entries(
     if (hash == 0) {
         return status;
     }
-    const size_t size = hash->digest_size;
+    const size_t size = oca_hash_digest_size(hash);
+    if (size == 0u) {
+        return OCA_FAIL_PAYLOAD_HASH_CHAIN;
+    }
     uint8_t chain[OCA_HASH_MAX_DIGEST_SIZE];
-    if (payload_digest(cb, hash, pt, toc_bytes, chain) != OCA_OK) {
+    if (payload_digest(cb, hash, size, pt, toc_bytes, chain) != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     oca_result_t entry_verdict = OCA_OK;
@@ -325,7 +338,8 @@ static oca_result_t check_payload_hash_chain_and_entries(
         uint64_t off = oca_le_u64(entry + OCA_TOC_ENTRY_OFF_OFFSET);
         uint64_t len = oca_le_u64(entry + OCA_TOC_ENTRY_OFF_LENGTH);
         uint8_t img_hash[OCA_HASH_MAX_DIGEST_SIZE];
-        if (payload_digest(cb, hash, pt + off, (size_t)len, img_hash) != OCA_OK) {
+        if (payload_digest(cb, hash, size, pt + off, (size_t)len, img_hash)
+            != OCA_OK) {
             return OCA_FAIL_CALLBACK_UNAVAILABLE;
         }
         if (entry_verdict == OCA_OK) {
@@ -338,7 +352,7 @@ static oca_result_t check_payload_hash_chain_and_entries(
             buf[k] = chain[k];
             buf[size + k] = img_hash[k];
         }
-        if (payload_digest(cb, hash, buf, 2u * size, chain) != OCA_OK) {
+        if (payload_digest(cb, hash, size, buf, 2u * size, chain) != OCA_OK) {
             return OCA_FAIL_CALLBACK_UNAVAILABLE;
         }
     }
@@ -444,11 +458,16 @@ static oca_result_t check_cleartext_payload(const uint8_t *payload, size_t paylo
     if (hash == 0) {
         return r;
     }
+    const size_t size = oca_hash_digest_size(hash);
+    if (size == 0u) {
+        return OCA_FAIL_PAYLOAD_HASH;
+    }
     uint8_t digest[OCA_HASH_MAX_DIGEST_SIZE];
-    if (payload_digest(cb, hash, payload, (size_t)hashed_len, digest) != OCA_OK) {
+    if (payload_digest(cb, hash, size, payload, (size_t)hashed_len, digest)
+        != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    r = compare_digest(body + OCA_OFF_PAYLOAD_HASH, digest, hash->digest_size,
+    r = compare_digest(body + OCA_OFF_PAYLOAD_HASH, digest, size,
                        OCA_FAIL_PAYLOAD_HASH);
     if (r != OCA_OK) {
         return r;
@@ -563,11 +582,16 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
     if (hash == 0) {
         return r;
     }
+    const size_t size = oca_hash_digest_size(hash);
+    if (size == 0u) {
+        return OCA_FAIL_PAYLOAD_HASH;
+    }
     uint8_t digest[OCA_HASH_MAX_DIGEST_SIZE];
-    if (payload_digest(cb, hash, ciphertext, (size_t)cipher_len, digest) != OCA_OK) {
+    if (payload_digest(cb, hash, size, ciphertext, (size_t)cipher_len, digest)
+        != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    r = compare_digest(body + OCA_OFF_PAYLOAD_HASH, digest, hash->digest_size,
+    r = compare_digest(body + OCA_OFF_PAYLOAD_HASH, digest, size,
                        OCA_FAIL_PAYLOAD_HASH);
     if (r != OCA_OK) {
         return r;

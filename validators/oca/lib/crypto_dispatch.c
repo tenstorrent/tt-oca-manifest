@@ -30,24 +30,27 @@ oca_result_t oca_check_manifest_hash(const uint8_t *body,
     if (hash == 0) {
         return status;
     }
+    const size_t size = oca_hash_digest_size(hash);
+    if (size == 0u) {
+        return OCA_FAIL_MANIFEST_HASH;
+    }
     if (cb == 0 || cb->hash == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     uint8_t digest[OCA_HASH_MAX_DIGEST_SIZE];
     oca_result_t r = cb->hash((oca_hash_type_t)hash->type, body,
-                              v->signed_region_end, digest, hash->digest_size);
+                              v->signed_region_end, digest, size);
     if (r != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     /* Fixed-time compare (see oca_compare.h): both the digest match and the
      * trailing-padding check fold every byte before deciding. */
     const uint8_t *embedded = body + v->off_manifest_hash;
-    if (oca_ct_diff(embedded, digest, hash->digest_size) != 0) {
+    if (oca_ct_diff(embedded, digest, size) != 0) {
         return OCA_FAIL_MANIFEST_HASH;
     }
     /* The rest of the 64-byte field, past the digest, must be zero. */
-    if (oca_ct_any_nonzero(embedded + hash->digest_size,
-                           OCA_LEN_HASH_FIELD - hash->digest_size) != 0) {
+    if (oca_ct_any_nonzero(embedded + size, OCA_LEN_HASH_FIELD - size) != 0) {
         return OCA_FAIL_MANIFEST_HASH;
     }
     return OCA_OK;

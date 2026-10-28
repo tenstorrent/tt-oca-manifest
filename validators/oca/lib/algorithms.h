@@ -18,6 +18,7 @@
 #ifndef OCA_ALGORITHMS_H
 #define OCA_ALGORITHMS_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "oca_layout.h"
@@ -101,6 +102,22 @@ typedef struct oca_hash_algorithm {
  *         defines it but this build does not enable it, or reserves the value.
  */
 const oca_hash_algorithm_t *oca_hash_algorithm(uint8_t type, oca_result_t *status);
+
+/**
+ * @brief The digest size to use a hash row at.
+ *
+ * Every digest the library takes, compares or chains is sized through this,
+ * read once per use, so the size the callback writes is the size compared and
+ * no buffer is sized from a value nothing checked. The table's rows are held
+ * to the buffers at compile time; this holds a row that reached a use
+ * corrupted.
+ *
+ * @param[in] hash  A row from oca_hash_algorithm(), or NULL.
+ * @return The row's digest size, from 1 to OCA_HASH_MAX_DIGEST_SIZE; 0 when
+ *         @p hash is NULL or its size falls outside that range, which a caller
+ *         treats as a digest that does not match.
+ */
+size_t oca_hash_digest_size(const oca_hash_algorithm_t *hash);
 
 /**
  * @brief The format's rules for one payload cipher.

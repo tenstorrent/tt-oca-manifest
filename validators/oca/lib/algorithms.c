@@ -96,10 +96,19 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
     return 0;
 }
 
+/**
+ * A hash row's digest size, as a constant expression that stops the build
+ * when the digest is empty or wider than the digest buffers: the array size
+ * goes negative. C99 has no static assertion, and this one sits in the row.
+ */
+#define HASH_DIGEST_SIZE(n) \
+    ((uint8_t)((n) * sizeof(char[((n) >= 1u && (n) <= OCA_HASH_MAX_DIGEST_SIZE) \
+                                 ? 1 : -1])))
+
 /** The digests this build enables, for manifest_hash_type and payload_hash_type. */
 static const oca_hash_algorithm_t HASHES[] = {
 #if OCA_CFG_HASH_SHA2_256
-    { 0x01u, 32u },
+    { 0x01u, HASH_DIGEST_SIZE(32u) },
 #endif
     { 0x00u, 0u },
 };
@@ -119,6 +128,15 @@ const oca_hash_algorithm_t *oca_hash_algorithm(uint8_t type, oca_result_t *statu
     *status = (type >= 0x01u && type <= 0x08u) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
                                                : OCA_FAIL_ALGORITHM_RESERVED;
     return 0;
+}
+
+size_t oca_hash_digest_size(const oca_hash_algorithm_t *hash)
+{
+    if (hash == 0) {
+        return 0u;
+    }
+    const size_t size = hash->digest_size;
+    return (size >= 1u && size <= OCA_HASH_MAX_DIGEST_SIZE) ? size : 0u;
 }
 
 /** The payload ciphers this build enables. */

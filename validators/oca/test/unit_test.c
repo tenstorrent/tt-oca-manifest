@@ -4279,6 +4279,26 @@ TEST(test_every_hash_type_resolves_against_the_format_and_the_build)
     }
 }
 
+/* Every digest the library takes, compares or chains is sized through
+ * oca_hash_digest_size(), which answers 0 for anything but a row the digest
+ * buffers can hold, so a corrupted row is refused where it is used rather than
+ * overrunning a buffer or comparing nothing. */
+TEST(test_a_hash_row_is_used_only_at_a_size_the_buffers_hold)
+{
+    oca_result_t status;
+    ASSERT_EQ_INT(oca_hash_digest_size(oca_hash_algorithm(0x01u, &status)), 32);
+    ASSERT_EQ_INT(oca_hash_digest_size(NULL), 0);
+
+    static const oca_hash_algorithm_t empty = { 0x01u, 0u };
+    static const oca_hash_algorithm_t widest = { 0x01u, OCA_HASH_MAX_DIGEST_SIZE };
+    static const oca_hash_algorithm_t too_wide = {
+        0x01u, OCA_HASH_MAX_DIGEST_SIZE + 1u
+    };
+    ASSERT_EQ_INT(oca_hash_digest_size(&empty), 0);
+    ASSERT_EQ_INT(oca_hash_digest_size(&widest), OCA_HASH_MAX_DIGEST_SIZE);
+    ASSERT_EQ_INT(oca_hash_digest_size(&too_wide), 0);
+}
+
 /* Secure PQC manifest with the given secure_boot_control. BOTH class
  * descriptions are populated self-consistently — raw RSA-3072 classical, raw
  * ML-DSA-87 PQC — so whichever classes the control byte names survive the
@@ -8353,6 +8373,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing);
     RUN_TEST(test_the_hash_callback_is_asked_for_the_named_digest);
     RUN_TEST(test_every_hash_type_resolves_against_the_format_and_the_build);
+    RUN_TEST(test_a_hash_row_is_used_only_at_a_size_the_buffers_hold);
     RUN_TEST(test_result_string_covers_the_algorithm_codes);
     RUN_TEST(test_deprecated_check_names_reach_the_renamed_checks);
     RUN_TEST(test_corruption_outranks_a_field_level_violation);

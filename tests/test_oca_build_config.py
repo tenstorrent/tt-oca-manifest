@@ -751,9 +751,9 @@ def test_a_setting_passed_with_minus_d_is_refused_naming_its_key(tmp_path, defin
 
 
 def library_with_max_digest_size(tmp_path, size):
-    """A copy of the library's headers whose largest hash digest is size bytes."""
+    """A copy of the library whose largest hash digest is size bytes."""
     lib = tmp_path / "lib"
-    shutil.copytree(LIB_DIR, lib, ignore=shutil.ignore_patterns("scripts", "*.c"))
+    shutil.copytree(LIB_DIR, lib, ignore=shutil.ignore_patterns("scripts"))
     header = lib / "algorithms.h"
     text, count = re.subn(r"^#define OCA_HASH_MAX_DIGEST_SIZE \S+$",
                           f"#define OCA_HASH_MAX_DIGEST_SIZE {size}u",
@@ -777,6 +777,23 @@ def test_no_hash_digest_may_outgrow_the_hash_fields(tmp_path, size, fits):
     else:
         assert result.returncode != 0
         assert "OCA_HASH_MAX_DIGEST_SIZE exceeds OCA_LEN_HASH_FIELD" in result.stderr
+
+
+@pytest.mark.parametrize("size, fits", [
+    pytest.param(32, True, id="sha2-256-at-the-maximum"),
+    pytest.param(31, False, id="sha2-256-past-the-maximum"),
+])
+def test_no_hash_row_may_outgrow_the_digest_buffers(tmp_path, size, fits):
+    """Every digest buffer is OCA_HASH_MAX_DIGEST_SIZE wide, so a hash row whose
+    digest is wider must stop the build rather than overrun one."""
+    lib = library_with_max_digest_size(tmp_path, size)
+    result = compile_probe(tmp_path, default_header(), lib_dir=lib,
+                           probe_text='#include "algorithms.c"\n')
+    if fits:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0
+        assert "algorithms.c" in result.stderr
 
 
 # ---------------------------------------------------------------------------
