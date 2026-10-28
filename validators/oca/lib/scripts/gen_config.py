@@ -430,7 +430,9 @@ def write_if_changed(path: str, text: str) -> bool:
     Leaving an unchanged file alone keeps its timestamp, which is what lets
     every object that depends on the header skip recompiling. The new text is
     written to a temporary file and moved into place, so a failed write leaves
-    the previous header, and no temporary file, behind.
+    the previous header, and no temporary file, behind. The temporary file is
+    created private, so it is given the mode any new file gets under the
+    process umask before it becomes the header.
     """
     if header_is_current(path, text):
         return False
@@ -440,11 +442,23 @@ def write_if_changed(path: str, text: str) -> bool:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(text)
+        os.chmod(temporary, new_file_mode())
         os.replace(temporary, path)
     except BaseException:
         os.unlink(temporary)
         raise
     return True
+
+
+def new_file_mode() -> int:
+    """The mode open() gives a new file under the process umask.
+
+    Reading the umask means setting it. It is put straight back, which is safe
+    while nothing else in the process creates files at the same moment.
+    """
+    umask = os.umask(0)
+    os.umask(umask)
+    return 0o666 & ~umask
 
 
 def header_is_current(path: str, text: str) -> bool:

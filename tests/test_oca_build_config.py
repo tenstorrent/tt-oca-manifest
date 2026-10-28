@@ -470,6 +470,32 @@ def test_a_failed_write_keeps_the_previous_header_and_leaves_no_temporary(
     assert sorted(path.name for path in out.parent.iterdir()) == ["oca_config.h"]
 
 
+@pytest.fixture
+def restore_umask():
+    """Puts the process umask back after a test that sets its own."""
+    previous = os.umask(0o022)
+    yield
+    os.umask(previous)
+
+
+@pytest.mark.parametrize("mask, mode", [
+    pytest.param(0o022, 0o644, id="umask-022"),
+    pytest.param(0o002, 0o664, id="umask-002"),
+    pytest.param(0o077, 0o600, id="umask-077"),
+])
+def test_the_header_gets_the_mode_any_new_file_would(tmp_path, restore_umask, mask, mode):
+    """The header is written through a temporary file, which is created private;
+    it must not stay private, or a build run by one user cannot be read by
+    another, or by a container running as someone else."""
+    os.umask(mask)
+    out = tmp_path / "gen" / "oca_config.h"
+    gen_config.generate(write_config(tmp_path, config_text()), str(out))
+    assert out.stat().st_mode & 0o777 == mode
+    changed = write_config(tmp_path, config_text(pqc="false", ml_dsa_87="false"))
+    assert gen_config.generate(changed, str(out))
+    assert out.stat().st_mode & 0o777 == mode
+
+
 # The command line is what the Makefile and an adopter's build run, so its exit
 # codes and messages are part of the contract. Called in-process.
 
