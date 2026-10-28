@@ -276,9 +276,9 @@ static oca_result_t payload_digest(const oca_callbacks_t *cb,
  * signed manifest.
  *
  * The digest occupies the leading bytes of the 64-byte entry hash field, as
- * many as payload_hash_type's digest size; the remainder is padding the library does not
- * interpret. The TOC is structurally validated before this runs, so the
- * offset and length reads are already known to be in bounds.
+ * many as payload_hash_type's digest size; the remainder is padding the
+ * library does not interpret. The TOC is structurally validated before this
+ * runs, so the offset and length reads are already known to be in bounds.
  *
  * @param[in] pt           Plaintext payload region.
  * @param[in] image_count  Validated entry count.

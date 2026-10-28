@@ -453,6 +453,23 @@ def test_a_header_is_current_only_when_it_matches_exactly(tmp_path):
     assert gen_config.header_is_current(str(out), text) is False
 
 
+def refuse_to_replace(source, destination):
+    raise OSError(28, "No space left on device")
+
+
+def test_a_failed_write_keeps_the_previous_header_and_leaves_no_temporary(
+        tmp_path, monkeypatch):
+    out = tmp_path / "gen" / "oca_config.h"
+    gen_config.generate(write_config(tmp_path, config_text()), str(out))
+    previous = out.read_text()
+    changed = write_config(tmp_path, config_text(pqc="false", ml_dsa_87="false"))
+    monkeypatch.setattr(gen_config.os, "replace", refuse_to_replace)
+    with pytest.raises(OSError):
+        gen_config.generate(changed, str(out))
+    assert out.read_text() == previous
+    assert sorted(path.name for path in out.parent.iterdir()) == ["oca_config.h"]
+
+
 # The command line is what the Makefile and an adopter's build run, so its exit
 # codes and messages are part of the contract. Called in-process.
 

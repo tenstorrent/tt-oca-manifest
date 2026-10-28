@@ -428,14 +428,12 @@ def write_if_changed(path: str, text: str) -> bool:
     """Write text to path unless it already holds exactly that. Returns whether it wrote.
 
     Leaving an unchanged file alone keeps its timestamp, which is what lets
-    every object that depends on the header skip recompiling.
+    every object that depends on the header skip recompiling. The new text is
+    written to a temporary file and moved into place, so a failed write leaves
+    the previous header, and no temporary file, behind.
     """
-    try:
-        with open(path, encoding="utf-8") as handle:
-            if handle.read() == text:
-                return False
-    except FileNotFoundError:
-        pass
+    if header_is_current(path, text):
+        return False
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(dir=directory, suffix=".tmp")
