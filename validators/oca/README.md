@@ -195,6 +195,17 @@ check: complete
 (Counts grow as tests and fixtures are added; the shape is what matters — every
 unit test and every fixture round-trip passes.)
 
+`make check` runs the unit tests under the build configuration it is given.
+pytest runs them again under configurations that, between them, turn off each
+variant, each signature algorithm, each DER encoding, each cipher and payload
+encryption as a whole (`tests/test_oca_build_config.py`). A test whose fixtures
+need something a configuration can turn off registers with
+`RUN_TEST_IF(needs, test)`, `needs` being an expression over the settings. In a
+build without it, the driver prints `NOT RUN: <test> (needs ...)` and counts it
+apart from the `N/N passed` summary. Tests of each setting's off branch run in
+every build and check what it refuses instead. Under the default configuration
+every test runs.
+
 ### Prerequisites
 
 - A host C toolchain (gcc 12+ or clang 16+) with `-std=c99` support.

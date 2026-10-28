@@ -864,15 +864,55 @@ def test_a_changed_configuration_rebuilds_and_an_unchanged_one_does_not(tmp_path
     assert "#define OCA_CFG_VARIANT_PQC 0" in (build / "gen" / "oca_config.h").read_text()
 
 
-def test_the_unit_tests_pass_under_a_reduced_configuration(tmp_path):
-    """The unit tests read every setting through its macro, so none of them
-    depends on a default. Turning the recheck off also runs the branch of the
-    suite that only exists without it."""
-    config = write_config(tmp_path, config_text(
-        toc_max_images="16", recheck_security_version="false"))
+# Between them, these turn off each variant, each signature algorithm, each DER
+# encoding while its algorithm stays on, each cipher, payload encryption as a
+# whole, and the recheck.
+UNIT_TEST_CONFIGURATIONS = [
+    pytest.param({}, (), id="default"),
+    pytest.param({"toc_max_images": "16", "recheck_security_version": "false"},
+                 ("test_anti_rollback_evaluated_once_when_recheck_disabled",),
+                 id="small-toc-no-recheck"),
+    pytest.param({"pqc": "false", "ml_dsa_87": "false"}, (), id="classic-only"),
+    pytest.param({"classic": "false"}, (), id="pqc-only"),
+    pytest.param({"ecdsa": "false", "der_ecdsa": "false", "ml_dsa_87": "false",
+                  "der_rsa": "false", "aes_128": "false"}, (),
+                 id="rsa-raw-keys-aes-256"),
+    pytest.param({"rsa": "false", "der_rsa": "false", "der_ecdsa": "false",
+                  "aes_128": "false", "aes_256": "false", "kdf": "false",
+                  "preshared": "false"}, (),
+                 id="ecdsa-raw-signatures-ml-dsa-no-encryption"),
+    pytest.param({"rsa": "false", "ecdsa": "false", "der_rsa": "false",
+                  "der_ecdsa": "false", "aes_256": "false"}, (),
+                 id="ml-dsa-aes-128"),
+]
+
+# The tests of each setting's off branch, and the sweeps that hold the
+# algorithm tables to the configuration. They run under every configuration.
+TESTS_OF_THE_CONFIGURATION = (
+    "test_a_variant_the_build_leaves_off_is_unsupported",
+    "test_a_signature_algorithm_the_build_leaves_off_is_refused",
+    "test_a_der_encoding_the_build_leaves_off_is_refused",
+    "test_a_cipher_the_build_leaves_off_is_refused_before_hashing",
+    "test_every_signature_type_resolves_against_the_format_and_the_build",
+    "test_signature_rows_carry_the_format_encoded_lengths",
+    "test_every_payload_algorithm_resolves_against_the_format_and_the_build",
+)
+
+
+@pytest.mark.parametrize("changes, also_passing", UNIT_TEST_CONFIGURATIONS)
+def test_the_unit_tests_pass_under_every_build_configuration(tmp_path, changes,
+                                                             also_passing):
+    """A unit test whose fixtures need something a configuration turns off is
+    registered with what it needs, and is listed as not run where the build
+    lacks it; every test that runs must pass. Under the default every test
+    runs, so a test gated wrongly is caught there."""
+    config = write_config(tmp_path, config_text(**changes))
     result = run_make(tmp_path / "build", f"CONFIG={config}", "unit_test")
-    assert result.returncode == 0, result.stdout + result.stderr
     # The driver reports on stderr.
+    assert result.returncode == 0, result.stdout + result.stderr
     summary = re.search(r"^(\d+)/(\d+) passed$", result.stderr, re.M)
     assert summary and summary.group(1) == summary.group(2), result.stderr
-    assert "PASS: test_anti_rollback_evaluated_once_when_recheck_disabled" in result.stderr
+    for name in (*TESTS_OF_THE_CONFIGURATION, *also_passing):
+        assert f"PASS: {name}\n" in result.stderr, name
+    if not changes:
+        assert "NOT RUN:" not in result.stderr

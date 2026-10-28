@@ -247,6 +247,13 @@ its row with the sizes the format fixes, give its `Setting` in `gen_config.py` a
 that macro to the check header; the lock-step tests in `tests/test_oca_build_config.py` hold
 the table rows, the generator and the packer's signing tables together.
 
+The C unit tests must pass under any configuration, not only the default. A test whose fixture
+needs something a configuration can turn off registers with `RUN_TEST_IF(needs, test)` instead
+of `RUN_TEST`. A build without it then lists the test as `NOT RUN` rather than failing it, and
+the tests of each setting's off branch check what that build refuses instead.
+`tests/test_oca_build_config.py` runs the suite under configurations that turn each variant,
+algorithm, DER encoding and cipher off, and under the default, where every test must run.
+
 A consumer that must **never** accept a variant turns the other off in `[variants]`.
 `classic-only` builds from `test/build_configs/classic_only.toml`, `pqc-only` from
 `pqc_only.toml`, and `both` from the default, which accepts everything; each lands in its own

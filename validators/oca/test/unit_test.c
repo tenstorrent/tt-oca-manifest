@@ -25,16 +25,33 @@
 #include "oca_layout_pqc.h"   /* PQC body size, for the cross-variant checks */
 #include "unit_helpers.h"
 
+/* What a test's fixtures need the build configuration to enable, for
+ * RUN_TEST_IF and for the tests of each setting's off branch: the variant a
+ * fixture's body is framed as, and the algorithms its description or payload
+ * names. */
+#define CFG_CLASSIC    OCA_CFG_VARIANT_CLASSIC
+#define CFG_PQC        OCA_CFG_VARIANT_PQC
+#define CFG_RSA        OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256
+#define CFG_ECDSA      OCA_CFG_SIG_ECDSA_P256_SHA256
+#define CFG_ML_DSA_87  OCA_CFG_SIG_ML_DSA_87
+#define CFG_DER_RSA    OCA_CFG_DER_RSA_PUBLIC_KEY
+#define CFG_DER_ECDSA  OCA_CFG_DER_ECDSA_SIGNATURE
+#define CFG_AES_128    OCA_CFG_CIPHER_AES_128_CBC
+#define CFG_AES_256    OCA_CFG_CIPHER_AES_256_CBC
+
 int g_unit_total = 0;
 int g_unit_failed = 0;
 int g_unit_current_failed = 0;
+int g_unit_not_run = 0;
 
-/* Registered tests, in declaration order. */
+/* Registered tests, in declaration order. A test registered with needs this
+ * build does not meet keeps its slot, so --reverse still reverses one list. */
 static const char   *g_reg_names[OCA_UNIT_MAX_TESTS];
 static unit_test_fn  g_reg_fns[OCA_UNIT_MAX_TESTS];
+static const char   *g_reg_unmet[OCA_UNIT_MAX_TESTS];
 static int           g_reg_count;
 
-void unit_register(const char *name, unit_test_fn fn)
+void unit_register_if(int met, const char *needs, const char *name, unit_test_fn fn)
 {
     if (g_reg_count >= OCA_UNIT_MAX_TESTS) {
         fprintf(stderr, "unit_register: OCA_UNIT_MAX_TESTS (%d) exceeded; "
@@ -43,13 +60,24 @@ void unit_register(const char *name, unit_test_fn fn)
     }
     g_reg_names[g_reg_count] = name;
     g_reg_fns[g_reg_count]   = fn;
+    g_reg_unmet[g_reg_count] = met ? NULL : needs;
     g_reg_count++;
+}
+
+void unit_register(const char *name, unit_test_fn fn)
+{
+    unit_register_if(1, NULL, name, fn);
 }
 
 void unit_run_all(int reverse)
 {
     for (int n = 0; n < g_reg_count; ++n) {
         int i = reverse ? (g_reg_count - 1 - n) : n;
+        if (g_reg_unmet[i] != NULL) {
+            g_unit_not_run++;
+            fprintf(stderr, "NOT RUN: %s (needs %s)\n", g_reg_names[i], g_reg_unmet[i]);
+            continue;
+        }
         g_unit_total++;
         g_unit_current_failed = 0;
         test_fixture_reset();
@@ -2515,7 +2543,8 @@ TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
 }
 
 /* Every encryption_type, KDF and key source resolves to exactly one outcome,
- * checked against the format's values written out one by one. */
+ * checked against the format's values written out one by one and the
+ * algorithms this build enables. */
 TEST(test_every_payload_algorithm_resolves_against_the_format_and_the_build)
 {
     static const uint8_t defined_ciphers[] = {
@@ -2528,7 +2557,7 @@ TEST(test_every_payload_algorithm_resolves_against_the_format_and_the_build)
         }
         oca_result_t status = OCA_OK;
         const oca_cipher_algorithm_t *row = oca_cipher_algorithm((uint8_t)type, &status);
-        if (type == 0x01u || type == 0x02u) {
+        if ((type == 0x01u && CFG_AES_128) || (type == 0x02u && CFG_AES_256)) {
             ASSERT_EQ_INT(status, OCA_OK);
             ASSERT_TRUE(row != NULL && row->type == type && row->block_size == 16u);
         } else {
@@ -2540,13 +2569,44 @@ TEST(test_every_payload_algorithm_resolves_against_the_format_and_the_build)
     for (unsigned kdf = 0u; kdf <= 0xFFFFu; ++kdf) {
         oca_result_t expected = (kdf <= 0x0008u || kdf >= 0xFF00u)
                                 ? OCA_FAIL_ALGORITHM_NOT_ENABLED : OCA_FAIL_ALGORITHM_RESERVED;
-        ASSERT_EQ_INT(oca_kdf_status((uint16_t)kdf), kdf == 0x0001u ? OCA_OK : expected);
+        ASSERT_EQ_INT(oca_kdf_status((uint16_t)kdf),
+                      (kdf == 0x0001u && OCA_CFG_KDF_SP800_108_HMAC_SHA256)
+                      ? OCA_OK : expected);
     }
-    ASSERT_EQ_INT(oca_key_source_status(0x1u), OCA_OK);
+    ASSERT_EQ_INT(oca_key_source_status(0x1u), OCA_CFG_KEY_SOURCE_PRESHARED
+                                               ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
     ASSERT_EQ_INT(oca_key_source_status(0x2u), OCA_FAIL_ALGORITHM_NOT_ENABLED);
     static const unsigned reserved_sources[] = { 0x0u, 0x3u, 0x4u, 0x5u, 0x6u, 0x7u };
     for (size_t i = 0u; i < sizeof reserved_sources / sizeof reserved_sources[0]; ++i) {
         ASSERT_EQ_INT(oca_key_source_status(reserved_sources[i]), OCA_FAIL_ALGORITHM_RESERVED);
+    }
+}
+
+/* A cipher the build turns off, including every cipher when it turns payload
+ * encryption off, is refused before the ciphertext is hashed. One it keeps is
+ * accepted, and the bundle then fails only on its deliberately wrong hash. */
+TEST(test_a_cipher_the_build_leaves_off_is_refused_before_hashing)
+{
+    static const struct { uint8_t type; int enabled; } ciphers[] = {
+        { OCA_ENCRYPTION_TYPE_AES_128_CBC, CFG_AES_128 },
+        { OCA_ENCRYPTION_TYPE_AES_256_CBC, CFG_AES_256 },
+    };
+    if (!CFG_CLASSIC) {
+        return;
+    }
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN];
+    uint8_t ph[32]; memset(ph, 0x11, 32);
+    uint8_t chain[32]; memset(chain, 0, 32);
+    for (size_t i = 0u; i < sizeof ciphers / sizeof ciphers[0]; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        buf[OCA_OFF_ENCRYPTION_TYPE] = ciphers[i].type;
+        if (ciphers[i].enabled) {
+            ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf),
+                          OCA_FAIL_PAYLOAD_HASH);
+            ASSERT_EQ_INT(g_sha_calls, 1);
+        } else {
+            assert_refused_before_hashing(buf, sizeof buf, OCA_FAIL_ALGORITHM_NOT_ENABLED);
+        }
     }
 }
 
@@ -3523,6 +3583,31 @@ TEST(test_peek_reports_pqc_body_size)
     ASSERT_EQ_INT(oca_peek_manifest(buf, sizeof buf, &pk), OCA_OK);
     ASSERT_EQ_INT(pk.body_size, OCA_PQC_BODY_SIZE);
     ASSERT_EQ_INT(strcmp(pk.variant_name, "OCA-PQC"), 0);
+}
+
+/* A variant the build configuration turns off is refused by its magic, ahead
+ * of anything else about the manifest, and one it keeps is not. */
+TEST(test_a_variant_the_build_leaves_off_is_unsupported)
+{
+    uint8_t head[OCA_MANIFEST_PEEK_MIN];
+    oca_manifest_peek_t pk;
+    memset(head, 0, sizeof head);
+    memcpy(head, OCA_CLASSIC_MAGIC, OCA_MAGIC_LEN);
+    ASSERT_EQ_INT(oca_peek_manifest(head, sizeof head, &pk),
+                  CFG_CLASSIC ? OCA_OK : OCA_FAIL_UNSUPPORTED_VARIANT);
+    memcpy(head, OCA_PQC_MAGIC, OCA_MAGIC_LEN);
+    ASSERT_EQ_INT(oca_peek_manifest(head, sizeof head, &pk),
+                  CFG_PQC ? OCA_OK : OCA_FAIL_UNSUPPORTED_VARIANT);
+
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(buf);
+    g_fx.sha_body = buf;
+    oca_callbacks_t cb;
+    memset(&cb, 0, sizeof cb);
+    cb.hash = stub_hash_pass;
+    cb.is_secure_boot_active = sb_inactive_cb;
+    ASSERT_EQ_INT(oca_validate(buf, sizeof buf, &cb, NULL, NULL),
+                  CFG_CLASSIC ? OCA_OK : OCA_FAIL_UNSUPPORTED_VARIANT);
 }
 
 TEST(test_peek_body_size_comes_from_the_magic_not_declared_length)
@@ -6017,9 +6102,9 @@ static int format_defines_signature(oca_key_algorithm_t family, unsigned type)
     return 0;
 }
 
-/* Every value of both classes resolves to exactly one outcome: the enabled
- * algorithms to their rows, the other defined ones to "not enabled", and the
- * rest to "reserved". */
+/* Every value of both classes resolves to exactly one outcome: the algorithms
+ * this build enables to their rows, the other defined ones to "not enabled",
+ * and the rest to "reserved". */
 TEST(test_every_signature_type_resolves_against_the_format_and_the_build)
 {
     static const oca_key_algorithm_t families[] = { OCA_KEY_ALGO_CLASSIC, OCA_KEY_ALGO_PQC };
@@ -6029,7 +6114,8 @@ TEST(test_every_signature_type_resolves_against_the_format_and_the_build)
             const oca_signature_algorithm_t *row =
                 oca_signature_algorithm(families[f], (uint8_t)type, &status);
             const int enabled = families[f] == OCA_KEY_ALGO_PQC
-                ? type == 0x33u : (type == 0x01u || type == 0x05u);
+                ? (type == 0x33u && CFG_ML_DSA_87)
+                : ((type == 0x01u && CFG_RSA) || (type == 0x05u && CFG_ECDSA));
             if (enabled) {
                 ASSERT_EQ_INT(status, OCA_OK);
                 ASSERT_TRUE(row != NULL && row->type == type);
@@ -6043,34 +6129,75 @@ TEST(test_every_signature_type_resolves_against_the_format_and_the_build)
     }
 }
 
-/* Each enabled row carries the format's encoded lengths and DER rules. */
+/* Asserts a signature algorithm has a row exactly when the build enables it.
+ * Returns the row, or NULL when there is none to inspect. */
+static const oca_signature_algorithm_t *row_if_enabled(oca_key_algorithm_t family,
+                                                       uint8_t type, int enabled)
+{
+    oca_result_t status = OCA_OK;
+    const oca_signature_algorithm_t *row = oca_signature_algorithm(family, type, &status);
+    ASSERT_EQ_INT(status, enabled ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
+    ASSERT_TRUE((row != NULL) == (enabled != 0));
+    return row;
+}
+
+/* Each row the build enables carries the format's encoded lengths, and the DER
+ * rules the build chooses; an algorithm it leaves off has no row. */
 TEST(test_signature_rows_carry_the_format_encoded_lengths)
 {
-    oca_result_t status;
     const oca_signature_algorithm_t *rsa =
-        oca_signature_algorithm(OCA_KEY_ALGO_CLASSIC, 0x01u, &status);
-    ASSERT_TRUE(rsa != NULL);
-    ASSERT_EQ_INT(rsa->public_key_raw, 388);
-    ASSERT_EQ_INT(rsa->signature_raw, 384);
-    ASSERT_EQ_INT(rsa->public_key_der, OCA_DER_ENABLED);
-    ASSERT_EQ_INT(rsa->signature_der, OCA_DER_UNDEFINED);
+        row_if_enabled(OCA_KEY_ALGO_CLASSIC, 0x01u, CFG_RSA);
+    if (rsa != NULL) {
+        ASSERT_EQ_INT(rsa->public_key_raw, 388);
+        ASSERT_EQ_INT(rsa->signature_raw, 384);
+        ASSERT_EQ_INT(rsa->public_key_der,
+                      CFG_DER_RSA ? OCA_DER_ENABLED : OCA_DER_DISABLED);
+        ASSERT_EQ_INT(rsa->signature_der, OCA_DER_UNDEFINED);
+    }
 
     const oca_signature_algorithm_t *ecdsa =
-        oca_signature_algorithm(OCA_KEY_ALGO_CLASSIC, 0x05u, &status);
-    ASSERT_TRUE(ecdsa != NULL);
-    ASSERT_EQ_INT(ecdsa->public_key_raw, 65);
-    ASSERT_EQ_INT(ecdsa->signature_raw, 64);
-    ASSERT_EQ_INT(ecdsa->public_key_der, OCA_DER_UNDEFINED);
-    ASSERT_EQ_INT(ecdsa->signature_der, OCA_DER_ENABLED);
-    ASSERT_EQ_INT(ecdsa->signature_der_max, 72);
+        row_if_enabled(OCA_KEY_ALGO_CLASSIC, 0x05u, CFG_ECDSA);
+    if (ecdsa != NULL) {
+        ASSERT_EQ_INT(ecdsa->public_key_raw, 65);
+        ASSERT_EQ_INT(ecdsa->signature_raw, 64);
+        ASSERT_EQ_INT(ecdsa->public_key_der, OCA_DER_UNDEFINED);
+        ASSERT_EQ_INT(ecdsa->signature_der,
+                      CFG_DER_ECDSA ? OCA_DER_ENABLED : OCA_DER_DISABLED);
+        ASSERT_EQ_INT(ecdsa->signature_der_max, 72);
+    }
 
     const oca_signature_algorithm_t *ml_dsa =
-        oca_signature_algorithm(OCA_KEY_ALGO_PQC, 0x33u, &status);
-    ASSERT_TRUE(ml_dsa != NULL);
-    ASSERT_EQ_INT(ml_dsa->public_key_raw, 2592);
-    ASSERT_EQ_INT(ml_dsa->signature_raw, 4627);
-    ASSERT_EQ_INT(ml_dsa->public_key_der, OCA_DER_UNDEFINED);
-    ASSERT_EQ_INT(ml_dsa->signature_der, OCA_DER_UNDEFINED);
+        row_if_enabled(OCA_KEY_ALGO_PQC, 0x33u, CFG_ML_DSA_87);
+    if (ml_dsa != NULL) {
+        ASSERT_EQ_INT(ml_dsa->public_key_raw, 2592);
+        ASSERT_EQ_INT(ml_dsa->signature_raw, 4627);
+        ASSERT_EQ_INT(ml_dsa->public_key_der, OCA_DER_UNDEFINED);
+        ASSERT_EQ_INT(ml_dsa->signature_der, OCA_DER_UNDEFINED);
+    }
+}
+
+/* A secure manifest signed with an algorithm the build turns off is refused by
+ * its signing description, and one signed with an algorithm it keeps passes
+ * it. Each variant's half runs when the build keeps that variant. */
+TEST(test_a_signature_algorithm_the_build_leaves_off_is_refused)
+{
+    if (CFG_CLASSIC) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_secure_manifest(buf);
+        ASSERT_EQ_INT(check_sizes(buf), CFG_RSA ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
+
+        build_secure_manifest(buf);
+        buf[OCA_OFF_SIGNATURE_TYPE] = OCA_PRIMITIVE_ECDSA_P256_SHA256;
+        toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 64u);
+        toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 65u);
+        ASSERT_EQ_INT(check_sizes(buf), CFG_ECDSA ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
+    }
+    if (CFG_PQC) {
+        static uint8_t pqc[OCA_PQC_BODY_SIZE];
+        build_secure_pqc_manifest(pqc, 0x05u);       /* pqc only */
+        ASSERT_EQ_INT(check_sizes(pqc),
+                      CFG_ML_DSA_87 ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
+    }
 }
 
 /* The classical description admits only the algorithms this build enables.
@@ -6135,6 +6262,29 @@ TEST(test_classic_description_accepts_only_defined_encodings)
         toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, ecdsa_sig_sizes[e]);
         toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 65u);
         ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
+    }
+}
+
+/* A DER encoding the build turns off is refused even for an algorithm it
+ * keeps, and one it keeps passes. */
+TEST(test_a_der_encoding_the_build_leaves_off_is_refused)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    if (CFG_CLASSIC && CFG_RSA) {
+        build_secure_manifest(buf);
+        buf[OCA_OFF_PUBLIC_KEY_ENCODING] = OCA_ENCODING_DER;
+        toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 398u);
+        ASSERT_EQ_INT(check_sizes(buf),
+                      CFG_DER_RSA ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
+    }
+    if (CFG_CLASSIC && CFG_ECDSA) {
+        build_secure_manifest(buf);
+        buf[OCA_OFF_SIGNATURE_TYPE] = OCA_PRIMITIVE_ECDSA_P256_SHA256;
+        buf[OCA_OFF_SIGNATURE_ENCODING] = OCA_ENCODING_DER;
+        toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 72u);
+        toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 65u);
+        ASSERT_EQ_INT(check_sizes(buf),
+                      CFG_DER_ECDSA ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
     }
 }
 
@@ -8418,44 +8568,49 @@ int main(int argc, char **argv)
     RUN_TEST(test_ct_any_overlap);
 
     /* Dispatch + boundary */
-    RUN_TEST(test_permissive_manifest_passes_with_only_sha_callback);
-    RUN_TEST(test_null_callback_fails_when_constraint_enabled);
-    RUN_TEST(test_null_sha_callback_fails_manifest_hash);
-    RUN_TEST(test_omitting_a_device_value_fails_rather_than_inheriting_one);
+    RUN_TEST_IF(CFG_CLASSIC, test_permissive_manifest_passes_with_only_sha_callback);
+    RUN_TEST_IF(CFG_CLASSIC, test_null_callback_fails_when_constraint_enabled);
+    RUN_TEST_IF(CFG_CLASSIC, test_null_sha_callback_fails_manifest_hash);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_omitting_a_device_value_fails_rather_than_inheriting_one);
     RUN_TEST(test_the_reset_clears_every_fixture_field);
-    RUN_TEST(test_a_full_integration_needs_no_caller_defined_state);
+    RUN_TEST_IF(CFG_CLASSIC, test_a_full_integration_needs_no_caller_defined_state);
 
     /* Structural */
     RUN_TEST(test_check_length_rejects_short_buffer);
 
     /* Manifest peek */
-    RUN_TEST(test_peek_reports_classic_from_a_minimal_head);
-    RUN_TEST(test_peek_reports_pqc_body_size);
-    RUN_TEST(test_peek_body_size_comes_from_the_magic_not_declared_length);
-    RUN_TEST(test_peek_rejects_a_short_head);
+    RUN_TEST_IF(CFG_CLASSIC, test_peek_reports_classic_from_a_minimal_head);
+    RUN_TEST_IF(CFG_PQC, test_peek_reports_pqc_body_size);
+    RUN_TEST(test_a_variant_the_build_leaves_off_is_unsupported);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_peek_body_size_comes_from_the_magic_not_declared_length);
+    RUN_TEST_IF(CFG_CLASSIC, test_peek_rejects_a_short_head);
     RUN_TEST(test_peek_rejects_bad_magic_and_null_args);
-    RUN_TEST(test_peek_sanitizes_the_identifier);
+    RUN_TEST_IF(CFG_CLASSIC, test_peek_sanitizes_the_identifier);
 
     /* manifest_length self-description */
-    RUN_TEST(test_manifest_length_agrees_for_a_well_formed_body);
-    RUN_TEST(test_manifest_length_rejects_a_classic_body_claiming_pqc_size);
-    RUN_TEST(test_manifest_length_rejects_near_miss_values);
+    RUN_TEST_IF(CFG_CLASSIC, test_manifest_length_agrees_for_a_well_formed_body);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_manifest_length_rejects_a_classic_body_claiming_pqc_size);
+    RUN_TEST_IF(CFG_CLASSIC, test_manifest_length_rejects_near_miss_values);
     RUN_TEST(test_manifest_length_propagates_magic_failure);
-    RUN_TEST(test_validate_manifest_runs_the_length_check);
-    RUN_TEST(test_both_entry_points_agree_on_a_manifest_level_failure);
+    RUN_TEST_IF(CFG_CLASSIC, test_validate_manifest_runs_the_length_check);
+    RUN_TEST_IF(CFG_CLASSIC, test_both_entry_points_agree_on_a_manifest_level_failure);
     RUN_TEST(test_result_string_covers_the_manifest_length_code);
-    RUN_TEST(test_manifest_length_holds_a_pqc_body_to_its_own_size);
-    RUN_TEST(test_manifest_length_is_checked_before_the_trailer);
-    RUN_TEST(test_the_major_version_is_checked_before_manifest_length);
+    RUN_TEST_IF(CFG_PQC, test_manifest_length_holds_a_pqc_body_to_its_own_size);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+                test_manifest_length_is_checked_before_the_trailer);
+    RUN_TEST_IF(CFG_CLASSIC, test_the_major_version_is_checked_before_manifest_length);
     RUN_TEST(test_check_magic_rejects_bad_bytes);
-    RUN_TEST(test_check_trailer_rejects_bad_pattern);
+    RUN_TEST_IF(CFG_CLASSIC, test_check_trailer_rejects_bad_pattern);
     RUN_TEST(test_check_format_version_accepts_newer_minor);
     RUN_TEST(test_check_format_version_rejects_newer_major);
     RUN_TEST(test_reserved_selector_bit_ignored);
     RUN_TEST(test_reserved_lifecycle_bit_ignored);
     RUN_TEST(test_reserved_demotion_bit_ignored);
-    RUN_TEST(test_reserved_bits_ignored_end_to_end);
-    RUN_TEST(test_secure_boot_invariant_clean_zero_path);
+    RUN_TEST_IF(CFG_CLASSIC, test_reserved_bits_ignored_end_to_end);
+    RUN_TEST_IF(CFG_CLASSIC, test_secure_boot_invariant_clean_zero_path);
 
     /* Identity */
     RUN_TEST(test_identity_match_passes);
@@ -8478,16 +8633,17 @@ int main(int argc, char **argv)
     RUN_TEST(test_demotion_control_reserved_bit_ignored);
 
     /* manifest_hash + signature dispatch */
-    RUN_TEST(test_manifest_hash_match_passes);
-    RUN_TEST(test_manifest_hash_mismatch_fails);
-    RUN_TEST(test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing);
-    RUN_TEST(test_the_hash_callback_is_asked_for_the_named_digest);
+    RUN_TEST_IF(CFG_CLASSIC, test_manifest_hash_match_passes);
+    RUN_TEST_IF(CFG_CLASSIC, test_manifest_hash_mismatch_fails);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+                test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing);
+    RUN_TEST_IF(CFG_CLASSIC, test_the_hash_callback_is_asked_for_the_named_digest);
     RUN_TEST(test_every_hash_type_resolves_against_the_format_and_the_build);
     RUN_TEST(test_a_hash_row_is_used_only_at_a_size_the_buffers_hold);
     RUN_TEST(test_result_string_covers_the_algorithm_codes);
-    RUN_TEST(test_deprecated_check_names_reach_the_renamed_checks);
-    RUN_TEST(test_corruption_outranks_a_field_level_violation);
-    RUN_TEST(test_manifest_hash_dirty_padding_fails);
+    RUN_TEST_IF(CFG_CLASSIC, test_deprecated_check_names_reach_the_renamed_checks);
+    RUN_TEST_IF(CFG_CLASSIC, test_corruption_outranks_a_field_level_violation);
+    RUN_TEST_IF(CFG_CLASSIC, test_manifest_hash_dirty_padding_fails);
 
     /* Device-asserted secure-boot disable */
     RUN_TEST(test_device_disabled_defaults_to_false);
@@ -8499,104 +8655,125 @@ int main(int argc, char **argv)
     RUN_TEST(test_disable_short_circuits_the_active_reporter);
     RUN_TEST(test_disable_answering_false_matches_no_reporter);
     RUN_TEST(test_null_callback_table_still_fail_safes);
-    RUN_TEST(test_secure_boot_invariant_ignores_signing_fields);
+    RUN_TEST_IF(CFG_CLASSIC, test_secure_boot_invariant_ignores_signing_fields);
 
     /* Encryption requires confirmed secure boot */
-    RUN_TEST(test_decrypt_receives_cipher_and_selector_as_named_fields);
-    RUN_TEST(test_decrypt_input_holds_only_algorithms_the_build_enables);
-    RUN_TEST(test_decrypt_descriptor_points_derivation_inputs_at_the_manifest);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_256,
+                test_decrypt_receives_cipher_and_selector_as_named_fields);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_decrypt_input_holds_only_algorithms_the_build_enables);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_decrypt_descriptor_points_derivation_inputs_at_the_manifest);
     RUN_TEST(test_no_provisioned_secret_is_distinct_from_other_decrypt_failures);
     RUN_TEST(test_result_string_covers_the_no_provisioned_secret_code);
-    RUN_TEST(test_no_provisioned_secret_reaches_the_caller);
-    RUN_TEST(test_encrypted_payload_refused_when_secure_boot_off);
-    RUN_TEST(test_encrypted_payload_refused_by_validate_manifest_alone);
-    RUN_TEST(test_both_enforcement_points_report_the_same_reason);
-    RUN_TEST(test_encrypted_payload_accepted_when_authenticated);
-    RUN_TEST(test_cleartext_payload_unaffected_at_either_secure_boot_state);
-    RUN_TEST(test_encryption_gate_applies_to_pqc_variant);
-    RUN_TEST(test_encryption_declared_with_zero_length_payload_still_refused);
-    RUN_TEST(test_cleartext_with_stray_encryption_fields_not_refused);
-    RUN_TEST(test_payload_at_standalone_refuses_with_zero_init_context);
-    RUN_TEST(test_check_payload_standalone_refuses_with_zero_init_context);
-    RUN_TEST(test_enabled_without_authenticated_is_refused);
-    RUN_TEST(test_corrupted_confirmation_values_all_refuse);
-    RUN_TEST(test_null_context_refuses_encrypted_payload);
-    RUN_TEST(test_failed_signature_leaves_confirmation_unset);
-    RUN_TEST(test_secure_boot_off_records_neither_enabled_nor_authenticated);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_no_provisioned_secret_reaches_the_caller);
+    RUN_TEST_IF(CFG_CLASSIC, test_encrypted_payload_refused_when_secure_boot_off);
+    RUN_TEST_IF(CFG_CLASSIC, test_encrypted_payload_refused_by_validate_manifest_alone);
+    RUN_TEST_IF(CFG_CLASSIC, test_both_enforcement_points_report_the_same_reason);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_encrypted_payload_accepted_when_authenticated);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_cleartext_payload_unaffected_at_either_secure_boot_state);
+    RUN_TEST_IF(CFG_PQC, test_encryption_gate_applies_to_pqc_variant);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_encryption_declared_with_zero_length_payload_still_refused);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_with_stray_encryption_fields_not_refused);
+    RUN_TEST_IF(CFG_CLASSIC, test_payload_at_standalone_refuses_with_zero_init_context);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_check_payload_standalone_refuses_with_zero_init_context);
+    RUN_TEST_IF(CFG_CLASSIC, test_enabled_without_authenticated_is_refused);
+    RUN_TEST_IF(CFG_CLASSIC, test_corrupted_confirmation_values_all_refuse);
+    RUN_TEST_IF(CFG_CLASSIC, test_null_context_refuses_encrypted_payload);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_failed_signature_leaves_confirmation_unset);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_secure_boot_off_records_neither_enabled_nor_authenticated);
     RUN_TEST(test_context_init_leaves_nothing_established);
     RUN_TEST(test_result_string_covers_the_encryption_policy_code);
     RUN_TEST(test_result_string_covers_the_signature_class_code);
 
     /* Payload encryption info */
-    RUN_TEST(test_encryption_info_reports_cleartext);
-    RUN_TEST(test_encryption_info_reports_cipher_and_selector);
-    RUN_TEST(test_encryption_info_reports_an_unknown_cipher_verbatim);
+    RUN_TEST_IF(CFG_CLASSIC, test_encryption_info_reports_cleartext);
+    RUN_TEST_IF(CFG_CLASSIC, test_encryption_info_reports_cipher_and_selector);
+    RUN_TEST_IF(CFG_CLASSIC, test_encryption_info_reports_an_unknown_cipher_verbatim);
     RUN_TEST(test_encryption_info_rejects_bad_magic_and_null_args);
-    RUN_TEST(test_encryption_info_needs_no_payload_resident);
-    RUN_TEST(test_signature_secure_boot_zero_skipped);
-    RUN_TEST(test_signature_refuses_an_undetermined_context);
-    RUN_TEST(test_signature_callback_unavailable_when_secure_boot_enabled);
+    RUN_TEST_IF(CFG_CLASSIC, test_encryption_info_needs_no_payload_resident);
+    RUN_TEST_IF(CFG_CLASSIC, test_signature_secure_boot_zero_skipped);
+    RUN_TEST_IF(CFG_CLASSIC, test_signature_refuses_an_undetermined_context);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_signature_callback_unavailable_when_secure_boot_enabled);
 
     /* Canonical order */
     RUN_TEST(test_validate_short_circuits_on_first_fail);
-    RUN_TEST(test_validate_happy_path_full_pipeline);
+    RUN_TEST_IF(CFG_CLASSIC, test_validate_happy_path_full_pipeline);
 
     /* Encrypted-payload stage */
-    RUN_TEST(test_payload_no_payload_declared_is_noop);
-    RUN_TEST(test_payload_hash_mismatch_before_decrypt);
-    RUN_TEST(test_payload_null_decrypt_callback_unavailable);
-    RUN_TEST(test_payload_without_a_hash_callback_is_unavailable);
-    RUN_TEST(test_payload_decrypt_failure);
-    RUN_TEST(test_payload_chain_mismatch);
-    RUN_TEST(test_payload_happy_path);
+    RUN_TEST_IF(CFG_CLASSIC, test_payload_no_payload_declared_is_noop);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_hash_mismatch_before_decrypt);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_payload_null_decrypt_callback_unavailable);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_payload_without_a_hash_callback_is_unavailable);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_decrypt_failure);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_chain_mismatch);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_happy_path);
 
     /* Payload TOC structural validation (F-010) */
-    RUN_TEST(test_payload_toc_zero_image_count);
-    RUN_TEST(test_payload_toc_length_exceeds_payload);
-    RUN_TEST(test_payload_toc_entry_offset_misaligned);
-    RUN_TEST(test_payload_toc_entry_zero_length);
-    RUN_TEST(test_payload_toc_entry_out_of_bounds);
-    RUN_TEST(test_payload_toc_entries_overlap);
-    RUN_TEST(test_payload_toc_entries_overlap_unsorted);
-    RUN_TEST(test_payload_toc_multi_entry_disjoint_passes);
-    RUN_TEST(test_payload_toc_major_at_supported_passes);
-    RUN_TEST(test_payload_toc_major_above_supported_rejected);
-    RUN_TEST(test_payload_toc_entry_inside_toc_rejected);
-    RUN_TEST(test_payload_encrypted_toc_length_within_one_block_passes);
-    RUN_TEST(test_payload_encrypted_toc_length_equal_to_ciphertext_rejected);
-    RUN_TEST(test_payload_encrypted_toc_length_more_than_one_block_short_rejected);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_zero_image_count);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_length_exceeds_payload);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_entry_offset_misaligned);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_entry_zero_length);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_entry_out_of_bounds);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_entries_overlap);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_entries_overlap_unsorted);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_multi_entry_disjoint_passes);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_major_at_supported_passes);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_payload_toc_major_above_supported_rejected);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_entry_inside_toc_rejected);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_payload_encrypted_toc_length_within_one_block_passes);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_payload_encrypted_toc_length_equal_to_ciphertext_rejected);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_payload_encrypted_toc_length_more_than_one_block_short_rejected);
 
     /* Per-entry image hash */
-    RUN_TEST(test_payload_toc_entry_hash_mismatch);
-    RUN_TEST(test_payload_toc_entry_hash_mismatch_second_entry);
-    RUN_TEST(test_payload_toc_entry_hash_padding_ignored);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_entry_hash_mismatch);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_payload_toc_entry_hash_mismatch_second_entry);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_payload_toc_entry_hash_padding_ignored);
 
     /* Cleartext payload stage */
-    RUN_TEST(test_cleartext_payload_happy_path);
-    RUN_TEST(test_a_hash_callback_unwired_mid_payload_fails_closed);
-    RUN_TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_payload_happy_path);
+    RUN_TEST_IF(CFG_CLASSIC, test_a_hash_callback_unwired_mid_payload_fails_closed);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_encrypted_payload_refuses_unsupported_algorithms_before_hashing);
     RUN_TEST(test_every_payload_algorithm_resolves_against_the_format_and_the_build);
-    RUN_TEST(test_cleartext_payload_judges_only_its_hash_type);
-    RUN_TEST(test_encrypted_plaintext_reported_after_success);
-    RUN_TEST(test_cleartext_plaintext_reported_after_success);
-    RUN_TEST(test_plaintext_reported_from_every_entry_point);
+    RUN_TEST(test_a_cipher_the_build_leaves_off_is_refused_before_hashing);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_payload_judges_only_its_hash_type);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_encrypted_plaintext_reported_after_success);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_plaintext_reported_after_success);
+    RUN_TEST_IF(CFG_CLASSIC, test_plaintext_reported_from_every_entry_point);
     RUN_TEST(test_no_report_when_the_toc_is_malformed);
-    RUN_TEST(test_no_report_when_the_hash_chain_mismatches);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_no_report_when_the_hash_chain_mismatches);
     RUN_TEST(test_no_report_when_an_entry_hash_mismatches);
-    RUN_TEST(test_declining_the_report_changes_no_verdict);
-    RUN_TEST(test_cleartext_payload_missing_bytes_truncated);
-    RUN_TEST(test_cleartext_payload_requires_a_hash_callback);
-    RUN_TEST(test_cleartext_payload_hash_mismatch);
-    RUN_TEST(test_cleartext_payload_chain_mismatch);
-    RUN_TEST(test_cleartext_payload_entry_hash_mismatch);
-    RUN_TEST(test_cleartext_payload_hashed_length_must_equal_toc_span);
-    RUN_TEST(test_cleartext_payload_length_disagreement);
-    RUN_TEST(test_cleartext_payload_structural_violation);
+    RUN_TEST_IF(CFG_CLASSIC, test_declining_the_report_changes_no_verdict);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_payload_missing_bytes_truncated);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_payload_requires_a_hash_callback);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_payload_hash_mismatch);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_payload_chain_mismatch);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_payload_entry_hash_mismatch);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_payload_hashed_length_must_equal_toc_span);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_payload_length_disagreement);
+    RUN_TEST_IF(CFG_CLASSIC, test_cleartext_payload_structural_violation);
 
     /* Post-validation TOC access */
     RUN_TEST(test_check_payload_rejects_short_buffer_without_reading_past_it);
-    RUN_TEST(test_payload_region_locates_cleartext_payload);
-    RUN_TEST(test_payload_region_flags_encrypted_and_sizes_by_ciphertext);
+    RUN_TEST_IF(CFG_CLASSIC, test_payload_region_locates_cleartext_payload);
+    RUN_TEST_IF(CFG_CLASSIC, test_payload_region_flags_encrypted_and_sizes_by_ciphertext);
     RUN_TEST(test_payload_region_rejects_short_buffer_without_reading_past_it);
     RUN_TEST(test_payload_region_rejects_null_args);
     RUN_TEST(test_toc_info_reads_header);
@@ -8611,9 +8788,11 @@ int main(int argc, char **argv)
     RUN_TEST(test_toc_image_at_never_returns_out_of_range_bytes);
 
     /* In-place payload decryption */
-    RUN_TEST(test_decrypt_in_place_validates);
-    RUN_TEST(test_decrypt_in_place_leaves_manifest_body_untouched);
-    RUN_TEST(test_toc_accessors_work_on_in_place_plaintext);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128, test_decrypt_in_place_validates);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_decrypt_in_place_leaves_manifest_body_untouched);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
+                test_toc_accessors_work_on_in_place_plaintext);
 
     /* image_count cap */
     RUN_TEST(test_toc_rejects_image_count_above_the_cap);
@@ -8622,183 +8801,258 @@ int main(int argc, char **argv)
     RUN_TEST(test_result_string_covers_the_cap_code);
 
     /* Resolving payload_offset in storage */
-    RUN_TEST(test_locate_payload_accepts_the_ordinary_case);
-    RUN_TEST(test_locate_payload_accepts_a_gap_after_the_manifest);
-    RUN_TEST(test_locate_payload_accepts_payload_before_the_manifest);
-    RUN_TEST(test_locate_payload_rejects_underflow_below_the_region);
-    RUN_TEST(test_locate_payload_rejects_running_past_the_region);
-    RUN_TEST(test_locate_payload_rejects_the_exact_region_boundary_overrun);
-    RUN_TEST(test_locate_payload_rejects_collision_with_the_manifest);
-    RUN_TEST(test_locate_payload_rejects_payload_before_manifest_that_overruns_it);
-    RUN_TEST(test_locate_payload_rejects_collision_with_appended_entries);
-    RUN_TEST(test_manifest_region_len_counts_appended_entries);
+    RUN_TEST_IF(CFG_CLASSIC, test_locate_payload_accepts_the_ordinary_case);
+    RUN_TEST_IF(CFG_CLASSIC, test_locate_payload_accepts_a_gap_after_the_manifest);
+    RUN_TEST_IF(CFG_CLASSIC, test_locate_payload_accepts_payload_before_the_manifest);
+    RUN_TEST_IF(CFG_CLASSIC, test_locate_payload_rejects_underflow_below_the_region);
+    RUN_TEST_IF(CFG_CLASSIC, test_locate_payload_rejects_running_past_the_region);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_locate_payload_rejects_the_exact_region_boundary_overrun);
+    RUN_TEST_IF(CFG_CLASSIC, test_locate_payload_rejects_collision_with_the_manifest);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_locate_payload_rejects_payload_before_manifest_that_overruns_it);
+    RUN_TEST_IF(CFG_CLASSIC, test_locate_payload_rejects_collision_with_appended_entries);
+    RUN_TEST_IF(CFG_CLASSIC, test_manifest_region_len_counts_appended_entries);
     RUN_TEST(test_manifest_region_len_reports_why_it_failed);
-    RUN_TEST(test_locate_payload_rejects_bad_arguments);
-    RUN_TEST(test_locate_payload_no_payload_declared_is_ok);
-    RUN_TEST(test_locate_payload_spans_the_ciphertext_when_encrypted);
-    RUN_TEST(test_check_payload_at_accepts_a_noncontiguous_payload);
-    RUN_TEST(test_check_payload_at_rejects_bad_arguments);
-    RUN_TEST(test_check_payload_refuses_to_guess_when_offset_disagrees);
-    RUN_TEST(test_check_payload_ignores_offset_when_no_payload_declared);
+    RUN_TEST_IF(CFG_CLASSIC, test_locate_payload_rejects_bad_arguments);
+    RUN_TEST_IF(CFG_CLASSIC, test_locate_payload_no_payload_declared_is_ok);
+    RUN_TEST_IF(CFG_CLASSIC, test_locate_payload_spans_the_ciphertext_when_encrypted);
+    RUN_TEST_IF(CFG_CLASSIC, test_check_payload_at_accepts_a_noncontiguous_payload);
+    RUN_TEST_IF(CFG_CLASSIC, test_check_payload_at_rejects_bad_arguments);
+    RUN_TEST_IF(CFG_CLASSIC, test_check_payload_refuses_to_guess_when_offset_disagrees);
+    RUN_TEST_IF(CFG_CLASSIC, test_check_payload_ignores_offset_when_no_payload_declared);
     RUN_TEST(test_result_string_covers_the_location_code);
 
     /* Secure-boot device-state: ROOT-key revocation */
-    RUN_TEST(test_root_key_revoked_by_manifest);
-    RUN_TEST(test_root_key_revoked_by_device_state);
-    RUN_TEST(test_root_key_not_revoked_passes);
-    RUN_TEST(test_root_key_reserved_bits_ignored);
-    RUN_TEST(test_root_key_revocation_secure_boot_disabled_inert);
-    RUN_TEST(test_root_key_revocation_engaged_via_device_callback);
-    RUN_TEST(test_root_key_revocation_secure_by_default_when_unset);
-    RUN_TEST(test_root_key_revocation_callback_unavailable);
-    RUN_TEST(test_an_unauthorized_key_is_refused_before_verification);
-    RUN_TEST(test_authorization_precedes_revocation);
-    RUN_TEST(test_a_missing_authorization_callback_fails_closed);
-    RUN_TEST(test_signature_refuses_a_context_without_authorization);
-    RUN_TEST(test_authorization_refuses_a_description_the_build_does_not_accept);
-    RUN_TEST(test_signature_refuses_a_description_the_build_does_not_accept);
-    RUN_TEST(test_authorization_is_a_noop_when_secure_boot_is_off);
-    RUN_TEST(test_revoked_key_skips_signature_in_pipeline);
-    RUN_TEST(test_rollback_violation_rejected_before_signature_verification);
-    RUN_TEST(test_early_rollback_pass_does_not_rescue_a_bad_signature);
+    RUN_TEST_IF(CFG_CLASSIC, test_root_key_revoked_by_manifest);
+    RUN_TEST_IF(CFG_CLASSIC, test_root_key_revoked_by_device_state);
+    RUN_TEST_IF(CFG_CLASSIC, test_root_key_not_revoked_passes);
+    RUN_TEST_IF(CFG_CLASSIC, test_root_key_reserved_bits_ignored);
+    RUN_TEST_IF(CFG_CLASSIC, test_root_key_revocation_secure_boot_disabled_inert);
+    RUN_TEST_IF(CFG_CLASSIC, test_root_key_revocation_engaged_via_device_callback);
+    RUN_TEST_IF(CFG_CLASSIC, test_root_key_revocation_secure_by_default_when_unset);
+    RUN_TEST_IF(CFG_CLASSIC, test_root_key_revocation_callback_unavailable);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_an_unauthorized_key_is_refused_before_verification);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_authorization_precedes_revocation);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_a_missing_authorization_callback_fails_closed);
+    RUN_TEST_IF(CFG_CLASSIC, test_signature_refuses_a_context_without_authorization);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC && CFG_RSA,
+                test_authorization_refuses_a_description_the_build_does_not_accept);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC && CFG_RSA,
+                test_signature_refuses_a_description_the_build_does_not_accept);
+    RUN_TEST_IF(CFG_CLASSIC, test_authorization_is_a_noop_when_secure_boot_is_off);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_revoked_key_skips_signature_in_pipeline);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_rollback_violation_rejected_before_signature_verification);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_early_rollback_pass_does_not_rescue_a_bad_signature);
 #if OCA_RECHECK_SECURITY_VERSION
-    RUN_TEST(test_accepted_manifest_evaluates_anti_rollback_twice);
-    RUN_TEST(test_late_anti_rollback_verdict_is_acted_on);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_accepted_manifest_evaluates_anti_rollback_twice);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_late_anti_rollback_verdict_is_acted_on);
 #else
     RUN_TEST(test_anti_rollback_evaluated_once_when_recheck_disabled);
 #endif
 
     /* Anti-rollback security version */
-    RUN_TEST(test_security_version_rollback_rejected);
-    RUN_TEST(test_security_version_superset_accepted);
-    RUN_TEST(test_security_version_equal_accepted);
-    RUN_TEST(test_security_version_secure_boot_disabled_inert);
-    RUN_TEST(test_security_version_callback_unavailable);
+    RUN_TEST_IF(CFG_CLASSIC, test_security_version_rollback_rejected);
+    RUN_TEST_IF(CFG_CLASSIC, test_security_version_superset_accepted);
+    RUN_TEST_IF(CFG_CLASSIC, test_security_version_equal_accepted);
+    RUN_TEST_IF(CFG_CLASSIC, test_security_version_secure_boot_disabled_inert);
+    RUN_TEST_IF(CFG_CLASSIC, test_security_version_callback_unavailable);
 
     /* Device-state commit */
-    RUN_TEST(test_commit_ors_in_revoke_and_secver);
-    RUN_TEST(test_commit_disable_secver_only);
-    RUN_TEST(test_commit_ors_in_the_signature_posture_registers);
-    RUN_TEST(test_commit_disable_cohort_enforce_only);
-    RUN_TEST(test_commit_disable_class_revoke_only);
-    RUN_TEST(test_manifest_security_control_is_read_as_a_u16);
-    RUN_TEST(test_commit_without_posture_callbacks_is_unavailable);
-    RUN_TEST(test_commit_without_any_one_callback_is_unavailable);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_commit_ors_in_revoke_and_secver);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_commit_disable_secver_only);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_commit_ors_in_the_signature_posture_registers);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_commit_disable_cohort_enforce_only);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_commit_disable_class_revoke_only);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_manifest_security_control_is_read_as_a_u16);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_commit_without_posture_callbacks_is_unavailable);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_commit_without_any_one_callback_is_unavailable);
     RUN_TEST(test_intact_group_codes_are_accepted);
     RUN_TEST(test_a_fragment_of_a_group_code_is_rejected);
     RUN_TEST(test_a_group_disabled_by_its_class_bits_alone_is_rejected);
-    RUN_TEST(test_a_bad_group_code_is_caught_before_any_device_read);
-    RUN_TEST(test_commit_refuses_a_fragmented_group_code);
-    RUN_TEST(test_commit_refuses_a_group_disabled_by_its_class_bits_alone);
-    RUN_TEST(test_consistent_crypto_field_sizes_are_accepted);
-    RUN_TEST(test_inconsistent_crypto_field_sizes_are_rejected);
-    RUN_TEST(test_crypto_field_sizes_ignored_on_a_non_secure_manifest);
-    RUN_TEST(test_crypto_field_sizes_engage_when_the_device_enforces_secure_boot);
-    RUN_TEST(test_crypto_field_sizes_refuse_an_undetermined_context);
-    RUN_TEST(test_secure_boot_with_no_signature_class_is_rejected);
-    RUN_TEST(test_device_enabled_secure_boot_with_no_class_is_rejected);
-    RUN_TEST(test_class_rejection_leaves_the_context_unsettled);
-    RUN_TEST(test_determination_records_the_enforced_signature_classes);
-    RUN_TEST(test_determination_refuses_a_pqc_class_on_a_classic_variant);
-    RUN_TEST(test_determination_records_the_manifest_variant_pair);
-    RUN_TEST(test_gated_checks_refuse_a_moved_or_incoherent_variant_record);
-    RUN_TEST(test_pqc_class_bit_on_a_classic_manifest_is_rejected);
-    RUN_TEST(test_pqc_class_bit_is_permitted_on_a_pqc_manifest);
-    RUN_TEST(test_pqc_only_manifest_passes_size_check_with_zeroed_classical_fields);
-    RUN_TEST(test_ml_dsa_87_description_passes_the_size_check);
-    RUN_TEST(test_pqc_description_accepts_only_ml_dsa_87);
-    RUN_TEST(test_pqc_description_requires_raw_encodings);
-    RUN_TEST(test_pqc_size_fields_must_be_the_exact_ml_dsa_87_sizes);
-    RUN_TEST(test_pqc_description_is_ignored_when_the_pqc_class_is_off);
+    RUN_TEST_IF(CFG_CLASSIC, test_a_bad_group_code_is_caught_before_any_device_read);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_commit_refuses_a_fragmented_group_code);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_commit_refuses_a_group_disabled_by_its_class_bits_alone);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA && CFG_ECDSA && CFG_DER_ECDSA,
+                test_consistent_crypto_field_sizes_are_accepted);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA && CFG_ECDSA && CFG_DER_ECDSA,
+                test_inconsistent_crypto_field_sizes_are_rejected);
+    RUN_TEST_IF(CFG_CLASSIC, test_crypto_field_sizes_ignored_on_a_non_secure_manifest);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_crypto_field_sizes_engage_when_the_device_enforces_secure_boot);
+    RUN_TEST_IF(CFG_CLASSIC, test_crypto_field_sizes_refuse_an_undetermined_context);
+    RUN_TEST_IF(CFG_CLASSIC, test_secure_boot_with_no_signature_class_is_rejected);
+    RUN_TEST_IF(CFG_CLASSIC, test_device_enabled_secure_boot_with_no_class_is_rejected);
+    RUN_TEST_IF(CFG_CLASSIC, test_class_rejection_leaves_the_context_unsettled);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+                test_determination_records_the_enforced_signature_classes);
+    RUN_TEST_IF(CFG_CLASSIC, test_determination_refuses_a_pqc_class_on_a_classic_variant);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+                test_determination_records_the_manifest_variant_pair);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_gated_checks_refuse_a_moved_or_incoherent_variant_record);
+    RUN_TEST_IF(CFG_CLASSIC, test_pqc_class_bit_on_a_classic_manifest_is_rejected);
+    RUN_TEST_IF(CFG_PQC, test_pqc_class_bit_is_permitted_on_a_pqc_manifest);
+    RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87,
+                test_pqc_only_manifest_passes_size_check_with_zeroed_classical_fields);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_ml_dsa_87_description_passes_the_size_check);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA, test_pqc_description_accepts_only_ml_dsa_87);
+    RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87, test_pqc_description_requires_raw_encodings);
+    RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87,
+                test_pqc_size_fields_must_be_the_exact_ml_dsa_87_sizes);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA,
+                test_pqc_description_is_ignored_when_the_pqc_class_is_off);
     RUN_TEST(test_every_signature_type_resolves_against_the_format_and_the_build);
     RUN_TEST(test_signature_rows_carry_the_format_encoded_lengths);
-    RUN_TEST(test_classic_description_accepts_only_supported_primitives);
-    RUN_TEST(test_classic_description_accepts_only_defined_encodings);
-    RUN_TEST(test_classic_padding_past_a_declared_size_must_be_zero);
-    RUN_TEST(test_hybrid_padding_past_a_declared_size_must_be_zero);
-    RUN_TEST(test_padding_is_not_judged_for_a_class_or_boot_that_does_not_use_it);
-    RUN_TEST(test_secure_boot_off_ignores_each_dirty_pqc_signing_field);
-    RUN_TEST(test_non_secure_manifest_with_populated_signing_fields_validates);
-    RUN_TEST(test_device_enforced_bit_clear_manifest_validates_end_to_end);
-    RUN_TEST(test_device_enforced_bit_clear_manifest_with_a_bad_description_is_refused);
-    RUN_TEST(test_hybrid_authorization_consults_each_classes_anchor);
-    RUN_TEST(test_single_class_authorization_leaves_the_other_flag_unset);
-    RUN_TEST(test_a_refused_pqc_key_fails_authorization);
-    RUN_TEST(test_key_checks_backstop_a_context_with_no_enforced_class);
-    RUN_TEST(test_key_checks_refuse_a_record_disagreeing_with_the_class_bits);
-    RUN_TEST(test_authorization_presents_the_key_the_verifier_receives);
-    RUN_TEST(test_hybrid_signature_verifies_both_classes);
-    RUN_TEST(test_hybrid_signature_fails_when_either_class_fails);
-    RUN_TEST(test_pqc_signature_requires_the_pqc_authorization);
-    RUN_TEST(test_pqc_enforcement_on_a_classic_variant_fails_closed);
-    RUN_TEST(test_hybrid_manifest_validates_end_to_end);
+    RUN_TEST(test_a_signature_algorithm_the_build_leaves_off_is_refused);
+    RUN_TEST_IF(CFG_CLASSIC, test_classic_description_accepts_only_supported_primitives);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA && CFG_ECDSA && CFG_DER_RSA && CFG_DER_ECDSA,
+                test_classic_description_accepts_only_defined_encodings);
+    RUN_TEST(test_a_der_encoding_the_build_leaves_off_is_refused);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_classic_padding_past_a_declared_size_must_be_zero);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_hybrid_padding_past_a_declared_size_must_be_zero);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_padding_is_not_judged_for_a_class_or_boot_that_does_not_use_it);
+    RUN_TEST_IF(CFG_PQC, test_secure_boot_off_ignores_each_dirty_pqc_signing_field);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+                test_non_secure_manifest_with_populated_signing_fields_validates);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_device_enforced_bit_clear_manifest_validates_end_to_end);
+    RUN_TEST_IF(CFG_PQC,
+                test_device_enforced_bit_clear_manifest_with_a_bad_description_is_refused);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_hybrid_authorization_consults_each_classes_anchor);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_single_class_authorization_leaves_the_other_flag_unset);
+    RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87, test_a_refused_pqc_key_fails_authorization);
+    RUN_TEST_IF(CFG_CLASSIC, test_key_checks_backstop_a_context_with_no_enforced_class);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_key_checks_refuse_a_record_disagreeing_with_the_class_bits);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87 && CFG_DER_RSA,
+                test_authorization_presents_the_key_the_verifier_receives);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_hybrid_signature_verifies_both_classes);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_hybrid_signature_fails_when_either_class_fails);
+    RUN_TEST_IF(CFG_PQC, test_pqc_signature_requires_the_pqc_authorization);
+    RUN_TEST_IF(CFG_CLASSIC, test_pqc_enforcement_on_a_classic_variant_fails_closed);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_hybrid_manifest_validates_end_to_end);
     RUN_TEST(test_every_root_key_bitmap_has_the_shared_width);
-    RUN_TEST(test_pqc_root_key_revoked_by_manifest);
-    RUN_TEST(test_pqc_root_key_revoked_by_device_pqc_state);
-    RUN_TEST(test_pqc_key_is_not_revoked_by_classic_state);
-    RUN_TEST(test_pqc_root_key_reserved_bits_ignored);
-    RUN_TEST(test_hybrid_revocation_checks_each_family);
-    RUN_TEST(test_classic_only_ocap_manifest_ignores_pqc_revocation);
-    RUN_TEST(test_revoked_pqc_key_skips_signature_in_pipeline);
-    RUN_TEST(test_commit_ors_in_each_familys_revocation_for_a_hybrid_manifest);
-    RUN_TEST(test_commit_pqc_only_manifest_writes_both_families);
-    RUN_TEST(test_commit_classic_only_ocap_manifest_writes_both_families);
-    RUN_TEST(test_commit_classic_manifest_writes_only_the_classic_family);
-    RUN_TEST(test_commit_revoke_disable_suppresses_both_families);
-    RUN_TEST(test_commit_pqc_revocation_write_failure_surfaced);
-    RUN_TEST(test_commit_refuses_a_class_record_it_cannot_trust);
-    RUN_TEST(test_commit_disable_revoke_only);
-    RUN_TEST(test_commit_write_failure_surfaced);
-    RUN_TEST(test_a_writer_unwired_by_its_reader_fails_closed);
-    RUN_TEST(test_a_posture_reader_unwired_by_the_first_fails_closed);
-    RUN_TEST(test_commit_secure_boot_disabled_noop);
-    RUN_TEST(test_device_disable_reaches_every_gated_check);
-    RUN_TEST(test_encryption_with_bit_clear_refused_on_a_disabled_device);
-    RUN_TEST(test_device_disable_commits_no_security_state);
-    RUN_TEST(test_recorded_disable_is_independent_of_enabled);
-    RUN_TEST(test_a_manifest_that_outranks_the_device_records_no_disable);
-    RUN_TEST(test_a_corrupted_determination_flag_refuses_at_every_consumer);
-    RUN_TEST(test_deciding_and_recording_are_one_consultation);
-    RUN_TEST(test_a_reporter_that_changes_its_answer_is_caught_at_each_consumer);
-    RUN_TEST(test_a_flip_to_secure_is_caught_as_readily_as_a_flip_to_insecure);
-    RUN_TEST(test_a_stable_reporter_confirms_clean_through_every_consumer);
-    RUN_TEST(test_the_determination_costs_one_consultation_per_consumer);
-    RUN_TEST(test_the_determination_runs_after_the_manifest_hash);
-    RUN_TEST(test_every_gated_check_refuses_an_undetermined_context);
+    RUN_TEST_IF(CFG_PQC, test_pqc_root_key_revoked_by_manifest);
+    RUN_TEST_IF(CFG_PQC, test_pqc_root_key_revoked_by_device_pqc_state);
+    RUN_TEST_IF(CFG_PQC, test_pqc_key_is_not_revoked_by_classic_state);
+    RUN_TEST_IF(CFG_PQC, test_pqc_root_key_reserved_bits_ignored);
+    RUN_TEST_IF(CFG_PQC, test_hybrid_revocation_checks_each_family);
+    RUN_TEST_IF(CFG_PQC, test_classic_only_ocap_manifest_ignores_pqc_revocation);
+    RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87,
+                test_revoked_pqc_key_skips_signature_in_pipeline);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_commit_ors_in_each_familys_revocation_for_a_hybrid_manifest);
+    RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87,
+                test_commit_pqc_only_manifest_writes_both_families);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA,
+                test_commit_classic_only_ocap_manifest_writes_both_families);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_commit_classic_manifest_writes_only_the_classic_family);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_commit_revoke_disable_suppresses_both_families);
+    RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87,
+                test_commit_pqc_revocation_write_failure_surfaced);
+    RUN_TEST_IF(CFG_CLASSIC, test_commit_refuses_a_class_record_it_cannot_trust);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_commit_disable_revoke_only);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_commit_write_failure_surfaced);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_a_writer_unwired_by_its_reader_fails_closed);
+    RUN_TEST_IF(CFG_CLASSIC, test_a_posture_reader_unwired_by_the_first_fails_closed);
+    RUN_TEST_IF(CFG_CLASSIC, test_commit_secure_boot_disabled_noop);
+    RUN_TEST_IF(CFG_CLASSIC, test_device_disable_reaches_every_gated_check);
+    RUN_TEST_IF(CFG_CLASSIC, test_encryption_with_bit_clear_refused_on_a_disabled_device);
+    RUN_TEST_IF(CFG_CLASSIC, test_device_disable_commits_no_security_state);
+    RUN_TEST_IF(CFG_CLASSIC, test_recorded_disable_is_independent_of_enabled);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_a_manifest_that_outranks_the_device_records_no_disable);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_a_corrupted_determination_flag_refuses_at_every_consumer);
+    RUN_TEST_IF(CFG_CLASSIC, test_deciding_and_recording_are_one_consultation);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_a_reporter_that_changes_its_answer_is_caught_at_each_consumer);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_a_flip_to_secure_is_caught_as_readily_as_a_flip_to_insecure);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_a_stable_reporter_confirms_clean_through_every_consumer);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_the_determination_costs_one_consultation_per_consumer);
+    RUN_TEST_IF(CFG_CLASSIC, test_the_determination_runs_after_the_manifest_hash);
+    RUN_TEST_IF(CFG_CLASSIC, test_every_gated_check_refuses_an_undetermined_context);
     RUN_TEST(test_the_determination_answers_only_in_hardened_words);
     RUN_TEST(test_an_unrecognized_reporter_answer_leaves_secure_boot_on);
-    RUN_TEST(test_a_return_one_reporter_still_gets_signature_verification);
-    RUN_TEST(test_a_corrupted_engaged_word_runs_the_check_rather_than_skipping_it);
-    RUN_TEST(test_a_record_disagreeing_in_the_safe_direction_is_still_refused);
-    RUN_TEST(test_validate_is_read_only_then_commit);
-    RUN_TEST(test_commit_refuses_a_context_no_signature_check_authenticated);
-    RUN_TEST(test_commit_refuses_the_context_of_a_failed_validation);
-    RUN_TEST(test_commit_refuses_a_corrupted_authentication_word);
-    RUN_TEST(test_an_enforced_classic_class_that_selects_no_key_is_unauthorized);
-    RUN_TEST(test_an_enforced_pqc_class_that_selects_no_key_is_unauthorized);
-    RUN_TEST(test_select_bits_only_in_the_reserved_bytes_select_no_key);
-    RUN_TEST(test_a_revocation_read_that_writes_nothing_revokes_every_key);
-    RUN_TEST(test_a_security_version_read_that_writes_nothing_is_a_rollback);
-    RUN_TEST(test_a_commit_over_an_unwritten_read_writes_only_the_manifest_bits);
-    RUN_TEST(test_an_unreadable_revocation_state_fails_the_check_for_each_family);
-    RUN_TEST(test_commit_writes_nothing_when_the_classic_revocation_read_fails);
-    RUN_TEST(test_commit_stops_at_an_unreadable_pqc_revocation_state);
-    RUN_TEST(test_every_blob_carries_its_declared_size);
-    RUN_TEST(test_a_device_with_no_posture_accepts_every_signature_choice);
-    RUN_TEST(test_a_disabled_algorithm_refuses_the_classes_that_use_it);
-    RUN_TEST(test_every_defined_signature_type_maps_to_its_revocation_bit);
-    RUN_TEST(test_an_undefined_signature_type_is_refused_by_the_posture_check);
-    RUN_TEST(test_only_an_intact_group_code_disables_its_group);
-    RUN_TEST(test_the_root_cohort_demands_its_signature_classes);
-    RUN_TEST(test_a_disabled_group_withdraws_its_cohort_demand);
-    RUN_TEST(test_cohort_bits_outside_the_root_demand_are_ignored);
-    RUN_TEST(test_posture_readers_fail_closed);
-    RUN_TEST(test_the_posture_is_inert_when_secure_boot_is_off);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_a_return_one_reporter_still_gets_signature_verification);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_a_corrupted_engaged_word_runs_the_check_rather_than_skipping_it);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_a_record_disagreeing_in_the_safe_direction_is_still_refused);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_validate_is_read_only_then_commit);
+    RUN_TEST_IF(CFG_PQC, test_commit_refuses_a_context_no_signature_check_authenticated);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_commit_refuses_the_context_of_a_failed_validation);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_commit_refuses_a_corrupted_authentication_word);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_an_enforced_classic_class_that_selects_no_key_is_unauthorized);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_an_enforced_pqc_class_that_selects_no_key_is_unauthorized);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_select_bits_only_in_the_reserved_bytes_select_no_key);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_a_revocation_read_that_writes_nothing_revokes_every_key);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_a_security_version_read_that_writes_nothing_is_a_rollback);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_a_commit_over_an_unwritten_read_writes_only_the_manifest_bits);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+                test_an_unreadable_revocation_state_fails_the_check_for_each_family);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_commit_writes_nothing_when_the_classic_revocation_read_fails);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_commit_stops_at_an_unreadable_pqc_revocation_state);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_every_blob_carries_its_declared_size);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+                test_a_device_with_no_posture_accepts_every_signature_choice);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+                test_a_disabled_algorithm_refuses_the_classes_that_use_it);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+                test_every_defined_signature_type_maps_to_its_revocation_bit);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+                test_an_undefined_signature_type_is_refused_by_the_posture_check);
+    RUN_TEST_IF(CFG_PQC, test_only_an_intact_group_code_disables_its_group);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+                test_the_root_cohort_demands_its_signature_classes);
+    RUN_TEST_IF(CFG_PQC, test_a_disabled_group_withdraws_its_cohort_demand);
+    RUN_TEST_IF(CFG_PQC, test_cohort_bits_outside_the_root_demand_are_ignored);
+    RUN_TEST_IF(CFG_PQC, test_posture_readers_fail_closed);
+    RUN_TEST_IF(CFG_PQC, test_the_posture_is_inert_when_secure_boot_is_off);
     RUN_TEST(test_the_posture_check_needs_a_settled_context);
-    RUN_TEST(test_a_refused_posture_check_withdraws_an_earlier_vouching);
-    RUN_TEST(test_a_posture_check_refused_at_the_confirm_withdraws_an_earlier_vouching);
-    RUN_TEST(test_the_signature_check_needs_the_posture_vouching);
-    RUN_TEST(test_validation_applies_the_posture_before_any_key_is_used);
+    RUN_TEST_IF(CFG_PQC, test_a_refused_posture_check_withdraws_an_earlier_vouching);
+    RUN_TEST_IF(CFG_PQC,
+                test_a_posture_check_refused_at_the_confirm_withdraws_an_earlier_vouching);
+    RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87,
+                test_the_signature_check_needs_the_posture_vouching);
+    RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
+                test_validation_applies_the_posture_before_any_key_is_used);
 
     int reverse = (argc > 1 && strcmp(argv[1], "--reverse") == 0);
     unit_run_all(reverse);

@@ -195,6 +195,13 @@ jobs:
             echo "::error::expected 2 'N/N passed' summaries in the check output, saw $summaries"
             exit 1
           fi
+          # The default configuration enables everything, so a unit test it
+          # does not run is gated on something it never turns off.
+          if grep -q '^NOT RUN:' "$log"; then
+            echo "::error::the default configuration left unit tests unrun"
+            grep -n '^NOT RUN:' "$log"
+            exit 1
+          fi
           for artifact in \
             validators/oca/build/lib/liboca_validator.a \
             validators/oca/build/test/oca-validate \
