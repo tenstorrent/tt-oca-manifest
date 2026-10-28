@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+#
+# Build configuration for the `hash-only` target: the least a build can be.
+# It checks each manifest's and payload's integrity against their digests and
+# verifies no signature, for a part that does not use secure boot.
+#
+# Every signature algorithm, DER encoding and payload encryption setting is
+# left out, so each is off, and [secure_boot] disabled declares that on
+# purpose. Such a build refuses every manifest that asserts secure boot with
+# OCA_FAIL_ALGORITHM_NOT_ENABLED and every encrypted payload, boots nothing on
+# a part that enforces secure boot, and never commits device state.
+
+[variants]
+classic = true
+pqc = true
+
+[limits]
+toc_max_images = 256
+
+[hardening]
+recheck_security_version = true
+
+[secure_boot]
+disabled = true
+
+[hash]
+sha2_256 = true

@@ -228,10 +228,11 @@ jobs:
 
       # A consumer that must never accept a variant turns it off in [variants] of
       # its build configuration. All three configurations have to keep building,
-      # or that setting has quietly stopped being an option.
+      # or that setting has quietly stopped being an option; so does the least
+      # configuration, a hash and nothing else.
       - name: Build the variant-gated configurations
         run: |
-          for target in both classic-only pqc-only; do
+          for target in both classic-only pqc-only hash-only; do
             make -C validators/oca CC=${{ matrix.cc }} "$target"
             binary="validators/oca/build/$target/test/oca-validate"
             test -x "$binary" || { echo "::error::$target produced no CLI at $binary"; exit 1; }

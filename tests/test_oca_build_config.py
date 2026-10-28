@@ -64,6 +64,7 @@ DEFAULT_VALUES = {
     "OCA_CFG_VARIANT_PQC": 1,
     "OCA_CFG_TOC_MAX_IMAGES": 256,
     "OCA_CFG_RECHECK_SECURITY_VERSION": 1,
+    "OCA_CFG_SECURE_BOOT_DISABLED": 0,
     "OCA_CFG_HASH_SHA2_256": 1,
     "OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256": 1,
     "OCA_CFG_SIG_ECDSA_P256_SHA256": 1,
@@ -81,8 +82,13 @@ def config_text(classic="true", pqc="true", toc_max_images="256",
                 recheck_security_version="true", sha2_256="true", rsa="true", ecdsa="true",
                 ml_dsa_87="true", der_rsa="true", der_ecdsa="true",
                 aes_128="true", aes_256="true", kdf="true", preshared="true",
-                extra=""):
-    """A complete configuration, every value given as its TOML text."""
+                secure_boot_disabled=None, extra=""):
+    """A complete configuration, every value given as its TOML text.
+
+    [secure_boot] disabled is a declaration, left out unless given.
+    """
+    declaration = ("" if secure_boot_disabled is None
+                   else f"\n[secure_boot]\ndisabled = {secure_boot_disabled}\n")
     return (
         "[variants]\n"
         f"classic = {classic}\n"
@@ -91,6 +97,7 @@ def config_text(classic="true", pqc="true", toc_max_images="256",
         f"toc_max_images = {toc_max_images}\n"
         "\n[hardening]\n"
         f"recheck_security_version = {recheck_security_version}\n"
+        f"{declaration}"
         "\n[hash]\n"
         f"sha2_256 = {sha2_256}\n"
         "\n[signature_classic]\n"
@@ -157,6 +164,22 @@ def test_the_variant_build_configs_differ_from_the_default_only_in_variants(
         name, changes):
     document, _ = gen_config.load_config(os.path.join(BUILD_CONFIG_DIR, name))
     assert gen_config.resolve_settings(document) == {**DEFAULT_VALUES, **changes}
+
+
+# Verifies nothing: every signature algorithm, DER encoding and payload
+# encryption setting off, as the declaration requires.
+NO_SECURE_BOOT = {"rsa": "false", "ecdsa": "false", "ml_dsa_87": "false",
+                  "der_rsa": "false", "der_ecdsa": "false", "aes_128": "false",
+                  "aes_256": "false", "kdf": "false", "preshared": "false"}
+
+
+def test_the_hash_only_build_config_verifies_nothing():
+    document, _ = gen_config.load_config(os.path.join(BUILD_CONFIG_DIR, "hash_only.toml"))
+    algorithms = {macro: 0 for macro in DEFAULT_VALUES
+                  if macro.startswith(("OCA_CFG_SIG_", "OCA_CFG_DER_", "OCA_CFG_CIPHER_",
+                                       "OCA_CFG_KDF_", "OCA_CFG_KEY_SOURCE_"))}
+    assert gen_config.resolve_settings(document) == {
+        **DEFAULT_VALUES, **algorithms, "OCA_CFG_SECURE_BOOT_DISABLED": 1}
 
 
 def test_a_complete_configuration_is_accepted():
@@ -292,12 +315,40 @@ def test_a_build_with_no_hash_is_refused():
         "manifest carries a manifest_hash"]
 
 
-def test_a_build_with_no_signature_algorithm_is_refused():
-    text = config_text(rsa="false", ecdsa="false", ml_dsa_87="false",
-                       der_rsa="false", der_ecdsa="false")
+@pytest.mark.parametrize("declaration", [None, "false"])
+def test_a_build_with_no_signature_algorithm_must_declare_secure_boot_disabled(
+        declaration):
+    """A build that cannot verify a signature is allowed, but only by saying so:
+    leaving every algorithm out is otherwise a mistake."""
+    text = config_text(**NO_SECURE_BOOT, secure_boot_disabled=declaration)
     assert problems_for(text) == [
-        "no signature algorithm is enabled: [signature_classic] or "
-        "[signature_pqc] must enable at least one"]
+        "no signature algorithm is enabled: enable one in [signature_classic] or "
+        "[signature_pqc], or declare a build without secure boot with "
+        "[secure_boot] disabled = true"]
+
+
+def test_a_build_that_declares_secure_boot_disabled_needs_only_a_hash():
+    assert problems_for(config_text(**NO_SECURE_BOOT, secure_boot_disabled="true")) == []
+
+
+def test_a_build_that_declares_secure_boot_disabled_verifies_no_signature():
+    text = config_text(**{**NO_SECURE_BOOT, "ecdsa": "true"}, secure_boot_disabled="true")
+    assert problems_for(text) == [
+        "[secure_boot] disabled = true declares a build that verifies no "
+        "signature, but signature_classic.ecdsa_p256_sha256 enables one; turn it "
+        "off or remove the declaration"]
+
+
+def test_a_build_that_declares_secure_boot_disabled_decrypts_nothing():
+    """A payload is decrypted only once its manifest's signature verifies, so a
+    cipher in a build that verifies none could never be used."""
+    text = config_text(**{**NO_SECURE_BOOT, "aes_256": "true", "kdf": "true",
+                          "preshared": "true"}, secure_boot_disabled="true")
+    assert problems_for(text) == [
+        "[secure_boot] disabled = true refuses every encrypted payload, which is "
+        "decrypted only once its manifest's signature verifies, but "
+        "encryption_cipher.aes_256_cbc, encryption_kdf.sp800_108_hmac_sha256, "
+        "encryption_key_source.preshared enable payload encryption; turn them off"]
 
 
 def test_one_signature_algorithm_is_enough():
@@ -566,9 +617,18 @@ def test_the_check_header_requires_every_setting(setting):
                      rf"{setting.macro}; regenerate it\"\n#endif$",
                      _check_header_text(), re.M)
 
+
+# Settings that change no behaviour of their own: they decide which
+# configurations are valid, so the check header is where the library reads them.
+DECLARATIONS = {"OCA_CFG_SECURE_BOOT_DISABLED"}
+
+
 @pytest.mark.parametrize("setting", IMPLEMENTED, ids=[s.name for s in IMPLEMENTED])
 def test_every_setting_reaches_the_library(setting):
     """A setting nothing reads would be a configuration key with no effect."""
+    if setting.macro in DECLARATIONS:
+        assert re.search(rf"^#if .*\b{setting.macro}\b", _check_header_text(), re.M)
+        return
     readers = []
     for name in sorted(os.listdir(LIB_DIR)):
         if name.endswith((".c", ".h")) and name != "oca_config_check.h":
@@ -717,8 +777,22 @@ UNGENERATED_HEADERS = [
     pytest.param({"values": {"OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256": "0",
                              "OCA_CFG_SIG_ECDSA_P256_SHA256": "0",
                              "OCA_CFG_SIG_ML_DSA_87": "0"}},
-                 "enables no signature algorithm",
+                 "enables no signature algorithm without [secure_boot] disabled",
                  id="no-signature"),
+    pytest.param({"values": {"OCA_CFG_SECURE_BOOT_DISABLED": "1"}},
+                 "declares [secure_boot] disabled but enables a signature algorithm",
+                 id="secure-boot-disabled-with-a-signature"),
+    pytest.param({"values": {"OCA_CFG_SECURE_BOOT_DISABLED": "1",
+                             "OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256": "0",
+                             "OCA_CFG_SIG_ECDSA_P256_SHA256": "0",
+                             "OCA_CFG_SIG_ML_DSA_87": "0",
+                             "OCA_CFG_DER_RSA_PUBLIC_KEY": "0",
+                             "OCA_CFG_DER_ECDSA_SIGNATURE": "0"}},
+                 "declares [secure_boot] disabled but enables payload encryption",
+                 id="secure-boot-disabled-with-encryption"),
+    pytest.param({"values": {"OCA_CFG_SECURE_BOOT_DISABLED": "2"}},
+                 "holds a true/false setting that is neither 0 nor 1",
+                 id="secure-boot-disabled-not-bool"),
     pytest.param({"values": {"OCA_CFG_VARIANT_PQC": "0"}},
                  "enables a PQC signature algorithm without [variants] pqc",
                  id="pqc-signature-without-pqc"),
@@ -892,7 +966,7 @@ def test_a_setting_read_by_a_name_nothing_defines_stops_the_build(tmp_path, targ
 
 # Between them, these turn off each variant, each signature algorithm, each DER
 # encoding while its algorithm stays on, each cipher, payload encryption as a
-# whole, and the recheck.
+# whole, the recheck, and everything but a hash.
 UNIT_TEST_CONFIGURATIONS = [
     pytest.param({}, (), id="default"),
     pytest.param({"toc_max_images": "16", "recheck_security_version": "false"},
@@ -910,6 +984,8 @@ UNIT_TEST_CONFIGURATIONS = [
     pytest.param({"rsa": "false", "ecdsa": "false", "der_rsa": "false",
                   "der_ecdsa": "false", "aes_256": "false"}, (),
                  id="ml-dsa-aes-128"),
+    pytest.param({**NO_SECURE_BOOT, "secure_boot_disabled": "true"}, (),
+                 id="hash-only"),
 ]
 
 # The tests of each setting's off branch, and the sweeps that hold the

@@ -259,12 +259,19 @@ the tests of each setting's off branch check what that build refuses instead.
 `tests/test_oca_build_config.py` runs the suite under configurations that turn each variant,
 algorithm, DER encoding and cipher off, and under the default, where every test must run.
 
+The least a build can be is one variant and one hash, for a part without secure boot. A
+configuration that enables no signature algorithm must declare `[secure_boot] disabled = true`,
+or the generator refuses it; the declaration is in turn refused alongside a signature
+algorithm or payload encryption, which is decrypted only once a signature verifies. The check
+header holds a hand-written header to the same three rules.
+
 A consumer that must **never** accept a variant turns the other off in `[variants]`.
 `classic-only` builds from `test/build_configs/classic_only.toml`, `pqc-only` from
 `pqc_only.toml`, and `both` from the default, which accepts everything; each lands in its own
 build directory. An excluded variant is then reported as an unsupported-variant failure rather
 than validated. This is the only build-time variant choice — there is no per-variant source
-fork, and all three configurations must keep building.
+fork, and all three configurations must keep building. `hash-only` builds the least
+configuration, `test/build_configs/hash_only.toml`, and must keep building too.
 
 `EXTRA_CFLAGS` remains for compiler flags only. Changing it, or the configuration, forces a
 rebuild. Make decides what to recompile from timestamps, never from the last command line, so
@@ -501,8 +508,8 @@ pytest -m "not aws"
 # 2. The C validator: its own unit tests plus a fixture round-trip through the real packer.
 make -C validators/oca check
 
-# 3. The variant gates still compile three ways.
-for t in both classic-only pqc-only; do make -C validators/oca "$t"; done
+# 3. The variant gates still compile three ways, and the least configuration with them.
+for t in both classic-only pqc-only hash-only; do make -C validators/oca "$t"; done
 ```
 
 AWS KMS tests are **deselected**, not skipped: they need live credentials, and `-m "not aws"`

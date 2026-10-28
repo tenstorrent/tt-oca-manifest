@@ -168,7 +168,10 @@ check: unit_test fixture_sweep
 #   both         — every variant (the default configuration).
 #   classic-only — PQC compiled out (test/build_configs/classic_only.toml).
 #   pqc-only     — Classic compiled out (test/build_configs/pqc_only.toml).
-.PHONY: both classic-only pqc-only
+# A fourth builds the least configuration the library accepts:
+#   hash-only    — integrity only, no secure boot
+#                  (test/build_configs/hash_only.toml).
+.PHONY: both classic-only pqc-only hash-only
 
 both:
 	$(MAKE) BUILD=build/both CONFIG=lib/oca_config.toml all
@@ -178,6 +181,9 @@ classic-only:
 
 pqc-only:
 	$(MAKE) BUILD=build/pqc-only CONFIG=test/build_configs/pqc_only.toml all
+
+hash-only:
+	$(MAKE) BUILD=build/hash-only CONFIG=test/build_configs/hash_only.toml all
 
 # Always evaluated, but only writes when the flags differ — so it does not
 # invalidate objects on every invocation.

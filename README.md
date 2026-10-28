@@ -504,6 +504,13 @@ excluded variant is then reported as an unsupported-variant failure rather
 than validated. This is the only build-time variant choice — there is no
 per-variant source fork.
 
+A part that does not use secure boot can build the validator with a hash and
+nothing else: `make -C validators/oca hash-only` builds
+`validators/oca/test/build_configs/hash_only.toml`, which checks integrity,
+verifies no signature, and must say so with `[secure_boot] disabled = true`.
+See [`validators/oca/INTEGRATION.md`](validators/oca/INTEGRATION.md) for what
+such a build refuses.
+
 #### Hardening, and where it stops
 
 The library is built to run in production alongside a fuller software stack, and

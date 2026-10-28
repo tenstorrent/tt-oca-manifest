@@ -28,6 +28,16 @@ toc_max_images = 256
 # evaluation already decides; the second catches a fault that skipped it.
 recheck_security_version = true
 
+[secure_boot]
+# Declares a build that verifies no signature: it checks manifest and payload
+# integrity only. Every manifest that asserts secure boot is then refused with
+# OCA_FAIL_ALGORITHM_NOT_ENABLED, a part that enforces secure boot boots
+# nothing, and device state is never committed, since a commit needs an
+# authenticated manifest. Required when no signature algorithm is enabled, and
+# refused alongside one, or alongside payload encryption, which is decrypted
+# only once a signature verifies. Off when left out.
+disabled = false
+
 [hash]
 # Digests this build computes, for both manifest_hash_type and
 # payload_hash_type. Every manifest carries a manifest_hash, so at least one

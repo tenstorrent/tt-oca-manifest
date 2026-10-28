@@ -56,6 +56,9 @@
 #ifndef OCA_CFG_RECHECK_SECURITY_VERSION
 #error "oca_config.h is missing OCA_CFG_RECHECK_SECURITY_VERSION; regenerate it"
 #endif
+#ifndef OCA_CFG_SECURE_BOOT_DISABLED
+#error "oca_config.h is missing OCA_CFG_SECURE_BOOT_DISABLED; regenerate it"
+#endif
 #ifndef OCA_CFG_HASH_SHA2_256
 #error "oca_config.h is missing OCA_CFG_HASH_SHA2_256; regenerate it"
 #endif
@@ -98,6 +101,7 @@
 #if !OCA_CFG_IS_SWITCH(OCA_CFG_VARIANT_CLASSIC) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_VARIANT_PQC) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_RECHECK_SECURITY_VERSION) \
+    || !OCA_CFG_IS_SWITCH(OCA_CFG_SECURE_BOOT_DISABLED) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_HASH_SHA2_256) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256) \
     || !OCA_CFG_IS_SWITCH(OCA_CFG_SIG_ECDSA_P256_SHA256) \
@@ -120,9 +124,21 @@
 #error "oca_config.h enables no hash; every manifest carries a manifest_hash"
 #endif
 
-#if !OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256 && !OCA_CFG_SIG_ECDSA_P256_SHA256 \
-    && !OCA_CFG_SIG_ML_DSA_87
-#error "oca_config.h enables no signature algorithm"
+/* A build verifies a signature, or declares that it verifies none and so
+ * decrypts nothing: a payload is decrypted only once its manifest's signature
+ * verifies. */
+#if !OCA_CFG_SECURE_BOOT_DISABLED && !OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256 \
+    && !OCA_CFG_SIG_ECDSA_P256_SHA256 && !OCA_CFG_SIG_ML_DSA_87
+#error "oca_config.h enables no signature algorithm without [secure_boot] disabled"
+#endif
+#if OCA_CFG_SECURE_BOOT_DISABLED && (OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256 \
+    || OCA_CFG_SIG_ECDSA_P256_SHA256 || OCA_CFG_SIG_ML_DSA_87)
+#error "oca_config.h declares [secure_boot] disabled but enables a signature algorithm"
+#endif
+#if OCA_CFG_SECURE_BOOT_DISABLED && (OCA_CFG_CIPHER_AES_128_CBC \
+    || OCA_CFG_CIPHER_AES_256_CBC || OCA_CFG_KDF_SP800_108_HMAC_SHA256 \
+    || OCA_CFG_KEY_SOURCE_PRESHARED)
+#error "oca_config.h declares [secure_boot] disabled but enables payload encryption, which needs a verified signature"
 #endif
 
 #if (OCA_CFG_CIPHER_AES_128_CBC || OCA_CFG_CIPHER_AES_256_CBC) \

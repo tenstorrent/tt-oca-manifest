@@ -15,6 +15,9 @@ toc_max_images = 256
 [hardening]
 recheck_security_version = true
 
+[secure_boot]
+disabled = false
+
 [hash]
 sha2_256 = true
 

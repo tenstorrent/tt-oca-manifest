@@ -236,6 +236,12 @@ SETTINGS = (
     Setting("hardening", "recheck_security_version",
             "OCA_CFG_RECHECK_SECURITY_VERSION", "bool",
             "Evaluate anti-rollback again after the signature verifies"),
+    # Off unless stated, so leaving it out keeps a build that can verify. A build
+    # that enables no signature algorithm must state it, which makes giving up
+    # authentication a decision rather than an omission.
+    Setting("secure_boot", "disabled", "OCA_CFG_SECURE_BOOT_DISABLED", "bool",
+            "Declare a build that verifies no signature and decrypts no payload",
+            required=False),
     *HASHES,
     *CLASSICAL_SIGNATURES,
     *PQC_SIGNATURES,
@@ -349,9 +355,17 @@ def _cross_setting_problems(values: dict[str, int], enabled: set[str]) -> list[s
                         "since every manifest carries a manifest_hash")
     signatures = [s.name for s in (*CLASSICAL_SIGNATURES, *PQC_SIGNATURES)
                   if s.name in enabled]
-    if not signatures:
-        problems.append("no signature algorithm is enabled: [signature_classic] "
-                        "or [signature_pqc] must enable at least one")
+    secure_boot_disabled = values.get("OCA_CFG_SECURE_BOOT_DISABLED") == 1
+    if not signatures and not secure_boot_disabled:
+        problems.append("no signature algorithm is enabled: enable one in "
+                        "[signature_classic] or [signature_pqc], or declare a build "
+                        "without secure boot with [secure_boot] disabled = true")
+    if signatures and secure_boot_disabled:
+        which = ("enables one; turn it" if len(signatures) == 1
+                 else "enable them; turn them")
+        problems.append(f"[secure_boot] disabled = true declares a build that "
+                        f"verifies no signature, but {', '.join(signatures)} "
+                        f"{which} off or remove the declaration")
     if values.get("OCA_CFG_VARIANT_PQC") == 0:
         for setting in PQC_SIGNATURES:
             if setting.name in enabled:
@@ -365,6 +379,12 @@ def _cross_setting_problems(values: dict[str, int], enabled: set[str]) -> list[s
         "[encryption_kdf]": [s for s in KDFS if s.name in enabled],
         "[encryption_key_source]": [s for s in KEY_SOURCES if s.name in enabled],
     }
+    if secure_boot_disabled and any(encryption.values()):
+        named = [s.name for chosen in encryption.values() for s in chosen]
+        problems.append(f"[secure_boot] disabled = true refuses every encrypted "
+                        f"payload, which is decrypted only once its manifest's "
+                        f"signature verifies, but {', '.join(named)} enable payload "
+                        f"encryption; turn them off")
     if any(encryption.values()):
         for section, chosen in encryption.items():
             if not chosen:

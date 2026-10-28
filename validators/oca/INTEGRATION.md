@@ -122,6 +122,33 @@ name the library no longer defines, silently compiles its branch out; with
 `-Wundef -Werror` it stops the build instead. The settings are the `OCA_CFG_*`
 macros in the generated header.
 
+**A part that does not use secure boot** can build the library with one variant
+and one hash and nothing else: it checks manifest and payload integrity and
+verifies no signature. The configuration must say so with `[secure_boot]
+disabled = true`; a file that enables no signature algorithm without it is
+refused, so an omitted algorithm section cannot quietly produce a build that
+authenticates nothing. The declaration is refused alongside any signature
+algorithm, and alongside payload encryption, because a payload is decrypted only
+once its manifest's signature verifies (see
+[Encryption requires confirmed secure boot](#encryption-requires-confirmed-secure-boot)).
+Such a build:
+
+- refuses every manifest that asserts secure boot with
+  `OCA_FAIL_ALGORITHM_NOT_ENABLED`, before any callback runs, and every
+  encrypted payload;
+- boots nothing on a part whose `is_secure_boot_active` reports enforcement,
+  exactly as a full build refuses an unsigned manifest there;
+- never commits device state: `oca_commit_security_state()` needs an
+  authenticated manifest, so anti-rollback and revocation state never advance.
+
+It needs the `hash` callback, a secure-boot reporter that says the part does not
+enforce secure boot (`is_secure_boot_disabled` or `is_secure_boot_active`; with
+neither wired the library assumes it does, and this build boots nothing), and
+whichever hardware-identity readers the manifests' constraints use.
+`verify_signature`, `is_key_authorized`, `decrypt_payload` and the posture
+readers are never called. `test/build_configs/hash_only.toml` is a complete
+example.
+
 **A build host without Python** can generate the header elsewhere and commit
 it. Nothing then notices if the header falls behind its configuration file, so
 check it in your CI: `gen_config.py --check` writes nothing and exits 1 unless

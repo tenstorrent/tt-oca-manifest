@@ -35,7 +35,7 @@ validators/oca/
 └── test/              # host harness (NEVER ship to silicon)
     ├── main.c           # the CLI driver
     ├── unit_test.c      # in-tree C unit tests
-    ├── build_configs/   # build configurations for the variant-gated targets
+    ├── build_configs/   # build configurations for the variant-gated and hash-only targets
     └── fixtures/
         ├── configs/     # YAML configs that drive `make check`
         └── *.bin        # generated binaries (gitignored)
@@ -92,9 +92,10 @@ rewritten only when the flags actually differ, so an unchanged rebuild stays
 incremental. This is independent of your make version: **no** make tracks the
 command line it last used, so the stamp is required regardless.
 
-The `classic-only` / `pqc-only` targets build from `test/build_configs/` into
-separate `BUILD` directories, so they never contend with the default build. Do
-the same for ad-hoc experiments if you want to keep both around:
+The `classic-only`, `pqc-only` and `hash-only` targets build from
+`test/build_configs/` into separate `BUILD` directories, so they never contend
+with the default build. Do the same for ad-hoc experiments if you want to keep
+both around:
 
 ```sh
 make BUILD=build/cap32 CONFIG=path/to/cap32.toml all
@@ -108,8 +109,8 @@ make BUILD=build/cap32 CONFIG=path/to/cap32.toml all
 | `[variants] pqc` | `true` | Accept the `OCAP` variant. |
 | `[limits] toc_max_images` | `256` | Cap on payload TOC entries this build will process (exposed to code as `OCA_TOC_MAX_IMAGES`). |
 | `[hardening] recheck_security_version` | `true` | Re-evaluate anti-rollback after the signature verifies (`OCA_RECHECK_SECURITY_VERSION`). |
+| `[secure_boot] disabled` | `false` | Declare a build that verifies no signature. Required when no signature algorithm is on; refused alongside one, or alongside payload encryption. |
 | `[hash] sha2_256` | `true` | Compute SHA2-256 for `manifest_hash_type` and `payload_hash_type`. At least one hash must be on. |
-
 | `[signature_classic] rsa_3072_pkcs1v15_sha256` | `true` | Verify RSA-3072, RSASSA-PKCS1-v1_5, SHA-256. |
 | `[signature_classic] ecdsa_p256_sha256` | `true` | Verify ECDSA P-256, SHA-256. |
 | `[signature_pqc] ml_dsa_87` | `true` | Verify FIPS 204 ML-DSA-87. Needs `[variants] pqc`. |
@@ -129,12 +130,24 @@ At least one variant must be on. A variant turned off is refused with
 The algorithm sections are the build's portfolio, and they work differently
 from the settings above: an algorithm or encoding the file does not name is
 off, so the file lists what the build accepts and nothing is accepted by
-default. At least one signature algorithm must be on. Every algorithm the
-format defines may be named — `lib/oca_config.toml` lists them — but only those
-with a row in `lib/algorithms.c` may be turned on; turning on any other stops
-the generator, naming it as not implemented. A manifest that names an
-algorithm or DER encoding the build leaves off is refused with
-`OCA_FAIL_ALGORITHM_NOT_ENABLED`, before any signature is checked.
+default. Every algorithm the format defines may be named — `lib/oca_config.toml`
+lists them — but only those with a row in `lib/algorithms.c` may be turned on;
+turning on any other stops the generator, naming it as not implemented. A
+manifest that names an algorithm or DER encoding the build leaves off is refused
+with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, before any signature is checked.
+
+The least a build can be is one variant and one hash: it checks each manifest's
+and payload's integrity and verifies no signature, for a part that does not use
+secure boot. Leaving every signature algorithm out is refused unless the file
+also declares it, with `[secure_boot] disabled = true`, so giving up
+authentication is a decision rather than an omission. That declaration is
+refused alongside a signature algorithm, and alongside payload encryption, since
+a payload is decrypted only once its manifest's signature verifies. Such a build
+refuses every manifest that asserts secure boot with
+`OCA_FAIL_ALGORITHM_NOT_ENABLED` and every encrypted payload, boots nothing on a
+part that enforces secure boot, and never commits device state, which needs an
+authenticated manifest. `test/build_configs/hash_only.toml` is that build, and
+`make hash-only` builds it.
 
 `recheck_security_version` is worth understanding before turning it off. The
 anti-rollback comparison runs *before* signature verification, so a replayed
