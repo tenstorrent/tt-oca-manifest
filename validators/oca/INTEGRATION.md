@@ -116,6 +116,12 @@ the CMake example and the `CPPFLAGS` in the Make example do that. Two builds
 that share a configuration file, such as firmware and its host tests, each
 generate the same header from it.
 
+**Compile with `-Wundef`**, as the library's own build does. A macro nothing
+defines reads as 0 in `#if`, so a misspelled setting, or code still testing a
+name the library no longer defines, silently compiles its branch out; with
+`-Wundef -Werror` it stops the build instead. The settings are the `OCA_CFG_*`
+macros in the generated header.
+
 **A build host without Python** can generate the header elsewhere and commit
 it. Nothing then notices if the header falls behind its configuration file, so
 check it in your CI: `gen_config.py --check` writes nothing and exits 1 unless
@@ -1085,7 +1091,10 @@ Changes an existing integration should check. Most show only at run time.
   `OCA_SUPPORT_PQC`, `OCA_TOC_MAX_IMAGES` and `OCA_RECHECK_SECURITY_VERSION` are
   no longer set with `-D`: each is a key in the configuration file, and passing
   the old `-D` fails the compile, naming that key. The last two stay available
-  to your code as macros.
+  to your code as macros. The first two do not: code of yours that tests
+  `#if OCA_SUPPORT_PQC` now reads 0 without complaint. Test
+  `OCA_CFG_VARIANT_CLASSIC` and `OCA_CFG_VARIANT_PQC` instead, and compile with
+  `-Wundef` to find every such test.
 
 - **Revocation is called per family.** `get_root_key_revocation` and
   `set_root_key_revocation` are now called with `OCA_KEY_ALGO_PQC` as well as

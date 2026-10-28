@@ -866,6 +866,18 @@ def test_a_changed_configuration_rebuilds_and_an_unchanged_one_does_not(tmp_path
     assert "#define OCA_CFG_VARIANT_PQC 0" in (build / "gen" / "oca_config.h").read_text()
 
 
+@pytest.mark.parametrize("target", ["lib", "unit_test"])
+def test_a_setting_read_by_a_name_nothing_defines_stops_the_build(tmp_path, target):
+    """An undefined macro in #if reads as 0. Without -Wundef, a misspelled
+    setting, or code still testing a setting's former name, would silently
+    compile its feature out."""
+    stale = tmp_path / "stale.h"
+    stale.write_text("#if OCA_SUPPORT_PQC\n#endif\n")
+    result = run_make(tmp_path / "build", f"EXTRA_CFLAGS=-include {stale}", target)
+    assert result.returncode != 0
+    assert "OCA_SUPPORT_PQC" in result.stderr
+
+
 # Between them, these turn off each variant, each signature algorithm, each DER
 # encoding while its algorithm stays on, each cipher, payload encryption as a
 # whole, and the recheck.

@@ -69,7 +69,9 @@ DOC_WARNINGS := $(shell $(CC) -Wdocumentation -Werror -x c -fsyntax-only /dev/nu
                   >/dev/null 2>&1 \
                   && echo "-Wdocumentation -Wdocumentation-unknown-command")
 
-CFLAGS       := -std=c99 -Wall -Wextra -Werror -pedantic $(DOC_WARNINGS)
+# -Wundef: an undefined macro in #if reads as 0, so a misspelled setting, or a
+# setting's former name, would silently compile its feature out.
+CFLAGS       := -std=c99 -Wall -Wextra -Werror -pedantic -Wundef $(DOC_WARNINGS)
 
 # Extra compiler flags for the library and CLI compiles: sanitizers, warnings,
 # optimization. Library settings belong in the build configuration (CONFIG),

@@ -51,7 +51,7 @@ make check       # unit tests + packer-fixture round-trip sweep
 make clean
 ```
 
-The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic
+The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic -Wundef
 -ffreestanding -nostdlib`. The host CLI links OpenSSL 3.5 or later (`-lcrypto`).
 
 ### Build configuration

@@ -203,9 +203,9 @@ make -C validators/oca check      # unit tests + packer-fixture round-trip sweep
 make -C validators/oca clean
 ```
 
-The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic -ffreestanding -nostdlib` to
-prove target portability; the archive is for the host CLI and CI, not a release artifact. The
-CLI links OpenSSL 3.5 or later.
+The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic -Wundef -ffreestanding
+-nostdlib` to prove target portability; the archive is for the host CLI and CI, not a release
+artifact. The CLI links OpenSSL 3.5 or later.
 
 ```bash
 validators/oca/build/test/oca-validate --manifest out/oca_classic.bin --list-images
