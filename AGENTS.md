@@ -232,25 +232,30 @@ compiles, and `lib/oca_config_check.h` refuses a header that is missing, malform
 another library version, naming any setting it lacks. It does not tie a header to its
 configuration file, so a hand edit that leaves a valid configuration compiles;
 `gen_config.py --check` is what catches a header that has drifted from its file. A
-configuration **replaces** the default: every setting must be stated, unknown keys are errors,
-and the settings' former `-D` forms (`-DOCA_TOC_MAX_IMAGES=32`, `-DOCA_SUPPORT_PQC=0`) fail the
-compile naming the key that replaced each. To add a setting, add it to `SETTINGS` in
-`gen_config.py`, to every file that states settings (`lib/oca_config.toml` and
-`test/build_configs/*.toml`), and a missing-setting guard for its macro to
-`oca_config_check.h`; `tests/test_oca_build_config.py` fails until all three agree and a
-library source reads it. `README.md`, "Build configuration", lists the settings.
+configuration **replaces** the default: every required setting must be stated, a switch such as
+an algorithm is off when left out, unknown keys are errors, and the settings' former `-D` forms
+(`-DOCA_TOC_MAX_IMAGES=32`, `-DOCA_SUPPORT_PQC=0`) fail the compile naming the key that
+replaced each. To add a setting, add it to `SETTINGS` in `gen_config.py`, to every file that
+states settings (`lib/oca_config.toml` and `test/build_configs/*.toml`), and a missing-setting
+guard for its macro to `oca_config_check.h`; `tests/test_oca_build_config.py` fails until all
+three agree and a library source reads it. A new setting is required unless leaving it out
+keeps what every existing configuration builds — an algorithm, an encoding, or a declaration
+that only admits configurations otherwise refused. The `Setting` docstring states the rule and
+a test holds every optional setting to it. `README.md`, "Build configuration", lists the
+settings.
 
 The algorithm sections are the build's portfolio: an algorithm the file does not name is off.
 The generator lists every algorithm the format defines, but only those with a row in
 `lib/algorithms.c` are implemented, and turning on any other stops the build. A manifest naming
 an algorithm the build leaves off is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`; one naming
-a value the format reserves with `OCA_FAIL_ALGORITHM_RESERVED`. To implement an algorithm, add
-its row with the sizes the format fixes, give its `Setting` in `gen_config.py` a macro, and add
-that macro to the check header; the lock-step tests in `tests/test_oca_build_config.py` hold
-the table rows, the generator and the packer's signing tables together. They also compile the
-library and resolve every value of every algorithm field, holding each to the generator's
-lists and the format's integrator ranges, and each signature type to a revocation bit, so a
-code point changed in one place fails until every copy agrees.
+a value the format reserves with `OCA_FAIL_ALGORITHM_RESERVED`. Implementing an algorithm
+touches the packer, the public header, the tables, the generator and the check header;
+`validators/oca/README.md`, "Implementing an algorithm", lists every step. The lock-step tests
+in `tests/test_oca_build_config.py` hold the table rows, the generator and the packer's signing
+tables together. They also compile the library and resolve every value of every algorithm
+field, holding each to the generator's lists and the format's integrator ranges, and each
+signature type to a revocation bit, so a code point changed in one place fails until every copy
+agrees.
 
 The C unit tests must pass under any configuration, not only the default. A test whose fixture
 needs something a configuration can turn off registers with `RUN_TEST_IF(needs, test)` instead

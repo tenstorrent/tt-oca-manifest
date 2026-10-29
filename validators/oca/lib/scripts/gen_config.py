@@ -12,9 +12,11 @@ a header that is missing, malformed, or generated for another version of the
 library. Only `--check` compares a header with its configuration file.
 
 A configuration REPLACES the shipped default (`lib/oca_config.toml`); it is
-never layered on top of it. Every setting must therefore be stated, so a library
-upgrade that adds one fails the build until the adopter decides its value,
-rather than inheriting a default nobody reviewed.
+never layered on top of it. A required setting must therefore be stated, so a
+library upgrade that adds one fails the build until the adopter decides its
+value, rather than inheriting a default nobody reviewed. A switch, such as an
+algorithm, is off unless the configuration turns it on, so an upgrade that adds
+one leaves every existing build accepting what it did.
 
 The header is written only when its content changes, so a build that depends on
 it stays incremental. `--check` writes nothing and reports whether the header at
@@ -60,6 +62,14 @@ class Setting:
     A required setting must be stated in every configuration. An optional one
     is a switch that is off unless the configuration turns it on, which is how
     every algorithm is listed: a build accepts only what it names.
+
+    A setting may be optional only when leaving it out keeps what every
+    existing configuration builds: an algorithm or encoding, which a
+    configuration that does not name it never accepted, or a declaration that
+    only admits configurations otherwise refused, such as
+    [secure_boot] disabled. A setting that turns existing behaviour off, or
+    sets a value, must be required, so the upgrade that adds it stops each
+    adopter's build until they choose.
 
     A switch the library has no rules for is not implemented. It generates no
     macro, and turning it on is an error rather than a request the library
@@ -320,7 +330,7 @@ def resolve_settings(document: dict) -> dict[str, int]:
             if setting.required:
                 problems.append(
                     f"{setting.name} is required: a configuration replaces the "
-                    f"default, so every setting must be stated")
+                    f"default, so it must state every required setting")
             elif setting.implemented:
                 values[setting.macro] = 0
             continue

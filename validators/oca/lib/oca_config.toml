@@ -7,8 +7,9 @@
 # lib/scripts/gen_config.py turns it into oca_config.h, and the library refuses
 # to compile without that header. To configure a build, copy this file outside
 # the vendored lib/ directory, edit the copy, and generate from it. Your file
-# replaces this one entirely: every setting must be stated, and nothing here is
-# merged into it.
+# replaces this one entirely, and nothing here is merged into it. The settings
+# in [variants], [limits] and [hardening] must be stated. Every other setting is
+# a switch, off unless your file turns it on.
 
 [variants]
 # Which manifest variants this build accepts. A variant set to false is refused

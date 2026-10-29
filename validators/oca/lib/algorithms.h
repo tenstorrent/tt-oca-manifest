@@ -9,8 +9,9 @@
  * therefore resolves three ways: to a row, to an algorithm the format defines
  * but this build does not enable, or to a value the format reserves.
  *
- * Adding an algorithm means adding its row here, with the sizes the format
- * fixes for it, and marking it implemented in lib/scripts/gen_config.py.
+ * Adding an algorithm means adding its row to algorithms.c, with the sizes the
+ * format fixes for it, among other steps; validators/oca/README.md,
+ * "Implementing an algorithm", lists them all.
  *
  * This is an internal header — it is not part of the public library API.
  */

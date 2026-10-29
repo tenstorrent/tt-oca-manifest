@@ -44,10 +44,15 @@ configuration file outside the vendored `lib/`, so a library upgrade never
 touches it, and start from a copy of `lib/oca_config.toml`, which documents
 every setting.
 
-Your file **replaces** that default; nothing in it is merged with yours. Every
-setting must be stated, and an unknown or misspelled key is an error. When an
-upgrade adds a setting, your build stops until you choose its value, rather than
-quietly taking a default you never reviewed.
+Your file **replaces** that default; nothing in it is merged with yours, and an
+unknown or misspelled key is an error. Settings come in two kinds:
+
+- A **required** setting — a variant, the TOC limit, the security-version
+  recheck — must be stated. When an upgrade adds one, your build stops until you
+  choose its value, rather than quietly taking a default you never reviewed.
+- A **switch** — an algorithm, a DER encoding, `[secure_boot] disabled` — is off
+  unless your file turns it on. An upgrade that adds one changes nothing your
+  build accepts: a newly implemented algorithm stays off until you name it.
 
 Generate the header before compiling anything that includes `oca_validator.h`,
 and put its directory on the include path:
@@ -86,7 +91,7 @@ the header:
 
 ```make
 OCA_LIB        := third_party/oca_validator
-OCA_CONFIG     ?= board/oca_config.toml
+OCA_CONFIG     := board/oca_config.toml
 OCA_CONFIG_DIR := $(BUILD_DIR)/oca_gen
 OCA_CONFIG_H   := $(OCA_CONFIG_DIR)/oca_config.h
 OCA_SOURCES    := $(wildcard $(OCA_LIB)/*.c)
@@ -107,6 +112,34 @@ your own objects as well as the library's: an object's compiler-generated
 dependency file names the header only after its first compile, and the header
 must exist before then. Place that rule after `OBJS` is defined, because Make
 expands a rule's targets when it reads the rule.
+
+**Several builds from one tree**, such as a ROM that ships a Classic-only and a
+dual-variant image, each get a configuration file, chosen by a variable. This
+replaces passing `OCA_SUPPORT_PQC=0` or `-DOCA_SUPPORT_CLASSIC=0` on each
+invocation. Give each build its own directory, so each generates its own header
+and no object built for one configuration is reused for another. Set these
+ahead of the lines above, in place of their `OCA_CONFIG`:
+
+```make
+# make OCA_BUILD=classic_only builds from board/oca_classic_only.toml.
+OCA_BUILD  := default
+OCA_CONFIG := board/oca_$(OCA_BUILD).toml
+BUILD_DIR  := build/$(OCA_BUILD)
+```
+
+Each file is a complete configuration: copy `lib/oca_config.toml` and change
+what differs. `test/build_configs/classic_only.toml` and `pqc_only.toml` are
+the library's own examples. Assigning with `:=` rather than `?=` keeps a
+variable of the same name in the environment from choosing the build, while
+`make OCA_BUILD=...` still does.
+
+**The portfolio is policy, not footprint.** Turning an algorithm or a variant
+off makes the library refuse what it names. It does not make the library
+meaningfully smaller: an algorithm turned off loses its table row and little
+else, and even a build with nothing but a hash is a few hundred bytes smaller
+than the default. What an algorithm costs is the cryptography your callbacks
+link, which the library never contains. Choose the portfolio for what a part
+must accept, and size the image by the callbacks it wires.
 
 **Compile your own code against the same header.** `OCA_TOC_MAX_IMAGES` and
 `OCA_RECHECK_SECURITY_VERSION` are part of the public header and come from the
@@ -149,10 +182,38 @@ whichever hardware-identity readers the manifests' constraints use.
 readers are never called. `test/build_configs/hash_only.toml` is a complete
 example.
 
-**A build host without Python** can generate the header elsewhere and commit
-it. Nothing then notices if the header falls behind its configuration file, so
-check it in your CI: `gen_config.py --check` writes nothing and exits 1 unless
-the header matches the file.
+**A compile environment without Python 3.11**, such as a ROM toolchain image,
+can compile against headers generated elsewhere. Generate each build's header
+on a host that has Python 3.11 and commit it beside its configuration file.
+The compile environment puts the committed directory on the include path and
+leaves out the rule that generates the header; objects still depend on it. The
+header records only its file's name and a digest of its content, so the same
+file gives the same header on any host:
+
+```make
+OCA_CONFIG_DIR := board/oca_gen/$(OCA_BUILD)
+OCA_BUILDS     := default classic_only
+
+# Run on a host with Python 3.11 after editing a configuration; commit the result.
+.PHONY: oca-config-regen
+oca-config-regen:
+	for build in $(OCA_BUILDS); do \
+	    python3 $(OCA_LIB)/scripts/gen_config.py --config board/oca_$$build.toml \
+	        --out board/oca_gen/$$build/oca_config.h || exit 1; \
+	done
+```
+
+The compile environment then never notices a header that has fallen behind its
+file, so check every pair in CI, where Python is available.
+`gen_config.py --check` writes nothing and exits 1 unless the header matches
+the file:
+
+```sh
+for build in default classic_only; do
+    python3 third_party/oca_validator/scripts/gen_config.py --check \
+        --config board/oca_$build.toml --out board/oca_gen/$build/oca_config.h || exit 1
+done
+```
 
 `lib/oca_config_check.h` repeats the guards the library depends on. A header
 that was not generated, comes from another library version, is missing a
@@ -269,10 +330,12 @@ static my_engine_t *g_sha_engine;
 oca_result_t my_hash(oca_hash_type_t type, const uint8_t *msg, size_t len,
                      uint8_t *out, size_t out_len)
 {
-    if (type != OCA_HASH_TYPE_SHA2_256) {
+    /* Refuse what this function cannot compute exactly: another digest, or a
+     * length other than SHA2-256's. */
+    if (type != OCA_HASH_TYPE_SHA2_256 || out_len != 32u) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    return my_engine_sha256(g_sha_engine, msg, len, out, out_len)
+    return my_engine_sha256(g_sha_engine, msg, len, out)
                ? OCA_OK : OCA_FAIL_CALLBACK_UNAVAILABLE;
 }
 ```
@@ -1121,7 +1184,10 @@ Changes an existing integration should check. Most show only at run time.
   to your code as macros. The first two do not: code of yours that tests
   `#if OCA_SUPPORT_PQC` now reads 0 without complaint. Test
   `OCA_CFG_VARIANT_CLASSIC` and `OCA_CFG_VARIANT_PQC` instead, and compile with
-  `-Wundef` to find every such test.
+  `-Wundef` to find every such test. A Make build that chose its variants per
+  invocation keeps one configuration file per build instead, and a compile
+  environment without Python 3.11 can commit generated headers; both are under
+  [Configuring the build](#configuring-the-build).
 
 - **Revocation is called per family.** `get_root_key_revocation` and
   `set_root_key_revocation` are now called with `OCA_KEY_ALGO_PQC` as well as

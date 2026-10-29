@@ -27,7 +27,7 @@
 #   $(BUILD)/gen/oca_config.h from it before anything compiles:
 #     make CONFIG=path/to/board.toml
 #   A configuration replaces the default rather than adjusting it, so it states
-#   every setting. The library refuses the settings' former -D forms.
+#   every required setting. The library refuses the settings' former -D forms.
 
 CC          ?= cc
 PROJECT_ROOT := $(abspath $(CURDIR)/../..)

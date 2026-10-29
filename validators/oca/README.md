@@ -65,11 +65,13 @@ default; name another with `CONFIG`:
 make CONFIG=path/to/board.toml test
 ```
 
-A configuration **replaces** the default rather than adjusting it. Every setting
-must be stated, an unknown or misspelled key is an error, and the generator
-reports every problem in one pass. When a library upgrade adds a setting, your
-build stops until you choose its value, instead of inheriting one nobody
-reviewed. The settings' former `-D` forms (`-DOCA_TOC_MAX_IMAGES=32` and the
+A configuration **replaces** the default rather than adjusting it. An unknown or
+misspelled key is an error, and the generator reports every problem in one pass.
+The settings in `[variants]`, `[limits]` and `[hardening]` are required: when a
+library upgrade adds one, your build stops until you choose its value, instead
+of inheriting one nobody reviewed. Every other setting is a switch, off unless
+the file turns it on, so a new algorithm stays off until you name it. The
+settings' former `-D` forms (`-DOCA_TOC_MAX_IMAGES=32` and the
 rest) are refused at compile time, naming the key that replaced each.
 `EXTRA_CFLAGS` remains for compiler flags only: sanitizers, warnings,
 optimization.
@@ -102,6 +104,9 @@ make BUILD=build/cap32 CONFIG=path/to/cap32.toml all
 ```
 
 #### Settings
+
+The default is the value `lib/oca_config.toml` states. A switch the file leaves
+out — every row from `[secure_boot]` down — is off.
 
 | Key | Default | Effect |
 |---|---|---|
@@ -161,6 +166,54 @@ rather than correctness — it catches a fault that skipped or glitched past the
 first. Setting it to `0` saves one device-state read and one 16-byte compare on
 the accept path, against a signature verification that dominates both. Disable it
 only on a target that genuinely cannot afford that, and knowing what is given up.
+
+#### Implementing an algorithm
+
+The format defines more algorithms than the library implements.
+`gen_config.py` lists each one as a switch without a macro, so naming it stops
+the generator. Implementing one takes every step below; the tests named in each
+fail until it is done.
+
+1. **A signature algorithm starts in the packer.** The validator's signature
+   rows must be exactly the types the packer writes, and the default
+   configuration must enable every algorithm the packer writes
+   (`tests/test_oca_primitive_enum_sync.py`, `tests/test_oca_build_config.py`).
+   The packer and the validator therefore gain it in one change, on by default.
+   The packer accepts only what the boot ROM does, so this also needs the
+   amendment to the cryptographic rules that `AGENTS.md` describes.
+2. **Name it in the public header.** A signature algorithm needs an
+   `oca_primitive_type_t` enumerator equal to its code, because the library
+   casts the manifest's byte straight to that enum for `verify_signature`. If
+   the enumerator is already there, remove it from `_SPEC_ONLY` in
+   `tests/test_oca_primitive_enum_sync.py`. A hash, cipher, KDF or key source
+   needs its enumerator in `oca_hash_type_t`, `oca_encryption_type_t`,
+   `oca_kdf_t` or `oca_key_source_t`, which its callback receives.
+3. **Add its row to `lib/algorithms.c`**, under `#if` of its macro and in the
+   shape of the rows already there, with the sizes the format's encoded-length
+   tables fix. A KDF or key source has no table; add its value to
+   `oca_kdf_status()` or `oca_key_source_status()` the same way.
+4. **A hash wider than 32 bytes** raises `OCA_HASH_MAX_DIGEST_SIZE` in
+   `lib/algorithms.h`, the width of every digest buffer. It cannot pass the
+   64-byte hash fields, and a row wider than it stops the build.
+5. **An algorithm with a DER form** shares its `[der]` switch: add its setting
+   to that switch's `requires` in `gen_config.py`, and give its row the
+   switch's DER macro from `lib/algorithms.c`.
+6. **Give its `Setting` a macro** in `gen_config.py`. The generator's rules
+   that span settings read its lists and need nothing more.
+7. **Add the macro to `lib/oca_config_check.h`**: a missing-setting guard, a
+   line in the 0-or-1 check, and every guard that names the macros of its kind.
+   Those are the signature guards (no algorithm, and `[secure_boot] disabled`),
+   the PQC-variant guard, the no-hash guard and the payload-encryption guards.
+   The guard that pairs the cipher, KDF and key source compares one of each, so
+   a second KDF or key source means rewriting it to compare any of each.
+8. **Turn it on** in `lib/oca_config.toml`, add it to the settings table above,
+   and decide its value in each file in `test/build_configs/`.
+9. **Test it.** Implement it in the CLI's `test/openssl_crypto.c`, add a fixture
+   under `test/fixtures/configs/`, register any unit test that needs it with
+   `RUN_TEST_IF`, and add a configuration that turns it off to
+   `UNIT_TEST_CONFIGURATIONS` in `tests/test_oca_build_config.py`. The
+   code-point probe there then holds its row to the generator's list, and its
+   revocation bit to its definition.
 
 **If you script builds, use GNU Make 4.x.** older version of make (such as 3.81 that 
 macOS ships) compares timestamps at whole-second granularity. A script that rewrites 

@@ -194,7 +194,18 @@ def test_every_setting_is_required(setting):
                    if not line.startswith(f"{setting.key} ="))
     assert problems_for(text) == [
         f"{setting.name} is required: a configuration replaces the default, "
-        f"so every setting must be stated"]
+        f"so it must state every required setting"]
+
+
+def test_only_algorithms_encodings_and_declarations_are_optional():
+    """A setting left out of a configuration is off. That is safe only for one
+    whose absence keeps what every existing configuration builds; anything else
+    must be required, so an upgrade adding it stops the build until the adopter
+    chooses. Setting's docstring states the rule."""
+    for setting in gen_config.SETTINGS:
+        if not setting.required:
+            assert (setting.code is not None or setting.requires
+                    or setting.macro in DECLARATIONS), setting.name
 
 
 def test_an_empty_configuration_names_every_setting():
