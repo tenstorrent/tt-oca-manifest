@@ -30,6 +30,7 @@ from tt_boot_manifest.oca.entry import pack_oca_bundle
 from tt_boot_manifest.oca.signing import (build_pqc_signing_key, build_signing_key,
                                           sign_signed_region, sign_signed_region_pqc)
 from tt_boot_manifest.utils import load_config
+from oca_fixtures import build_config
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1250,29 +1251,22 @@ def _default_toc_max_images() -> int:
         return tomllib.load(handle)["limits"]["toc_max_images"]
 
 
-def _toml_bool(value: bool) -> str:
-    return "true" if value else "false"
-
-
 def _build_config_text(toc_max_images=256, rsa=True, ecdsa=True, ml_dsa=True,
                        der_rsa=True, der_ecdsa=True, aes_128=True, aes_256=True,
                        encryption=True) -> str:
-    """A complete build configuration: the default, with the given changes."""
-    return (
-        "[variants]\nclassic = true\npqc = true\n"
-        f"[limits]\ntoc_max_images = {toc_max_images}\n"
-        "[hardening]\nrecheck_security_version = true\n"
-        "[hash]\nsha2_256 = true\n"
-        f"[signature_classic]\nrsa_3072_pkcs1v15_sha256 = {_toml_bool(rsa)}\n"
-        f"ecdsa_p256_sha256 = {_toml_bool(ecdsa)}\n"
-        f"[signature_pqc]\nml_dsa_87 = {_toml_bool(ml_dsa)}\n"
-        f"[der]\nrsa_public_key = {_toml_bool(der_rsa)}\n"
-        f"ecdsa_signature = {_toml_bool(der_ecdsa)}\n"
-        f"[encryption_cipher]\naes_128_cbc = {_toml_bool(encryption and aes_128)}\n"
-        f"aes_256_cbc = {_toml_bool(encryption and aes_256)}\n"
-        f"[encryption_kdf]\nsp800_108_hmac_sha256 = {_toml_bool(encryption)}\n"
-        f"[encryption_key_source]\npreshared = {_toml_bool(encryption)}\n"
-    )
+    """A complete build configuration: the shipped default, with the given changes."""
+    return build_config.config_text({
+        "limits.toc_max_images": toc_max_images,
+        "signature_classic.rsa_3072_pkcs1v15_sha256": rsa,
+        "signature_classic.ecdsa_p256_sha256": ecdsa,
+        "signature_pqc.ml_dsa_87": ml_dsa,
+        "der.rsa_public_key": der_rsa,
+        "der.ecdsa_signature": der_ecdsa,
+        "encryption_cipher.aes_128_cbc": encryption and aes_128,
+        "encryption_cipher.aes_256_cbc": encryption and aes_256,
+        "encryption_kdf.sp800_108_hmac_sha256": encryption,
+        "encryption_key_source.preshared": encryption,
+    })
 
 
 def _configured_cli(build_dir, config_text: str) -> str:

@@ -39,6 +39,19 @@
 #define CFG_AES_128    OCA_CFG_CIPHER_AES_128_CBC
 #define CFG_AES_256    OCA_CFG_CIPHER_AES_256_CBC
 
+/* The digest every fixture's hash fields hold: SHA2-256's. */
+#define SHA2_256_DIGEST_SIZE 32u
+
+/* The cap tests build a TOC one entry past the cap, and the malformed-TOC case
+ * writes four entries, so the fixture's TOC holds whichever is more. A cap past
+ * CAP_TOC_MAX_TESTED would need a TOC too large to hold, so those tests are not
+ * run under it; the entry count is then never used, and the cap + 1 that wraps
+ * at the largest cap is never taken. */
+#define CAP_TOC_MAX_TESTED 4096u
+#define CAP_TOC_TESTED     (OCA_TOC_MAX_IMAGES <= CAP_TOC_MAX_TESTED)
+#define CAP_TOC_ENTRIES    (!CAP_TOC_TESTED ? 4u \
+                            : OCA_TOC_MAX_IMAGES < 4u ? 4u : OCA_TOC_MAX_IMAGES + 1u)
+
 int g_unit_total = 0;
 int g_unit_failed = 0;
 int g_unit_current_failed = 0;
@@ -542,8 +555,7 @@ typedef struct {
      * a case that forgets to build one gets an empty TOC rather than whatever
      * the previous case left. */
     uint8_t plaintext_toc[OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE + 8u];
-    uint8_t cap_toc[OCA_TOC_HEADER_SIZE
-                    + (OCA_TOC_MAX_IMAGES + 1u) * (OCA_TOC_ENTRY_SIZE + 8u)];
+    uint8_t cap_toc[OCA_TOC_HEADER_SIZE + CAP_TOC_ENTRIES * (OCA_TOC_ENTRY_SIZE + 8u)];
 } test_fixture_t;
 
 static test_fixture_t g_fx;
@@ -2366,8 +2378,8 @@ TEST(test_payload_toc_entry_hash_padding_ignored)
     toc_set_header(pt, 1u);
     toc_set_entry(pt, 0u, OCA_TOC_HEADER_SIZE + OCA_TOC_ENTRY_SIZE, 8u);
     uint8_t *entry = pt + OCA_TOC_HEADER_SIZE;
-    memset(entry + OCA_TOC_ENTRY_OFF_HASH + OCA_MANIFEST_HASH_DIGEST_SIZE, 0xA5u,
-           OCA_LEN_HASH_FIELD - OCA_MANIFEST_HASH_DIGEST_SIZE);
+    memset(entry + OCA_TOC_ENTRY_OFF_HASH + SHA2_256_DIGEST_SIZE, 0xA5u,
+           OCA_LEN_HASH_FIELD - SHA2_256_DIGEST_SIZE);
     ASSERT_EQ_INT(run_struct_payload(pt, sizeof pt), OCA_OK);
 }
 
@@ -3504,7 +3516,7 @@ static void cap_toc_init(uint64_t image_count)
 
 TEST(test_toc_rejects_image_count_above_the_cap)
 {
-    cap_toc_init(OCA_TOC_MAX_IMAGES + 1u);
+    cap_toc_init((uint64_t)OCA_TOC_MAX_IMAGES + 1u);
 
     oca_toc_info_t info;
     ASSERT_EQ_INT(oca_toc_info(g_fx.cap_toc, sizeof g_fx.cap_toc, &info),
@@ -3539,7 +3551,7 @@ TEST(test_cap_rejection_is_distinct_from_malformed_toc)
      * second says "these bytes are not a valid TOC". */
     oca_toc_info_t info;
 
-    cap_toc_init(OCA_TOC_MAX_IMAGES + 1u);
+    cap_toc_init((uint64_t)OCA_TOC_MAX_IMAGES + 1u);
     ASSERT_EQ_INT(oca_toc_info(g_fx.cap_toc, sizeof g_fx.cap_toc, &info),
                   OCA_FAIL_PAYLOAD_TOO_MANY_IMAGES);
 
@@ -6162,9 +6174,13 @@ static const oca_signature_algorithm_t *row_if_enabled(oca_key_algorithm_t famil
 }
 
 /* Each row the build enables carries the format's encoded lengths, and the DER
- * rules the build chooses; an algorithm it leaves off has no row. */
+ * rules the build chooses; an algorithm it leaves off has no row. A row's DER
+ * rules are bytes, so on an ABI that aligns a uint16_t to two bytes a row is
+ * 10 bytes, not the 20 two enum members pad it to. */
 TEST(test_signature_rows_carry_the_format_encoded_lengths)
 {
+    ASSERT_EQ_INT(sizeof(oca_signature_algorithm_t), 10);
+
     const oca_signature_algorithm_t *rsa =
         row_if_enabled(OCA_KEY_ALGO_CLASSIC, 0x01u, CFG_RSA);
     if (rsa != NULL) {
@@ -8841,9 +8857,9 @@ int main(int argc, char **argv)
                 test_toc_accessors_work_on_in_place_plaintext);
 
     /* image_count cap */
-    RUN_TEST(test_toc_rejects_image_count_above_the_cap);
-    RUN_TEST(test_toc_accepts_image_count_exactly_at_the_cap);
-    RUN_TEST(test_cap_rejection_is_distinct_from_malformed_toc);
+    RUN_TEST_IF(CAP_TOC_TESTED, test_toc_rejects_image_count_above_the_cap);
+    RUN_TEST_IF(CAP_TOC_TESTED, test_toc_accepts_image_count_exactly_at_the_cap);
+    RUN_TEST_IF(CAP_TOC_TESTED, test_cap_rejection_is_distinct_from_malformed_toc);
     RUN_TEST(test_result_string_covers_the_cap_code);
 
     /* Resolving payload_offset in storage */

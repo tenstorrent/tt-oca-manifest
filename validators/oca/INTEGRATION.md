@@ -73,14 +73,14 @@ set(OCA_LIB        ${CMAKE_SOURCE_DIR}/third_party/oca_validator)
 set(OCA_CONFIG     ${CMAKE_SOURCE_DIR}/board/oca_config.toml)
 set(OCA_CONFIG_DIR ${CMAKE_BINARY_DIR}/oca_gen)
 file(GLOB OCA_SOURCES ${OCA_LIB}/*.c)
-add_library(oca_validator STATIC ${OCA_SOURCES})
 add_custom_command(
   OUTPUT  ${OCA_CONFIG_DIR}/oca_config.h
   COMMAND ${Python3_EXECUTABLE} ${OCA_LIB}/scripts/gen_config.py
           --config ${OCA_CONFIG} --out ${OCA_CONFIG_DIR}/oca_config.h
   DEPENDS ${OCA_CONFIG} ${OCA_LIB}/scripts/gen_config.py)
-add_custom_target(oca_config DEPENDS ${OCA_CONFIG_DIR}/oca_config.h)
-add_dependencies(oca_validator oca_config)
+# Listing the header as a source attaches the command to the library, so it
+# runs before anything that links the library compiles.
+add_library(oca_validator STATIC ${OCA_SOURCES} ${OCA_CONFIG_DIR}/oca_config.h)
 target_include_directories(oca_validator PUBLIC ${OCA_LIB} ${OCA_CONFIG_DIR})
 ```
 

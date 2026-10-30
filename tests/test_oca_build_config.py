@@ -27,6 +27,7 @@ import time
 import pytest
 
 from tt_boot_manifest.oca import constants as oca_constants
+from oca_fixtures import build_config
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -59,65 +60,37 @@ IMPLEMENTED = [setting for setting in gen_config.SETTINGS if setting.implemented
 SWITCHES = [setting for setting in IMPLEMENTED if setting.kind == "bool"]
 NOT_IMPLEMENTED = [setting for setting in gen_config.SETTINGS if not setting.implemented]
 
-DEFAULT_VALUES = {
-    "OCA_CFG_VARIANT_CLASSIC": 1,
-    "OCA_CFG_VARIANT_PQC": 1,
-    "OCA_CFG_TOC_MAX_IMAGES": 256,
-    "OCA_CFG_RECHECK_SECURITY_VERSION": 1,
-    "OCA_CFG_SECURE_BOOT_DISABLED": 0,
-    "OCA_CFG_HASH_SHA2_256": 1,
-    "OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256": 1,
-    "OCA_CFG_SIG_ECDSA_P256_SHA256": 1,
-    "OCA_CFG_SIG_ML_DSA_87": 1,
-    "OCA_CFG_DER_RSA_PUBLIC_KEY": 1,
-    "OCA_CFG_DER_ECDSA_SIGNATURE": 1,
-    "OCA_CFG_CIPHER_AES_128_CBC": 1,
-    "OCA_CFG_CIPHER_AES_256_CBC": 1,
-    "OCA_CFG_KDF_SP800_108_HMAC_SHA256": 1,
-    "OCA_CFG_KEY_SOURCE_PRESHARED": 1,
+# Each implemented setting's default, as the README's Settings table documents
+# it. A setting the table leaves out has none, which the default's own test
+# reports.
+DOCUMENTED = build_config.documented_defaults()
+DEFAULT_VALUES = {s.macro: DOCUMENTED[s.name] for s in IMPLEMENTED if s.name in DOCUMENTED}
+
+# The settings these tests change most, by the short names their calls use.
+SHORT_NAMES = {
+    "classic": "variants.classic",
+    "pqc": "variants.pqc",
+    "toc_max_images": "limits.toc_max_images",
+    "recheck_security_version": "hardening.recheck_security_version",
+    "secure_boot_disabled": "secure_boot.disabled",
+    "sha2_256": "hash.sha2_256",
+    "rsa": "signature_classic.rsa_3072_pkcs1v15_sha256",
+    "ecdsa": "signature_classic.ecdsa_p256_sha256",
+    "ml_dsa_87": "signature_pqc.ml_dsa_87",
+    "der_rsa": "der.rsa_public_key",
+    "der_ecdsa": "der.ecdsa_signature",
+    "aes_128": "encryption_cipher.aes_128_cbc",
+    "aes_256": "encryption_cipher.aes_256_cbc",
+    "kdf": "encryption_kdf.sp800_108_hmac_sha256",
+    "preshared": "encryption_key_source.preshared",
 }
 
 
-def config_text(classic="true", pqc="true", toc_max_images="256",
-                recheck_security_version="true", sha2_256="true", rsa="true", ecdsa="true",
-                ml_dsa_87="true", der_rsa="true", der_ecdsa="true",
-                aes_128="true", aes_256="true", kdf="true", preshared="true",
-                secure_boot_disabled=None, extra=""):
-    """A complete configuration, every value given as its TOML text.
-
-    [secure_boot] disabled is a declaration, left out unless given.
-    """
-    declaration = ("" if secure_boot_disabled is None
-                   else f"\n[secure_boot]\ndisabled = {secure_boot_disabled}\n")
-    return (
-        "[variants]\n"
-        f"classic = {classic}\n"
-        f"pqc = {pqc}\n"
-        "\n[limits]\n"
-        f"toc_max_images = {toc_max_images}\n"
-        "\n[hardening]\n"
-        f"recheck_security_version = {recheck_security_version}\n"
-        f"{declaration}"
-        "\n[hash]\n"
-        f"sha2_256 = {sha2_256}\n"
-        "\n[signature_classic]\n"
-        f"rsa_3072_pkcs1v15_sha256 = {rsa}\n"
-        f"ecdsa_p256_sha256 = {ecdsa}\n"
-        "\n[signature_pqc]\n"
-        f"ml_dsa_87 = {ml_dsa_87}\n"
-        "\n[der]\n"
-        f"rsa_public_key = {der_rsa}\n"
-        f"ecdsa_signature = {der_ecdsa}\n"
-        "\n[encryption_cipher]\n"
-        f"aes_128_cbc = {aes_128}\n"
-        f"aes_256_cbc = {aes_256}\n"
-        "\n[encryption_kdf]\n"
-        f"sp800_108_hmac_sha256 = {kdf}\n"
-        "\n[encryption_key_source]\n"
-        f"preshared = {preshared}\n"
-        "\n[encryption_kem]\n"
-        f"{extra}"
-    )
+def config_text(extra="", **changes):
+    """A complete configuration: the shipped default, with each change named by
+    its short name and given as its TOML text."""
+    return build_config.config_text(
+        {SHORT_NAMES[name]: value for name, value in changes.items()}, extra)
 
 
 def write_config(directory, text, name="board.toml"):
@@ -148,6 +121,12 @@ def require_tools(*tools):
 # ---------------------------------------------------------------------------
 # The generator
 # ---------------------------------------------------------------------------
+
+
+def test_the_readme_documents_every_setting():
+    """The Settings table is where the tests read each default from, so a
+    setting it leaves out is reported here rather than skipped."""
+    assert set(DOCUMENTED) == {s.name for s in IMPLEMENTED}
 
 
 def test_the_shipped_default_is_the_documented_default():
@@ -284,8 +263,7 @@ def test_an_algorithm_section_may_be_left_out_entirely():
 @pytest.mark.parametrize("setting", NOT_IMPLEMENTED, ids=[s.name for s in NOT_IMPLEMENTED])
 def test_an_algorithm_the_library_has_no_rules_for_cannot_be_turned_on(setting):
     """Turning one on is a build error, never a request quietly ignored."""
-    text = config_text().replace(f"[{setting.section}]\n",
-                                 f"[{setting.section}]\n{setting.key} = true\n", 1)
+    text = build_config.config_text({setting.name: True})
     assert problems_for(text) == [
         f"{setting.name} ({setting.description}) is not implemented in this "
         f"library; implement its rules before enabling it"]
@@ -293,9 +271,7 @@ def test_an_algorithm_the_library_has_no_rules_for_cannot_be_turned_on(setting):
 
 @pytest.mark.parametrize("setting", NOT_IMPLEMENTED, ids=[s.name for s in NOT_IMPLEMENTED])
 def test_an_algorithm_the_library_has_no_rules_for_may_be_stated_off(setting):
-    text = config_text().replace(f"[{setting.section}]\n", f"[{setting.section}]\n"
-                                 f"{setting.key} = false\n", 1)
-    assert problems_for(text) == []
+    assert problems_for(build_config.config_text({setting.name: False})) == []
 
 
 def test_every_algorithm_is_listed_by_its_format_code():
@@ -375,15 +351,26 @@ def test_a_pqc_signature_needs_the_pqc_variant():
 
 @pytest.mark.parametrize("changes, problem", [
     ({"rsa": "false"},
-     "der.rsa_public_key needs one of signature_classic.rsa_3072_pkcs1v15_sha256, "
-     "signature_classic.rsa_3072_pss_sha256, signature_classic.rsa_4096_pkcs1v15_sha512, "
-     "signature_classic.rsa_4096_pss_sha512 enabled"),
+     "der.rsa_public_key needs signature_classic.rsa_3072_pkcs1v15_sha256 enabled"),
     ({"ecdsa": "false"},
-     "der.ecdsa_signature needs one of signature_classic.ecdsa_p256_sha256, "
-     "signature_classic.ecdsa_p384_sha384, signature_classic.ecdsa_p521_sha512 enabled"),
+     "der.ecdsa_signature needs signature_classic.ecdsa_p256_sha256 enabled"),
 ], ids=["rsa", "ecdsa"])
 def test_a_der_encoding_needs_an_algorithm_of_its_family(changes, problem):
+    """The message names only the algorithms a configuration can turn on."""
     assert problems_for(config_text(**changes)) == [problem]
+
+
+def test_a_der_encoding_offers_every_implemented_algorithm_of_its_family(monkeypatch):
+    """With more than one to choose from, the message lists them all."""
+    der = next(s for s in gen_config.SETTINGS if s.name == "der.ecdsa_signature")
+    second = gen_config.Setting("signature_classic", "ecdsa_p384_sha384",
+                                "OCA_CFG_SIG_ECDSA_P384_SHA384", "bool", "ECDSA P-384",
+                                required=False, code=0x06)
+    settings = tuple(second if s.name == second.name else s for s in gen_config.SETTINGS)
+    monkeypatch.setattr(gen_config, "SETTINGS", settings)
+    problems = gen_config._cross_setting_problems({}, {der.name})
+    assert ("der.ecdsa_signature needs one of signature_classic.ecdsa_p256_sha256, "
+            "signature_classic.ecdsa_p384_sha384 enabled") in problems
 
 
 @pytest.mark.parametrize("der_rsa, der_ecdsa", [("false", "true"), ("true", "false"),
@@ -561,6 +548,32 @@ def test_a_changed_configuration_rewrites_the_header(tmp_path):
     changed = write_config(tmp_path, config_text(pqc="false", ml_dsa_87="false"))
     assert gen_config.generate(changed, str(out)) is True
     assert "#define OCA_CFG_VARIANT_PQC 0\n" in out.read_text()
+
+
+def test_a_switch_the_library_does_not_implement_has_no_value(tmp_path):
+    """Stating one off is allowed, and generates nothing: no macro, and no
+    entry in the resolved values."""
+    text = config_text().replace("ml_dsa_87 = true\n", "ml_dsa_87 = true\nml_dsa_44 = false\n")
+    values = gen_config.resolve_settings(gen_config.tomllib.loads(text))
+    assert "" not in values
+    assert set(values) == {s.macro for s in IMPLEMENTED}
+
+
+def test_the_header_is_written_with_lf_line_endings(tmp_path):
+    config = write_config(tmp_path, config_text())
+    out = tmp_path / "oca_config.h"
+    gen_config.generate(config, str(out))
+    assert b"\r" not in out.read_bytes()
+
+
+def test_a_header_with_crlf_line_endings_is_not_current(tmp_path):
+    """A header converted to CRLF, as a checkout on another host can do, differs
+    from what the generator writes, so --check reports it and a build rewrites
+    it."""
+    out = tmp_path / "oca_config.h"
+    text = gen_config.header_for_config(write_config(tmp_path, config_text()))
+    out.write_bytes(text.replace("\n", "\r\n").encode())
+    assert gen_config.header_is_current(str(out), text) is False
 
 
 def test_a_header_is_current_only_when_it_matches_exactly(tmp_path):
@@ -1120,6 +1133,8 @@ UNIT_TEST_CONFIGURATIONS = [
                  id="ml-dsa-aes-128"),
     pytest.param({**NO_SECURE_BOOT, "secure_boot_disabled": "true"}, (),
                  id="hash-only"),
+    # The largest cap the generator allows, where cap + 1 wraps a 32-bit count.
+    pytest.param({"toc_max_images": "4294967295"}, (), id="largest-toc"),
 ]
 
 # The tests of each setting's off branch, and the sweeps that hold the

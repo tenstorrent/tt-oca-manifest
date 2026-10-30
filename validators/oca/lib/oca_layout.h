@@ -216,7 +216,6 @@
 
 #define OCA_LEN_SIGNATURE                  512u  /* classic signature_classic */
 #define OCA_LEN_HASH_FIELD                  64u  /* every hash field (manifest, payload, chain, TOC entry): digest + zero pad */
-#define OCA_MANIFEST_HASH_DIGEST_SIZE       32u  /* digest size the library validates (SHA-256, manifest_hash_type=0x01) */
 #define OCA_OFF_MANIFEST_HASH_TYPE        2067u  /* u8; the algorithm manifest_hash is computed with */
 
 /* ------------------------------------------------------------------ */

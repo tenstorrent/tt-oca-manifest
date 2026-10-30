@@ -360,7 +360,8 @@ def resolve_settings(document: dict) -> dict[str, int]:
             continue
         if value is True:
             enabled.add(setting.name)
-        values[setting.macro] = int(value)
+        if setting.implemented:
+            values[setting.macro] = int(value)
 
     problems.extend(_cross_setting_problems(values, enabled))
     if problems:
@@ -417,11 +418,15 @@ def _cross_setting_problems(values: dict[str, int], enabled: set[str]) -> list[s
                     f"{', '.join(k for k, v in encryption.items() if v)} "
                     f"enables payload encryption; enable a cipher, a KDF and a "
                     f"key source together, or none of them")
+    implemented = {setting.name for setting in SETTINGS if setting.implemented}
     for setting in SETTINGS:
         if setting.requires and setting.name in enabled \
                 and not enabled.intersection(setting.requires):
-            problems.append(f"{setting.name} needs one of "
-                            f"{', '.join(setting.requires)} enabled")
+            # Only what a configuration can turn on is worth suggesting.
+            options = [name for name in setting.requires if name in implemented]
+            problems.append(f"{setting.name} needs "
+                            f"{'one of ' if len(options) > 1 else ''}"
+                            f"{', '.join(options)} enabled")
     return problems
 
 
@@ -512,7 +517,9 @@ def write_if_changed(path: str, text: str) -> bool:
     """Write text to path unless it already holds exactly that. Returns whether it wrote.
 
     Leaving an unchanged file alone keeps its timestamp, which is what lets
-    every object that depends on the header skip recompiling. The new text is
+    every object that depends on the header skip recompiling. Lines end in LF
+    on every host, so a committed header is the same file wherever it was
+    generated. The new text is
     written to a temporary file and moved into place, so a failed write leaves
     the previous header, and no temporary file, behind. The temporary file is
     created private, so it is given the mode any new file gets under the
@@ -524,7 +531,7 @@ def write_if_changed(path: str, text: str) -> bool:
     os.makedirs(directory, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(dir=directory, suffix=".tmp")
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
         os.chmod(temporary, new_file_mode())
         os.replace(temporary, path)
@@ -546,9 +553,9 @@ def new_file_mode() -> int:
 
 
 def header_is_current(path: str, text: str) -> bool:
-    """Whether path already holds exactly text."""
+    """Whether path already holds exactly text, line endings included."""
     try:
-        with open(path, encoding="utf-8") as handle:
+        with open(path, encoding="utf-8", newline="") as handle:
             return handle.read() == text
     except FileNotFoundError:
         return False

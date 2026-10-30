@@ -45,9 +45,6 @@ _Static_assert(
 _Static_assert(
     OCA_CLASSIC_OFF_SIGNATURE == OCA_CLASSIC_SIGNED_REGION_END,
     "signature_classic must begin at the signed-region boundary");
-_Static_assert(
-    OCA_LEN_HASH_FIELD >= OCA_MANIFEST_HASH_DIGEST_SIZE,
-    "manifest_hash field must accommodate the manifest-hash digest");
 #endif
 
 #endif /* OCA_LAYOUT_CLASSIC_H */

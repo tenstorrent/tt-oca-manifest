@@ -20,10 +20,10 @@ import sys
 
 import pytest
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LIB_DIR = os.path.join(PROJECT_ROOT, "validators", "oca", "lib")
+from oca_fixtures import build_config
+
+LIB_DIR = os.path.join(build_config.VALIDATOR_DIR, "lib")
 GENERATOR = os.path.join(LIB_DIR, "scripts", "gen_config.py")
-DEFAULT_CONFIG = os.path.join(LIB_DIR, "oca_config.toml")
 
 REQUIRE_VALIDATOR_ENV = "TT_BOOT_MANIFEST_REQUIRE_VALIDATOR"
 
@@ -75,7 +75,7 @@ def layout(tmp_path, lib_dir, *flags) -> dict[str, tuple[int, ...]]:
     """Compile the probe against lib_dir's header with flags, and run it."""
     gen = tmp_path / "gen"
     gen.mkdir(exist_ok=True)
-    subprocess.run([sys.executable, GENERATOR, "--config", DEFAULT_CONFIG,
+    subprocess.run([sys.executable, GENERATOR, "--config", build_config.DEFAULT_CONFIG,
                     "--out", str(gen / "oca_config.h")], check=True)
     probe = tmp_path / "layout.c"
     probe.write_text(layout_probe())
