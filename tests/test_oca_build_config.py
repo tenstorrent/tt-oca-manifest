@@ -488,25 +488,79 @@ def header_portfolio_digest(header):
 
 
 def portfolio_of(directory, text, name="board.toml"):
+    """The portfolio digest of the configuration text, read from a file name."""
     document = gen_config.load_config(write_config(directory, text, name))
-    return gen_config.portfolio_id(gen_config.resolve_settings(document))
+    return gen_config.portfolio_digest(gen_config.resolve_settings(document))
 
 
-def test_the_portfolio_depends_on_the_settings_not_the_file(tmp_path):
-    """Comments, order, and the file's name leave the identifier alone."""
+def toml_spelling(value) -> str:
+    """A value as TOML text, an integer in hexadecimal."""
+    if isinstance(value, bool):
+        return build_config.toml_text(value)
+    return hex(value)
+
+
+def reordered_text(document) -> str:
+    """document as TOML with comments, its sections in reverse order, and the
+    keys inside each in reverse order too."""
+    blocks = [f"# The {section} section.\n[{section}]\n"
+              + "".join(f"{key} = {build_config.toml_text(value)}  # {key}\n"
+                        for key, value in reversed(table.items()))
+              for section, table in reversed(document.items())]
+    return "# A board's configuration.\n\n" + "\n".join(blocks)
+
+
+def dotted_text(document) -> str:
+    """document as dotted keys at the top level, every integer in hexadecimal."""
+    return "".join(f"{section}.{key} = {toml_spelling(value)}\n"
+                   for section, table in document.items() for key, value in table.items())
+
+
+def inline_text(document) -> str:
+    """document as one inline table per section, every integer in hexadecimal."""
+    return "".join(f"{section} = {{ "
+                   + ", ".join(f"{key} = {toml_spelling(value)}" for key, value in table.items())
+                   + " }\n"
+                   for section, table in document.items())
+
+
+@pytest.mark.parametrize("spelling", [reordered_text, dotted_text, inline_text],
+                         ids=["reordered", "dotted", "inline"])
+def test_the_portfolio_depends_on_the_settings_not_the_file(tmp_path, spelling):
+    """Comments, the order of sections and keys, how TOML spells a table or an
+    integer, and the file's name all leave the digest alone."""
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
-    sections = config_text().split("\n\n")
-    shuffled = "\n\n".join(["# A board's configuration.", *reversed(sections)])
+    respelled = spelling(gen_config.tomllib.loads(config_text()))
+    assert respelled != config_text()
     assert portfolio_of(tmp_path / "a", config_text()) \
-        == portfolio_of(tmp_path / "b", shuffled, name="other.toml")
+        == portfolio_of(tmp_path / "b", respelled, name="other.toml")
 
 
-def test_a_different_portfolio_has_a_different_identifier(tmp_path):
-    (tmp_path / "a").mkdir()
-    (tmp_path / "b").mkdir()
-    assert portfolio_of(tmp_path / "a", config_text()) \
-        != portfolio_of(tmp_path / "b", config_text(der_ecdsa="false"))
+# Changes to the shipped default that each leave a valid configuration with a
+# portfolio of its own, including two values of one setting and two settings
+# turned off alone.
+PORTFOLIO_CHANGES = {
+    "default": {},
+    "toc_max_images=32": {"toc_max_images": "32"},
+    "toc_max_images=33": {"toc_max_images": "33"},
+    "recheck_security_version off": {"recheck_security_version": "false"},
+    "der_rsa off": {"der_rsa": "false"},
+    "der_ecdsa off": {"der_ecdsa": "false"},
+    "aes_128 off": {"aes_128": "false"},
+    "aes_256 off": {"aes_256": "false"},
+    "pqc off": {"pqc": "false", "ml_dsa_87": "false"},
+}
+
+
+def test_every_portfolio_has_its_own_digest_and_identifier(tmp_path):
+    digests = {}
+    for label, changes in PORTFOLIO_CHANGES.items():
+        (tmp_path / label).mkdir()
+        digests[label] = portfolio_of(tmp_path / label, config_text(**changes))
+    assert len(set(digests.values())) == len(digests), digests
+    identifiers = {digest[:4] for digest in digests.values()}
+    assert len(identifiers) == len(digests), digests
 
 
 def test_a_switch_left_off_does_not_change_the_portfolio(tmp_path):
@@ -519,6 +573,14 @@ def test_a_switch_left_off_does_not_change_the_portfolio(tmp_path):
                                    "ml_dsa_87 = true\nml_dsa_44 = false\n")
     stated = stated.replace("[encryption_cipher]\n", "[encryption_cipher]\nsm4_128_cbc = false\n")
     assert portfolio_of(tmp_path / "a", config_text()) == portfolio_of(tmp_path / "b", stated)
+
+
+def test_an_optional_setting_stated_false_does_not_change_the_portfolio(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert "disabled = false\n" in config_text()
+    assert portfolio_of(tmp_path / "a", config_text()) \
+        == portfolio_of(tmp_path / "b", config_text(secure_boot_disabled=None))
 
 
 def test_a_comment_only_edit_leaves_the_header_alone(tmp_path):

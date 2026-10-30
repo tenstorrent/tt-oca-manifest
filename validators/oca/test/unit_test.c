@@ -1449,10 +1449,9 @@ static const struct {
 static const size_t UNSUPPORTED_HASH_TYPE_COUNT =
     sizeof UNSUPPORTED_HASH_TYPES / sizeof UNSUPPORTED_HASH_TYPES[0];
 
-/* The library reports the portfolio its header names; the CLI test holds that
- * to what the generator says of the configuration file. */
 /* The library reports the digest its header states, and a label that is the
- * digest's first 32 bits, big-endian, and the header's own label. */
+ * digest's first 32 bits, big-endian, and the header's own label. The CLI test
+ * holds both to what the generator says of the configuration file. */
 TEST(test_the_library_reports_its_portfolio)
 {
     static const uint8_t stated[] = { OCA_CFG_PORTFOLIO_DIGEST };
