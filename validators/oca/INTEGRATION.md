@@ -72,17 +72,29 @@ find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
 set(OCA_LIB        ${CMAKE_SOURCE_DIR}/third_party/oca_validator)
 set(OCA_CONFIG     ${CMAKE_SOURCE_DIR}/board/oca_config.toml)
 set(OCA_CONFIG_DIR ${CMAKE_BINARY_DIR}/oca_gen)
-file(GLOB OCA_SOURCES ${OCA_LIB}/*.c)
+file(GLOB OCA_SOURCES CONFIGURE_DEPENDS ${OCA_LIB}/*.c)
+# The generator leaves an unchanged header alone, so a stamp, not the header,
+# records that the configuration was read.
 add_custom_command(
-  OUTPUT  ${OCA_CONFIG_DIR}/oca_config.h
+  OUTPUT     ${OCA_CONFIG_DIR}/oca_config.stamp
+  BYPRODUCTS ${OCA_CONFIG_DIR}/oca_config.h
   COMMAND ${Python3_EXECUTABLE} ${OCA_LIB}/scripts/gen_config.py
           --config ${OCA_CONFIG} --out ${OCA_CONFIG_DIR}/oca_config.h
+  COMMAND ${CMAKE_COMMAND} -E touch ${OCA_CONFIG_DIR}/oca_config.stamp
   DEPENDS ${OCA_CONFIG} ${OCA_LIB}/scripts/gen_config.py)
-# Listing the header as a source attaches the command to the library, so it
+# Listing the stamp as a source attaches the command to the library, so it
 # runs before anything that links the library compiles.
-add_library(oca_validator STATIC ${OCA_SOURCES} ${OCA_CONFIG_DIR}/oca_config.h)
+add_library(oca_validator STATIC ${OCA_SOURCES} ${OCA_CONFIG_DIR}/oca_config.stamp)
 target_include_directories(oca_validator PUBLIC ${OCA_LIB} ${OCA_CONFIG_DIR})
 ```
+
+Ninja re-checks an output after its command runs, and the Makefile generators
+do not. Under them, a header the generator left alone stays older than an
+edited configuration file, so a command producing the header itself would rerun
+on every build after a comment-only edit. The stamp keeps an unchanged build
+empty under both. `CONFIGURE_DEPENDS` makes the build notice a source a library
+upgrade adds to `lib/`, which would otherwise go uncompiled until you
+reconfigured.
 
 In GNU Make, run the generator on every build through a phony prerequisite and
 let its write-only-on-change keep objects up to date. Depending on the

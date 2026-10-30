@@ -87,6 +87,14 @@ add_executable(app src/main.c)
 target_link_libraries(app PRIVATE oca_validator)
 """
 
+# The generators an adopter is likely to use. Ninja re-stats an output a
+# command left alone, and Unix Makefiles does not, so a snippet can be right
+# under one and wrong under the other.
+CMAKE_GENERATORS = pytest.mark.parametrize("generator", ["Ninja", "Unix Makefiles"])
+
+# A source a library upgrade adds to lib/.
+ADDED_SOURCE = "oca_added_by_upgrade.c"
+
 
 def _load(path, name):
     """Import a standalone script by path; it is not on any package path."""
@@ -250,6 +258,12 @@ def test_the_generator_command_writes_the_header(tmp_path):
 # GNU Make
 # ---------------------------------------------------------------------------
 
+def add_library_source(root):
+    """Add a source to the vendored lib/, as an upgrade that adds one does."""
+    write(os.path.join(root, VENDORED_LIB, ADDED_SOURCE),
+          "int oca_added_by_upgrade(void);\nint oca_added_by_upgrade(void) { return 1; }\n")
+
+
 def make_project(tmp_path, *middle, build_dir="BUILD_DIR := build\n") -> str:
     """An adopter project whose Makefile is the scaffolding around middle."""
     require_tools("cc")
@@ -306,6 +320,16 @@ def test_the_make_snippet_follows_a_switch_to_an_older_file(tmp_path):
     output = make(root, environment, "OCA_CONFIG=board/older.toml").stdout
     assert any(VENDORED_LIB in line for line in compiled(output))
     assert app_digest(root) == digest_of(older)
+
+
+def test_the_make_snippet_compiles_a_source_an_upgrade_adds(tmp_path):
+    root = make_project(tmp_path, make_snippet())
+    environment = tool_path(tmp_path)
+    make(root, environment)
+    add_library_source(root)
+    make(root, environment)
+    assert os.path.exists(os.path.join(root, "build", VENDORED_LIB,
+                                       ADDED_SOURCE.replace(".c", ".o")))
 
 
 def several_builds_project(tmp_path) -> str:
@@ -435,14 +459,14 @@ def cmake_build(root, environment) -> str:
     return run(["cmake", "--build", os.path.join(root, "build")], root, environment).stdout
 
 
-@pytest.mark.parametrize("generator", ["Ninja"])
+@CMAKE_GENERATORS
 def test_the_cmake_snippet_builds_against_its_configuration(tmp_path, generator):
     root, environment = cmake_project(tmp_path, generator)
     assert built_objects(cmake_build(root, environment))
     assert app_digest(root) == digest_of(os.path.join(root, "board", "oca_config.toml"))
 
 
-@pytest.mark.parametrize("generator", ["Ninja"])
+@CMAKE_GENERATORS
 def test_the_cmake_snippet_rebuilds_nothing_when_nothing_changed(tmp_path, generator):
     root, environment = cmake_project(tmp_path, generator)
     cmake_build(root, environment)
@@ -451,7 +475,7 @@ def test_the_cmake_snippet_rebuilds_nothing_when_nothing_changed(tmp_path, gener
     assert not ran_custom_command(output)
 
 
-@pytest.mark.parametrize("generator", ["Ninja"])
+@CMAKE_GENERATORS
 def test_the_cmake_snippet_recompiles_nothing_for_a_comment_edit(tmp_path, generator):
     root, environment = cmake_project(tmp_path, generator)
     cmake_build(root, environment)
@@ -467,7 +491,7 @@ def test_the_cmake_snippet_recompiles_nothing_for_a_comment_edit(tmp_path, gener
     assert not ran_custom_command(output)
 
 
-@pytest.mark.parametrize("generator", ["Ninja"])
+@CMAKE_GENERATORS
 def test_the_cmake_snippet_follows_a_switch_to_an_older_file(tmp_path, generator):
     root, environment = cmake_project(tmp_path, generator)
     cmake_build(root, environment)
@@ -482,3 +506,17 @@ def test_the_cmake_snippet_follows_a_switch_to_an_older_file(tmp_path, generator
     age(os.path.join(root, "build"))
     assert built_objects(cmake_build(root, environment))
     assert app_digest(root) == digest_of(older)
+
+
+@CMAKE_GENERATORS
+def test_the_cmake_snippet_compiles_a_source_an_upgrade_adds(tmp_path, generator):
+    """Without reconfiguring by hand: an existing build directory would
+    otherwise fail to link once a function moves into a new file."""
+    require_tools("ar")
+    root, environment = cmake_project(tmp_path, generator)
+    cmake_build(root, environment)
+    add_library_source(root)
+    cmake_build(root, environment)
+    members = run(["ar", "t", os.path.join(root, "build", "liboca_validator.a")], root,
+                  environment).stdout.split()
+    assert ADDED_SOURCE + ".o" in members, members
