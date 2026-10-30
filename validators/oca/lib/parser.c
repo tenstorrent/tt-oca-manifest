@@ -243,8 +243,9 @@ static oca_result_t required_size(oca_key_algorithm_t family, uint8_t encoding,
     if (encoding != (uint8_t)OCA_ENCODING_DER || der == OCA_DER_UNDEFINED) {
         return OCA_FAIL_CRYPTO_FIELD_SIZE;
     }
-    /* Anything but an intact ENABLED is refused, so a corrupted value fails
-     * closed. */
+    /* Tested for ENABLED rather than against DISABLED, so a value that is
+     * neither is refused too. The three values are not fault-hardened
+     * constants: UNDEFINED is one bit from ENABLED. */
     if (der != OCA_DER_ENABLED) {
         return OCA_FAIL_ALGORITHM_NOT_ENABLED;
     }
