@@ -65,6 +65,9 @@ validator integration tests, which skip without it):
   which OpenSSL provides from 3.5; with an older OpenSSL its build stops with the
   reason, and the integration tests skip saying so. Ubuntu 24.04's `libssl-dev`
   is 3.0.
+- **CMake 3.20+ and Ninja**, for the tests that build the
+  [validator integration guide](validators/oca/INTEGRATION.md)'s build snippets,
+  which skip without them.
 - **doxygen**, for the documentation gate test, which skips without it. Any
   current release works **except 1.9.8** — the version Ubuntu 24.04 LTS currently
   packages — which falsely reports documented functions as undocumented
@@ -705,8 +708,8 @@ pytest -vvv --cov=tt_boot_manifest --cov-report=html
 ```
 
 A plain `pytest` run needs no host setup beyond the Python dependencies: the OCA
-C-validator tests skip, with the reason, when a C toolchain, `make` or `pkg-config` is
-absent, or when the OpenSSL `pkg-config` finds is older than 3.5. Set
+C-validator tests skip, with the reason, when a C toolchain, `make`, `pkg-config`,
+`cmake` or `ninja` is absent, or when the OpenSSL `pkg-config` finds is older than 3.5. Set
 `TT_BOOT_MANIFEST_REQUIRE_VALIDATOR=1` to make those skips failures, as CI does.
 
 ### Test Organization
@@ -726,6 +729,7 @@ Tests are grouped by the side they exercise:
 **C consumer/validator:**
 - **`tests/test_oca_c_validator_integration.py`** — packs fixtures and round-trips them through the compiled `oca-validate` CLI (skips, with the reason, if `make` or `pkg-config` is unavailable or OpenSSL is older than 3.5)
 - **`tests/test_oca_c_validator_layout_sync.py`** — fails on any producer↔consumer layout drift
+- **`tests/test_oca_integration_build_snippets.py`** — builds the CMake, Make and shell snippets in [validators/oca/INTEGRATION.md](validators/oca/INTEGRATION.md)'s "Configuring the build" section as written, in an adopter project that vendors `lib/`, and checks that each stays incremental and follows its configuration (skips, with the reason, without `cmake` or `ninja`)
 - `make -C validators/oca check` — the validator's own C unit tests + fixture round-trips (see [validators/oca/README.md](validators/oca/README.md))
 
 Tests use the installed `tt_boot_manifest` package, so any changes to source files require the package to be installed/reinstalled (use `pip install -e .` for development mode).

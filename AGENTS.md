@@ -125,6 +125,8 @@ rather than fail when it is absent:
   build stops with the reason and the integration tests skip saying so — Ubuntu 24.04's
   `libssl-dev` is 3.0. `TT_BOOT_MANIFEST_REQUIRE_VALIDATOR=1` turns that skip, and the
   missing-toolchain one, into a failure; CI sets it
+- CMake 3.20 or later and Ninja, for `tests/test_oca_integration_build_snippets.py`, which
+  builds the build snippets in `validators/oca/INTEGRATION.md` as an adopter would
 - `doxygen` for the documentation gate — any current release **except 1.9.8**, which falsely
   reports documented functions as undocumented. The test detects that defect and skips with an
   explanation; CI pins 1.18.0
@@ -548,7 +550,8 @@ the `aws-sso` console script.
   `test/unit_test.c`, zero fixtures. Each prints a notice and succeeds. `skipping archive`,
   `skipping link` and `no fixtures yet` in the output are failures wearing a green exit code.
 - **A skip is a signal, not a pass.** The validator integration tests skip without `make` or
-  `pkg-config`, or with an OpenSSL older than 3.5; the doxygen gate skips without doxygen or
+  `pkg-config`, or with an OpenSSL older than 3.5; the build-snippet tests skip without `cmake`
+  or `ninja`; the doxygen gate skips without doxygen or
   against 1.9.8. A broken toolchain therefore reads as a green run with a quietly smaller suite.
   Confirm the gates actually ran, or set `TT_BOOT_MANIFEST_REQUIRE_VALIDATOR=1` so the
   validator skips fail instead.
@@ -647,7 +650,7 @@ Keep pull requests focused; unrelated changes belong in separate ones. Branch na
 | Symptom | Cause |
 |---|---|
 | `pytest -m aws` skips every test | The `aws` extra is not installed, or the `AWS_KMS_TEST_*` key-id variables are unset. `-rs` prints which |
-| A green run with far fewer tests than expected | A missing toolchain turned gates into skips. Confirm `make`, `pkg-config` and a non-1.9.8 doxygen are present |
+| A green run with far fewer tests than expected | A missing toolchain turned gates into skips. Confirm `make`, `pkg-config`, `cmake`, `ninja` and a non-1.9.8 doxygen are present |
 | `make check` succeeds but validated nothing | A "nothing to build" path. Look for `skipping archive`, `skipping link`, `no fixtures yet`, and for two `N/N passed` summaries |
 | A setting change has no effect on the built binary | Objects were reused across the change. Check `build/lib/.cflags` and `build/gen/oca_config.h`, or clean. GNU Make 3.81 compares timestamps to the whole second, so a script that switches configurations within one second can hit this; use GNU Make 4 |
 | The library fails to compile with `oca_config.h: No such file`, or an `#error` naming a configuration key | The build configuration header was not generated, or a setting was passed with `-D`. Build through the Makefile, or run `lib/scripts/gen_config.py` and put its output directory on the include path; set the key in the configuration file instead of the `-D` |
