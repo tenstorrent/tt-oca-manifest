@@ -13,6 +13,7 @@
 
 #include "oca_validator.h"
 
+#include "algorithms.h"
 #include "oca_layout.h"
 #include "oca_layout_pqc.h"
 #include "secure_boot.h"
@@ -23,10 +24,10 @@
  * Both RSA-3072 schemes share one class, as do both RSA-4096 schemes; every
  * integrator-defined type shares the integrator class.
  *
- * @param[in] type  The manifest's signature_type_classic byte.
+ * @param[in] type  The manifest's signature_type_classic value.
  * @return The bit, or -1 for a type the format does not define.
  */
-static int classical_revoke_bit(uint8_t type)
+static int classical_revoke_bit(oca_primitive_type_t type)
 {
     switch (type) {
         case 0x01u: case 0x02u: return 0;   /* RSA-3072 */
@@ -36,7 +37,7 @@ static int classical_revoke_bit(uint8_t type)
         case 0x07u:             return 4;   /* NIST P-521 ECDSA */
         case 0x0Au:             return 5;   /* Ed25519 */
         case 0x0Bu:             return 6;   /* Ed448 */
-        default:                return (type >= 0xF0u) ? 7 : -1;
+        default:                return oca_integrator_byte(type) ? 7 : -1;
     }
 }
 
@@ -47,10 +48,10 @@ static int classical_revoke_bit(uint8_t type)
  * as do both FN-DSA sizes; every integrator-defined type shares the integrator
  * class.
  *
- * @param[in] type  The manifest's signature_type_pqc byte.
+ * @param[in] type  The manifest's signature_type_pqc value.
  * @return The bit, or -1 for a type the format does not define.
  */
-static int pqc_revoke_bit(uint8_t type)
+static int pqc_revoke_bit(oca_primitive_type_t type)
 {
     switch (type) {
         case 0x31u:             return 24;  /* ML-DSA-44 */
@@ -60,7 +61,7 @@ static int pqc_revoke_bit(uint8_t type)
         case 0x51u: case 0x54u: return 28;  /* SLH-DSA-128 */
         case 0x52u: case 0x55u: return 29;  /* SLH-DSA-192 */
         case 0x53u: case 0x56u: return 30;  /* SLH-DSA-256 */
-        default:                return (type >= 0xF0u) ? 31 : -1;
+        default:                return oca_integrator_byte(type) ? 31 : -1;
     }
 }
 

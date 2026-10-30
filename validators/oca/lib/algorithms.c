@@ -54,10 +54,10 @@ static const oca_signature_algorithm_t PQC_SIGNATURES[] = {
  * @return Non-zero for an RSA, ECDSA or EdDSA algorithm or an
  *         integrator-defined value; zero for a reserved one.
  */
-static int classical_signature_defined(uint8_t type)
+static int classical_signature_defined(oca_primitive_type_t type)
 {
     return (type >= 0x01u && type <= 0x07u) || type == 0x0Au || type == 0x0Bu
-           || type >= 0xF0u;
+           || oca_integrator_byte(type);
 }
 
 /**
@@ -70,14 +70,14 @@ static int classical_signature_defined(uint8_t type)
  * @return Non-zero for an ML-DSA or SLH-DSA algorithm or an integrator-defined
  *         value; zero for a reserved one.
  */
-static int pqc_signature_defined(uint8_t type)
+static int pqc_signature_defined(oca_primitive_type_t type)
 {
     return (type >= 0x31u && type <= 0x33u) || (type >= 0x51u && type <= 0x56u)
-           || type >= 0xF0u;
+           || oca_integrator_byte(type);
 }
 
 const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t family,
-                                                         uint8_t type,
+                                                         oca_primitive_type_t type,
                                                          oca_result_t *status)
 {
     const int pqc = family == OCA_KEY_ALGO_PQC;
@@ -96,15 +96,15 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
     return 0;
 }
 
-oca_result_t oca_encoding_status(oca_key_algorithm_t family, uint8_t encoding)
+oca_result_t oca_encoding_status(oca_key_algorithm_t family, oca_encoding_t encoding)
 {
-    if (encoding == (uint8_t)OCA_ENCODING_RAW
-        || (encoding == (uint8_t)OCA_ENCODING_DER && family != OCA_KEY_ALGO_PQC)) {
+    if (encoding == OCA_ENCODING_RAW
+        || (encoding == OCA_ENCODING_DER && family != OCA_KEY_ALGO_PQC)) {
         return OCA_OK;
     }
     /* The range both classes leave to integrators. */
-    return (encoding >= 0xF0u) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
-                               : OCA_FAIL_ALGORITHM_RESERVED;
+    return oca_integrator_byte(encoding) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                         : OCA_FAIL_ALGORITHM_RESERVED;
 }
 
 /**
@@ -124,7 +124,7 @@ static const oca_hash_algorithm_t HASHES[] = {
     { 0x00u, 0u },
 };
 
-const oca_hash_algorithm_t *oca_hash_algorithm(uint8_t type, oca_result_t *status)
+const oca_hash_algorithm_t *oca_hash_algorithm(oca_hash_type_t type, oca_result_t *status)
 {
     if (type != 0x00u) {
         for (const oca_hash_algorithm_t *row = HASHES; row->type != 0x00u; ++row) {
@@ -170,13 +170,14 @@ static const oca_cipher_algorithm_t CIPHERS[] = {
  * @param[in] type  The encryption_type value.
  * @return Non-zero for a defined cipher; zero for a reserved value.
  */
-static int cipher_defined(uint8_t type)
+static int cipher_defined(oca_encryption_type_t type)
 {
     return (type >= 0x01u && type <= 0x06u) || type == 0x11u || type == 0x12u
-           || type >= 0xF0u;
+           || oca_integrator_byte(type);
 }
 
-const oca_cipher_algorithm_t *oca_cipher_algorithm(uint8_t type, oca_result_t *status)
+const oca_cipher_algorithm_t *oca_cipher_algorithm(oca_encryption_type_t type,
+                                                   oca_result_t *status)
 {
     if (type != 0x00u) {
         for (const oca_cipher_algorithm_t *row = CIPHERS; row->type != 0x00u; ++row) {
@@ -191,7 +192,7 @@ const oca_cipher_algorithm_t *oca_cipher_algorithm(uint8_t type, oca_result_t *s
     return 0;
 }
 
-oca_result_t oca_kdf_status(uint16_t kdf)
+oca_result_t oca_kdf_status(oca_kdf_t kdf)
 {
 #if OCA_CFG_KDF_SP800_108_HMAC_SHA256
     if (kdf == 0x0001u) {
@@ -204,7 +205,7 @@ oca_result_t oca_kdf_status(uint16_t kdf)
                                               : OCA_FAIL_ALGORITHM_RESERVED;
 }
 
-oca_result_t oca_key_source_status(unsigned source)
+oca_result_t oca_key_source_status(oca_key_source_t source)
 {
 #if OCA_CFG_KEY_SOURCE_PRESHARED
     if (source == 0x1u) {

@@ -507,11 +507,11 @@ static oca_result_t check_cleartext_payload(const uint8_t *payload, size_t paylo
  * @param[in] body  Manifest body.
  * @return The three-bit source, shifted down to its value.
  */
-static unsigned input_key_source(const uint8_t *body)
+static oca_key_source_t input_key_source(const uint8_t *body)
 {
     uint16_t control = oca_le_u16(body + OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL);
-    return (control & OCA_ENCRYPTION_INPUT_KEY_SOURCE_MASK)
-           >> OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT;
+    return (oca_key_source_t)((control & OCA_ENCRYPTION_INPUT_KEY_SOURCE_MASK)
+                              >> OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT);
 }
 
 /**
@@ -601,17 +601,17 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
      * is resolved again at the point of use, from the value the decryption
      * input will carry, so the callback cannot be handed one this build does
      * not enable. */
-    uint8_t enc_type = body[OCA_OFF_ENCRYPTION_TYPE];
+    const oca_encryption_type_t enc_type = body[OCA_OFF_ENCRYPTION_TYPE];
     const oca_cipher_algorithm_t *cipher = oca_cipher_algorithm(enc_type, &r);
     if (cipher == 0) {
         return r;
     }
-    unsigned key_source = input_key_source(body);
+    const oca_key_source_t key_source = input_key_source(body);
     r = oca_key_source_status(key_source);
     if (r != OCA_OK) {
         return r;
     }
-    uint16_t kdf = oca_le_u16(body + OCA_OFF_ENCRYPTION_KDF);
+    const oca_kdf_t kdf = oca_le_u16(body + OCA_OFF_ENCRYPTION_KDF);
     r = oca_kdf_status(kdf);
     if (r != OCA_OK) {
         return r;
@@ -637,7 +637,7 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
     in.kdf_input      = body + OCA_OFF_ENCRYPTION_KDF_INPUT;
     in.cipher         = enc_type;
     in.kdf            = kdf;
-    in.key_source     = (oca_key_source_t)key_source;
+    in.key_source     = key_source;
     in.secret_select  = oca_le_u16(body + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT);
     r = cb->decrypt_payload(&in, &plaintext, &plaintext_len);
     /* Codes that name a specific cause pass through by name; everything else
@@ -1003,7 +1003,7 @@ oca_result_t oca_payload_encryption_info(const uint8_t *body,
         /* A cleartext manifest leaves these zero; report that rather than
          * whatever the fields happen to hold, so a caller can branch on
          * `encrypted` alone. */
-        out->type          = (uint8_t)OCA_ENCRYPTION_TYPE_NONE;
+        out->type          = OCA_ENCRYPTION_TYPE_NONE;
         out->secret_select = 0u;
         return OCA_OK;
     }

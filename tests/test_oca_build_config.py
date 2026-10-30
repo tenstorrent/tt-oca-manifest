@@ -1195,6 +1195,20 @@ FIELD_VALUES = {
     "encryption_key_source": range(8),
 }
 
+# Every value the probe resolves for a field of each width: the byte fields and
+# the three-bit key source are carried in uint16_t crypto types, so the probe
+# also resolves the values past each field, which the format reserves.
+BYTE_FIELD_PROBE_END = 0x200
+KEY_SOURCE_PROBE_END = 0x10
+PROBED_VALUES = {
+    "signature_classic": range(BYTE_FIELD_PROBE_END),
+    "signature_pqc": range(BYTE_FIELD_PROBE_END),
+    "hash": range(BYTE_FIELD_PROBE_END),
+    "encryption_cipher": range(BYTE_FIELD_PROBE_END),
+    "encryption_kdf": range(0x10000),
+    "encryption_key_source": range(KEY_SOURCE_PROBE_END),
+}
+
 # How each class's signature and public-key encodings resolve, from the
 # packer's lists: "on" for an encoding the class defines (whether the
 # algorithm defines it, and whether the build enables a DER it defines, are the
@@ -1209,7 +1223,8 @@ ENCODING_FIELDS = {
 REVOCABLE_WHILE_RESERVED = {"signature_pqc": {0x41, 0x42}}
 
 # Prints how the library resolves every value of every algorithm field, and the
-# signature_class_revoke bit the posture check gives every signature type.
+# values PROBED_VALUES adds past it, and the signature_class_revoke bit the
+# posture check gives each signature type.
 # signature_posture.c is included rather than linked: its maps are file-local.
 CODE_POINT_PROBE = r"""
 #include <stdio.h>
@@ -1234,28 +1249,29 @@ static const char *verdict(oca_result_t status, int has_row)
 int main(void)
 {
     oca_result_t status;
-    for (unsigned v = 0u; v <= 0xFFu; ++v) {
-        int row = oca_signature_algorithm(OCA_KEY_ALGO_CLASSIC, (uint8_t)v, &status) != 0;
+    for (unsigned v = 0u; v < BYTE_FIELD_PROBE_END; ++v) {
+        const oca_primitive_type_t type = (oca_primitive_type_t)v;
+        int row = oca_signature_algorithm(OCA_KEY_ALGO_CLASSIC, type, &status) != 0;
         printf("signature_classic %u %s\n", v, verdict(status, row));
-        row = oca_signature_algorithm(OCA_KEY_ALGO_PQC, (uint8_t)v, &status) != 0;
+        row = oca_signature_algorithm(OCA_KEY_ALGO_PQC, type, &status) != 0;
         printf("signature_pqc %u %s\n", v, verdict(status, row));
-        row = oca_hash_algorithm((uint8_t)v, &status) != 0;
+        row = oca_hash_algorithm((oca_hash_type_t)v, &status) != 0;
         printf("hash %u %s\n", v, verdict(status, row));
-        row = oca_cipher_algorithm((uint8_t)v, &status) != 0;
+        row = oca_cipher_algorithm((oca_encryption_type_t)v, &status) != 0;
         printf("encryption_cipher %u %s\n", v, verdict(status, row));
-        status = oca_encoding_status(OCA_KEY_ALGO_CLASSIC, (uint8_t)v);
+        status = oca_encoding_status(OCA_KEY_ALGO_CLASSIC, (oca_encoding_t)v);
         printf("encoding_classic %u %s\n", v, verdict(status, status == OCA_OK));
-        status = oca_encoding_status(OCA_KEY_ALGO_PQC, (uint8_t)v);
+        status = oca_encoding_status(OCA_KEY_ALGO_PQC, (oca_encoding_t)v);
         printf("encoding_pqc %u %s\n", v, verdict(status, status == OCA_OK));
-        printf("revoke signature_classic %u %d\n", v, classical_revoke_bit((uint8_t)v));
-        printf("revoke signature_pqc %u %d\n", v, pqc_revoke_bit((uint8_t)v));
+        printf("revoke signature_classic %u %d\n", v, classical_revoke_bit(type));
+        printf("revoke signature_pqc %u %d\n", v, pqc_revoke_bit(type));
     }
     for (unsigned v = 0u; v <= 0xFFFFu; ++v) {
-        status = oca_kdf_status((uint16_t)v);
+        status = oca_kdf_status((oca_kdf_t)v);
         printf("encryption_kdf %u %s\n", v, verdict(status, status == OCA_OK));
     }
-    for (unsigned v = 0u; v <= 7u; ++v) {
-        status = oca_key_source_status(v);
+    for (unsigned v = 0u; v < KEY_SOURCE_PROBE_END; ++v) {
+        status = oca_key_source_status((oca_key_source_t)v);
         printf("encryption_key_source %u %s\n", v, verdict(status, status == OCA_OK));
     }
     return 0;
@@ -1279,7 +1295,9 @@ def resolve_every_code_point(tmp_path, header_text, lib_dir=LIB_DIR):
                if name.endswith(".c") and name != "signature_posture.c"]
     built = subprocess.run(
         ["cc", "-std=c99", "-Wall", "-Werror", "-pedantic", "-I", str(lib_dir),
-         "-I", str(gen), str(probe), *sources, "-o", str(binary)],
+         "-I", str(gen), f"-DBYTE_FIELD_PROBE_END={BYTE_FIELD_PROBE_END:#x}u",
+         f"-DKEY_SOURCE_PROBE_END={KEY_SOURCE_PROBE_END:#x}u",
+         str(probe), *sources, "-o", str(binary)],
         capture_output=True, text=True)
     assert built.returncode == 0, built.stderr
     printed = subprocess.run([str(binary)], capture_output=True, text=True, check=True)
@@ -1297,18 +1315,20 @@ def expected_verdicts(values):
     """How the generator's lists, and the integrator ranges, say every value of
     every field resolves under a configuration's resolved settings."""
     expected = {}
-    for field, every_value in FIELD_VALUES.items():
+    for field, probed in PROBED_VALUES.items():
         settings = [s for s in gen_config.SETTINGS if s.section == field]
         defined = {s.code for s in settings} | set(INTEGRATOR_DEFINED[field])
         enabled = {s.code for s in settings if s.implemented and values[s.macro]}
-        for value in every_value:
-            expected[(field, value)] = ("on" if value in enabled
+        for value in probed:
+            expected[(field, value)] = ("reserved" if value not in FIELD_VALUES[field]
+                                        else "on" if value in enabled
                                         else "off" if value in defined
                                         else "reserved")
     for field, selectable in ENCODING_FIELDS.items():
-        for value in range(0x100):
+        for value in range(BYTE_FIELD_PROBE_END):
             expected[(field, value)] = (
-                "on" if value in selectable
+                "reserved" if value > 0xFF
+                else "on" if value in selectable
                 else "off" if value in oca_constants.INTEGRATOR_ENCODINGS
                 else "reserved")
     return expected

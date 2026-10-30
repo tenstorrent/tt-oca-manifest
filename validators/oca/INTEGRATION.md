@@ -1283,8 +1283,9 @@ Changes an existing integration should check. Most show only at run time.
   without the `_t` lists each one's values. A compiler chooses an enum's size,
   so as enums they laid `oca_crypto_blob_t` and `oca_decrypt_input_t` out
   differently in a library and a callback built with and without
-  `-fshort-enums`. Code that names the types and compares against the
-  enumerators compiles unchanged. A `switch` over one no longer gets
+  `-fshort-enums`. `oca_payload_encryption_t::type` is an
+  `oca_encryption_type_t` too, where it was a byte. Code that names the types
+  and compares against the enumerators compiles unchanged. A `switch` over one no longer gets
   `-Wswitch`'s check for a missing enumerator, and code that wrote
   `enum oca_encoding` for the type must use `oca_encoding_t`.
 - **Padding past a declared size must be zero.** Under secure boot, a key or

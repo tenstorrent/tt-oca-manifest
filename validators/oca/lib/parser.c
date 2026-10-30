@@ -213,7 +213,7 @@ static int padding_is_dirty(const uint8_t *field, size_t field_len, size_t valid
  * encoding's rule.
  *
  * @param[in]  family    Which class's *_encoding_* field @p encoding is from.
- * @param[in]  encoding  The value's *_encoding_* byte.
+ * @param[in]  encoding  The value's *_encoding_* field.
  * @param[in]  raw       The algorithm's raw length for this value.
  * @param[in]  der       Whether the algorithm accepts DER for this value.
  * @param[in]  der_size  The size a DER encoding must declare.
@@ -228,7 +228,7 @@ static int padding_is_dirty(const uint8_t *field, size_t field_len, size_t valid
  * @return oca_encoding_status()'s refusal of the encoding, else one of the
  *         codes above.
  */
-static oca_result_t required_size(oca_key_algorithm_t family, uint8_t encoding,
+static oca_result_t required_size(oca_key_algorithm_t family, oca_encoding_t encoding,
                                   uint16_t raw, oca_der_support_t der,
                                   uint16_t der_size, uint16_t *want)
 {
@@ -236,11 +236,11 @@ static oca_result_t required_size(oca_key_algorithm_t family, uint8_t encoding,
     if (status != OCA_OK) {
         return status;
     }
-    if (encoding == (uint8_t)OCA_ENCODING_RAW) {
+    if (encoding == OCA_ENCODING_RAW) {
         *want = raw;
         return OCA_OK;
     }
-    if (encoding != (uint8_t)OCA_ENCODING_DER || der == OCA_DER_UNDEFINED) {
+    if (encoding != OCA_ENCODING_DER || der == OCA_DER_UNDEFINED) {
         return OCA_FAIL_CRYPTO_FIELD_SIZE;
     }
     /* Tested for ENABLED rather than against DISABLED, so a value that is
@@ -290,8 +290,11 @@ static oca_result_t check_class_description(const uint8_t *body,
                                              const class_description_t *d)
 {
     oca_result_t status;
+    const oca_primitive_type_t type = body[d->off_type];
+    const oca_encoding_t signature_encoding = body[d->off_signature_encoding];
+    const oca_encoding_t public_key_encoding = body[d->off_public_key_encoding];
     const oca_signature_algorithm_t *algorithm =
-        oca_signature_algorithm(d->family, body[d->off_type], &status);
+        oca_signature_algorithm(d->family, type, &status);
     if (algorithm == 0) {
         return status;
     }
@@ -304,13 +307,13 @@ static oca_result_t check_class_description(const uint8_t *body,
     uint16_t key_size = oca_le_u16(body + d->off_public_key_size);
     uint16_t want_sig;
     uint16_t want_key;
-    status = required_size(d->family, body[d->off_signature_encoding],
+    status = required_size(d->family, signature_encoding,
                            algorithm->signature_raw, algorithm->signature_der,
                            algorithm->signature_der_max, &want_sig);
     if (status != OCA_OK) {
         return status;
     }
-    status = required_size(d->family, body[d->off_public_key_encoding],
+    status = required_size(d->family, public_key_encoding,
                            algorithm->public_key_raw, algorithm->public_key_der,
                            key_size, &want_key);
     if (status != OCA_OK) {

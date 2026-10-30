@@ -26,6 +26,21 @@
 #include "oca_validator.h"
 
 /**
+ * @brief Whether a value of a one-byte algorithm field lies in the range the
+ *        format leaves to integrators, 0xF0 to 0xFF.
+ *
+ * Bounded above as well as below: the crypto types are wider than the byte
+ * fields they carry, and a value past the field is one the format reserves.
+ *
+ * @param[in] value  The field's value, as its crypto type.
+ * @return Non-zero from 0xF0 to 0xFF; zero otherwise.
+ */
+static inline int oca_integrator_byte(uint16_t value)
+{
+    return value >= 0xF0u && value <= 0xFFu;
+}
+
+/**
  * @brief Whether a manifest may encode a value as ASN.1 DER.
  *
  * Kept apart from "not enabled" so a manifest that uses DER where the format
@@ -73,7 +88,7 @@ typedef struct oca_signature_algorithm {
  *         format reserves the value.
  */
 const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t family,
-                                                         uint8_t type,
+                                                         oca_primitive_type_t type,
                                                          oca_result_t *status);
 
 /**
@@ -92,7 +107,7 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
  *                                         a PQC DER included.
  * @return One of the codes above, by how the format treats @p encoding.
  */
-oca_result_t oca_encoding_status(oca_key_algorithm_t family, uint8_t encoding);
+oca_result_t oca_encoding_status(oca_key_algorithm_t family, oca_encoding_t encoding);
 
 /** @brief The largest digest any hash a build can enable produces. */
 #define OCA_HASH_MAX_DIGEST_SIZE 32u
@@ -123,7 +138,7 @@ typedef struct oca_hash_algorithm {
  * @return The digest's row when this build enables it; NULL when the format
  *         defines it but this build does not enable it, or reserves the value.
  */
-const oca_hash_algorithm_t *oca_hash_algorithm(uint8_t type, oca_result_t *status);
+const oca_hash_algorithm_t *oca_hash_algorithm(oca_hash_type_t type, oca_result_t *status);
 
 /**
  * @brief The digest size to use a hash row at.
@@ -165,7 +180,8 @@ typedef struct oca_cipher_algorithm {
  * @return The cipher's row when this build enables it; NULL when the format
  *         defines it but this build does not enable it, or reserves the value.
  */
-const oca_cipher_algorithm_t *oca_cipher_algorithm(uint8_t type, oca_result_t *status);
+const oca_cipher_algorithm_t *oca_cipher_algorithm(oca_encryption_type_t type,
+                                                   oca_result_t *status);
 
 /**
  * @brief Resolve an encryption_key_derivation_function value.
@@ -180,7 +196,7 @@ const oca_cipher_algorithm_t *oca_cipher_algorithm(uint8_t type, oca_result_t *s
  * @retval OCA_FAIL_ALGORITHM_RESERVED     The format reserves the value.
  * @return One of the codes above, by how the format and the build treat @p kdf.
  */
-oca_result_t oca_kdf_status(uint16_t kdf);
+oca_result_t oca_kdf_status(oca_kdf_t kdf);
 
 /**
  * @brief Resolve an input_key_source value.
@@ -199,6 +215,6 @@ oca_result_t oca_kdf_status(uint16_t kdf);
  * @return One of the codes above, by how the format and the build treat
  *         @p source.
  */
-oca_result_t oca_key_source_status(unsigned source);
+oca_result_t oca_key_source_status(oca_key_source_t source);
 
 #endif /* OCA_ALGORITHMS_H */

@@ -2542,16 +2542,16 @@ oca_result_t oca_check_payload(
 typedef struct oca_payload_encryption {
     /** payload_encryption_control bit 0. The sole trigger for the encryption
      *  policy check. */
-    bool     encrypted;
-    /** An oca_encryption_type_t value, reported verbatim rather than validated.
+    bool                  encrypted;
+    /** The manifest's encryption_type, reported verbatim rather than validated.
      *  OCA_ENCRYPTION_TYPE_NONE unless @c encrypted. A value outside the enum
      *  means the manifest names a cipher this build does not implement, which
      *  oca_check_payload() rejects when it gets there — deciding it here would
      *  duplicate that check in a second place. */
-    uint8_t  type;
+    oca_encryption_type_t type;
     /** Provisioned-secret index, 1-based. Zero unless @c encrypted. Resolving
      *  this to an actual secret is the ingestor's job, done before validation. */
-    uint16_t secret_select;
+    uint16_t              secret_select;
 } oca_payload_encryption_t;
 
 /**

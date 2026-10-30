@@ -2563,19 +2563,21 @@ TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
 
 /* Every encryption_type, KDF and key source resolves to exactly one outcome,
  * checked against the format's values written out one by one and the
- * algorithms this build enables. */
+ * algorithms this build enables. The sweeps cover every value the types can
+ * hold, so a value wider than its field is reserved. */
 TEST(test_every_payload_algorithm_resolves_against_the_format_and_the_build)
 {
     static const uint8_t defined_ciphers[] = {
         0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u, 0x11u, 0x12u,
     };
-    for (unsigned type = 0u; type <= 0xFFu; ++type) {
-        int defined = type >= 0xF0u;
+    for (unsigned type = 0u; type <= 0xFFFFu; ++type) {
+        int defined = type >= 0xF0u && type <= 0xFFu;
         for (size_t i = 0u; i < sizeof defined_ciphers; ++i) {
             defined |= defined_ciphers[i] == type;
         }
         oca_result_t status = OCA_OK;
-        const oca_cipher_algorithm_t *row = oca_cipher_algorithm((uint8_t)type, &status);
+        const oca_cipher_algorithm_t *row =
+            oca_cipher_algorithm((oca_encryption_type_t)type, &status);
         if ((type == 0x01u && CFG_AES_128) || (type == 0x02u && CFG_AES_256)) {
             ASSERT_EQ_INT(status, OCA_OK);
             ASSERT_TRUE(row != NULL && row->type == type && row->block_size == 16u);
@@ -2588,14 +2590,16 @@ TEST(test_every_payload_algorithm_resolves_against_the_format_and_the_build)
     for (unsigned kdf = 0u; kdf <= 0xFFFFu; ++kdf) {
         oca_result_t expected = (kdf <= 0x0008u || kdf >= 0xFF00u)
                                 ? OCA_FAIL_ALGORITHM_NOT_ENABLED : OCA_FAIL_ALGORITHM_RESERVED;
-        ASSERT_EQ_INT(oca_kdf_status((uint16_t)kdf),
+        ASSERT_EQ_INT(oca_kdf_status((oca_kdf_t)kdf),
                       (kdf == 0x0001u && OCA_CFG_KDF_SP800_108_HMAC_SHA256)
                       ? OCA_OK : expected);
     }
     ASSERT_EQ_INT(oca_key_source_status(0x1u), OCA_CFG_KEY_SOURCE_PRESHARED
                                                ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
     ASSERT_EQ_INT(oca_key_source_status(0x2u), OCA_FAIL_ALGORITHM_NOT_ENABLED);
-    static const unsigned reserved_sources[] = { 0x0u, 0x3u, 0x4u, 0x5u, 0x6u, 0x7u };
+    static const oca_key_source_t reserved_sources[] = {
+        0x0u, 0x3u, 0x4u, 0x5u, 0x6u, 0x7u, 0x8u, 0x9u, 0xFFFFu,
+    };
     for (size_t i = 0u; i < sizeof reserved_sources / sizeof reserved_sources[0]; ++i) {
         ASSERT_EQ_INT(oca_key_source_status(reserved_sources[i]), OCA_FAIL_ALGORITHM_RESERVED);
     }
@@ -4358,15 +4362,15 @@ TEST(test_the_hash_callback_is_asked_for_the_named_digest)
     ASSERT_EQ_INT(g_hash_len, 32);
 }
 
-/* Every hash-type value resolves to exactly one outcome, checked against the
- * format's eight digests; the format leaves no range to integrators here. Every
+/* Every oca_hash_type_t value resolves to exactly one outcome, checked against
+ * the format's eight digests; the format leaves no range to integrators here. Every
  * row the build compiles in fits the library's digest buffers, which
  * algorithms.h holds within the hash fields. */
 TEST(test_every_hash_type_resolves_against_the_format_and_the_build)
 {
-    for (unsigned type = 0u; type <= 0xFFu; ++type) {
+    for (unsigned type = 0u; type <= 0xFFFFu; ++type) {
         oca_result_t status = OCA_OK;
-        const oca_hash_algorithm_t *row = oca_hash_algorithm((uint8_t)type, &status);
+        const oca_hash_algorithm_t *row = oca_hash_algorithm((oca_hash_type_t)type, &status);
         if (row != NULL) {
             ASSERT_TRUE(row->digest_size >= 1u
                         && row->digest_size <= OCA_HASH_MAX_DIGEST_SIZE);
@@ -6113,7 +6117,7 @@ TEST(test_pqc_description_is_ignored_when_the_pqc_class_is_off)
 /* Every signature_type value the format defines, per class, written out value
  * by value from its signature_type tables rather than as ranges, so a range
  * comparison in the library cannot hide an off-by-one. */
-static int format_defines_signature(oca_key_algorithm_t family, unsigned type)
+static int format_defines_signature(oca_key_algorithm_t family, oca_primitive_type_t type)
 {
     static const uint8_t classical[] = {
         0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u, 0x07u, 0x0Au, 0x0Bu,
@@ -6123,7 +6127,7 @@ static int format_defines_signature(oca_key_algorithm_t family, unsigned type)
     };
     const uint8_t *defined = family == OCA_KEY_ALGO_PQC ? pqc : classical;
     const size_t count = family == OCA_KEY_ALGO_PQC ? sizeof pqc : sizeof classical;
-    if (type >= 0xF0u) {
+    if (type >= 0xF0u && type <= 0xFFu) {
         return 1;   /* integrator-defined */
     }
     for (size_t i = 0u; i < count; ++i) {
@@ -6134,17 +6138,19 @@ static int format_defines_signature(oca_key_algorithm_t family, unsigned type)
     return 0;
 }
 
-/* Every value of both classes resolves to exactly one outcome: the algorithms
- * this build enables to their rows, the other defined ones to "not enabled",
- * and the rest to "reserved". */
+/* Every oca_primitive_type_t value of both classes resolves to exactly one
+ * outcome: the algorithms this build enables to their rows, the other defined
+ * ones to "not enabled", and the rest, a value wider than the field included,
+ * to "reserved". */
 TEST(test_every_signature_type_resolves_against_the_format_and_the_build)
 {
     static const oca_key_algorithm_t families[] = { OCA_KEY_ALGO_CLASSIC, OCA_KEY_ALGO_PQC };
     for (size_t f = 0u; f < 2u; ++f) {
-        for (unsigned type = 0u; type <= 0xFFu; ++type) {
+        for (unsigned value = 0u; value <= 0xFFFFu; ++value) {
+            const oca_primitive_type_t type = (oca_primitive_type_t)value;
             oca_result_t status = OCA_OK;
             const oca_signature_algorithm_t *row =
-                oca_signature_algorithm(families[f], (uint8_t)type, &status);
+                oca_signature_algorithm(families[f], type, &status);
             const int enabled = families[f] == OCA_KEY_ALGO_PQC
                 ? (type == 0x33u && CFG_ML_DSA_87)
                 : ((type == 0x01u && CFG_RSA) || (type == 0x05u && CFG_ECDSA));
@@ -6164,7 +6170,8 @@ TEST(test_every_signature_type_resolves_against_the_format_and_the_build)
 /* Asserts a signature algorithm has a row exactly when the build enables it.
  * Returns the row, or NULL when there is none to inspect. */
 static const oca_signature_algorithm_t *row_if_enabled(oca_key_algorithm_t family,
-                                                       uint8_t type, int enabled)
+                                                       oca_primitive_type_t type,
+                                                       int enabled)
 {
     oca_result_t status = OCA_OK;
     const oca_signature_algorithm_t *row = oca_signature_algorithm(family, type, &status);
