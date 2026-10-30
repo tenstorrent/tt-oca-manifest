@@ -185,11 +185,13 @@ enum oca_result {
      *  OCA_FAIL_MAGIC, which means the magic matches no known variant. */
     OCA_FAIL_UNSUPPORTED_VARIANT        = 17,
     /** The hash over the stored payload did not match — the ciphertext when
-     *  encrypted (checked BEFORE decryption), the TOC region when cleartext. */
+     *  encrypted (checked BEFORE decryption), the TOC region when cleartext —
+     *  or payload_hash is not zero past the digest. */
     OCA_FAIL_PAYLOAD_HASH               = 18,
     /** Key derivation, AES-CBC decryption, or PKCS#7 unpadding failed. */
     OCA_FAIL_DECRYPT                    = 19,
-    /** The chained hash over the plaintext payload did not match. Distinct from
+    /** The chained hash over the plaintext payload did not match, or
+     *  payload_hash_chain is not zero past the digest. Distinct from
      *  OCA_FAIL_PAYLOAD_TOC: this is a cryptographic mismatch on a
      *  structurally-valid TOC, not a malformed one. */
     OCA_FAIL_PAYLOAD_HASH_CHAIN         = 20,

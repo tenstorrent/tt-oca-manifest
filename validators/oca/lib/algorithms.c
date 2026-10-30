@@ -143,13 +143,42 @@ const oca_hash_algorithm_t *oca_hash_algorithm(oca_hash_type_t type, oca_result_
     return 0;
 }
 
+/**
+ * @brief The digest size the format gives a hash type.
+ *
+ * Written out from the format's hash-type list rather than read from HASHES,
+ * so a row whose size is corrupted disagrees with it.
+ *
+ * @param[in] type  A manifest_hash_type or payload_hash_type value.
+ * @return The digest size in bytes, or 0 for a value the format reserves.
+ */
+static size_t format_digest_size(uint8_t type)
+{
+    switch (type) {
+    case 0x01u:     /* SHA2-256 */
+    case 0x04u:     /* SHA3-256 */
+    case 0x07u:     /* SHAKE256-256 */
+        return 32u;
+    case 0x02u:     /* SHA2-384 */
+    case 0x05u:     /* SHA3-384 */
+        return 48u;
+    case 0x03u:     /* SHA2-512 */
+    case 0x06u:     /* SHA3-512 */
+    case 0x08u:     /* SHAKE256-512 */
+        return 64u;
+    default:
+        return 0u;
+    }
+}
+
 size_t oca_hash_digest_size(const oca_hash_algorithm_t *hash)
 {
     if (hash == 0) {
         return 0u;
     }
     const size_t size = hash->digest_size;
-    return (size >= 1u && size <= OCA_HASH_MAX_DIGEST_SIZE) ? size : 0u;
+    return (size == format_digest_size(hash->type) && size <= OCA_HASH_MAX_DIGEST_SIZE)
+        ? size : 0u;
 }
 
 /** The payload ciphers this build enables. */

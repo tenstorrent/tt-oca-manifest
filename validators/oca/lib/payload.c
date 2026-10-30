@@ -192,9 +192,10 @@ static oca_result_t validate_toc_structure(
  * @brief Compare a recomputed digest against a stored hash field.
  *
  * Runs in time independent of the contents, via the primitives in
- * oca_compare.h. The trailing bytes of the field are padding whose width
- * depends on the configured digest type; only the leading digest bytes are
- * compared, and the remainder is not interpreted.
+ * oca_compare.h. Only the leading digest bytes are compared. A TOC entry's
+ * hash field is compared this way alone, its remainder not interpreted; the
+ * manifest's payload fields go through compare_padded_digest(), which holds
+ * the remainder to zero.
  *
  * @param[in] field        The stored hash field, OCA_LEN_HASH_FIELD bytes.
  * @param[in] digest       The recomputed digest.
@@ -216,6 +217,34 @@ static oca_result_t compare_digest(const uint8_t *field, const uint8_t *digest,
         return on_mismatch;
     }
     return oca_ct_diff(field, digest, digest_size) != 0 ? on_mismatch : OCA_OK;
+}
+
+/**
+ * @brief Compare a digest against a manifest field that is zero past it.
+ *
+ * payload_hash and payload_hash_chain hold their digest at the start of the
+ * field and zeros after it (spec: payload_hash, "The unused bits in this field
+ * are 0x0"; payload_hash_chain, "all remaining bytes populated as 0x00"), as
+ * manifest_hash does. Holding the rest of the field to zero means a digest
+ * size read short fails here, on the digest bytes it left out, rather than
+ * comparing only part of the digest.
+ *
+ * @param[in] field        The stored hash field, OCA_LEN_HASH_FIELD bytes.
+ * @param[in] digest       The recomputed digest.
+ * @param[in] digest_size  Its length, from oca_hash_digest_size().
+ * @param[in] on_mismatch  Result code to return when they differ.
+ * @retval OCA_OK  The digest matches and the rest of the field is zero.
+ * @return @p on_mismatch otherwise.
+ */
+static oca_result_t compare_padded_digest(const uint8_t *field, const uint8_t *digest,
+                                          size_t digest_size, oca_result_t on_mismatch)
+{
+    oca_result_t r = compare_digest(field, digest, digest_size, on_mismatch);
+    if (r != OCA_OK) {
+        return r;
+    }
+    return oca_ct_any_nonzero(field + digest_size, OCA_LEN_HASH_FIELD - digest_size) != 0
+        ? on_mismatch : OCA_OK;
 }
 
 /**
@@ -357,8 +386,8 @@ static oca_result_t check_payload_hash_chain_and_entries(
         }
     }
 
-    oca_result_t r = compare_digest(body + OCA_OFF_PAYLOAD_HASH_CHAIN, chain, size,
-                                    OCA_FAIL_PAYLOAD_HASH_CHAIN);
+    oca_result_t r = compare_padded_digest(body + OCA_OFF_PAYLOAD_HASH_CHAIN, chain, size,
+                                           OCA_FAIL_PAYLOAD_HASH_CHAIN);
     return r != OCA_OK ? r : entry_verdict;
 }
 
@@ -467,8 +496,8 @@ static oca_result_t check_cleartext_payload(const uint8_t *payload, size_t paylo
         != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    r = compare_digest(body + OCA_OFF_PAYLOAD_HASH, digest, size,
-                       OCA_FAIL_PAYLOAD_HASH);
+    r = compare_padded_digest(body + OCA_OFF_PAYLOAD_HASH, digest, size,
+                              OCA_FAIL_PAYLOAD_HASH);
     if (r != OCA_OK) {
         return r;
     }
@@ -592,8 +621,8 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
         != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    r = compare_digest(body + OCA_OFF_PAYLOAD_HASH, digest, size,
-                       OCA_FAIL_PAYLOAD_HASH);
+    r = compare_padded_digest(body + OCA_OFF_PAYLOAD_HASH, digest, size,
+                              OCA_FAIL_PAYLOAD_HASH);
     if (r != OCA_OK) {
         return r;
     }

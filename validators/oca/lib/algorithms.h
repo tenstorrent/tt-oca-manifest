@@ -124,9 +124,10 @@ oca_result_t oca_encoding_status(oca_key_algorithm_t family, oca_encoding_t enco
 /** @brief The format's rules for one digest algorithm. */
 typedef struct oca_hash_algorithm {
     uint8_t type;         /**< The manifest_hash_type / payload_hash_type value. */
-    uint8_t digest_size;  /**< Digest length in bytes, at most
-                               OCA_HASH_MAX_DIGEST_SIZE; the leading part of
-                               the hash field it is stored in. */
+    uint8_t digest_size;  /**< Digest length in bytes: the format's size for
+                               @c type, at most OCA_HASH_MAX_DIGEST_SIZE; the
+                               leading part of the hash field it is stored
+                               in. */
 } oca_hash_algorithm_t;
 
 /**
@@ -150,12 +151,14 @@ const oca_hash_algorithm_t *oca_hash_algorithm(oca_hash_type_t type, oca_result_
  * read once per use, so the size the callback writes is the size compared and
  * no buffer is sized from a value nothing checked. The table's rows are held
  * to the buffers at compile time; this holds a row that reached a use
- * corrupted.
+ * corrupted. Its size must be the one the format gives its type, so a size
+ * read short is refused rather than comparing part of each digest.
  *
  * @param[in] hash  A row from oca_hash_algorithm(), or NULL.
  * @return The row's digest size, from 1 to OCA_HASH_MAX_DIGEST_SIZE; 0 when
- *         @p hash is NULL or its size falls outside that range, which a caller
- *         treats as a digest that does not match.
+ *         @p hash is NULL, its size is not the format's for its type, or the
+ *         size is wider than the digest buffers, which a caller treats as a
+ *         digest that does not match.
  */
 size_t oca_hash_digest_size(const oca_hash_algorithm_t *hash);
 

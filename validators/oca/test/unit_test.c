@@ -2442,6 +2442,73 @@ TEST(test_cleartext_payload_happy_path)
     ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL), OCA_OK);
 }
 
+/* payload_hash and payload_hash_chain hold their digest at the start of a
+ * 64-byte field and zeros after it, so a byte set past the digest is refused:
+ * a digest size read short would otherwise compare only part of the digest. */
+TEST(test_payload_digest_fields_must_be_zero_past_the_digest)
+{
+    static const struct {
+        size_t       off;
+        oca_result_t want;
+    } fields[] = {
+        { OCA_OFF_PAYLOAD_HASH + 32u, OCA_FAIL_PAYLOAD_HASH },
+        { OCA_OFF_PAYLOAD_HASH + OCA_LEN_HASH_FIELD - 1u, OCA_FAIL_PAYLOAD_HASH },
+        { OCA_OFF_PAYLOAD_HASH_CHAIN + 32u, OCA_FAIL_PAYLOAD_HASH_CHAIN },
+        { OCA_OFF_PAYLOAD_HASH_CHAIN + OCA_LEN_HASH_FIELD - 1u, OCA_FAIL_PAYLOAD_HASH_CHAIN },
+    };
+    for (size_t i = 0u; i < sizeof fields / sizeof fields[0]; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE + CLEAR_PAYLOAD_LEN];
+        build_cleartext_bundle(buf);
+        buf[fields[i].off] = 0x01u;
+        oca_callbacks_t cb;
+        cleartext_cb(&cb);
+        ASSERT_EQ_INT(oca_check_payload(buf, sizeof buf, &cb, &g_authenticated, NULL),
+                      fields[i].want);
+    }
+}
+
+/* Every digest the library checks takes its size from the hash row, and a row
+ * whose size is not its type's is refused where it is used rather than
+ * compared over fewer bytes. The shipped table cannot hold such a row, so in
+ * the shipped build this checks each site accepts the sound one;
+ * tests/test_oca_hash_row_size.py builds it against a copy of the library
+ * whose SHA2-256 row is rewritten to another size, and requires it to pass
+ * there too. */
+TEST(test_every_digest_site_holds_the_hash_row_to_its_type)
+{
+    oca_result_t status;
+    const oca_hash_algorithm_t *sha2_256 = oca_hash_algorithm(0x01u, &status);
+    ASSERT_TRUE(sha2_256 != NULL);
+    const int sound = sha2_256->digest_size == 32u;
+
+    uint8_t body[OCA_CLASSIC_BODY_SIZE];
+    build_minimal_manifest(body);
+    g_fx.hash_body = body;
+    oca_callbacks_t cb;
+    memset(&cb, 0, sizeof cb);
+    cb.hash = stub_hash_pass;
+    ASSERT_EQ_INT(oca_check_manifest_hash(body, &cb), sound ? OCA_OK : OCA_FAIL_MANIFEST_HASH);
+
+    uint8_t clear[OCA_CLASSIC_BODY_SIZE + CLEAR_PAYLOAD_LEN];
+    build_cleartext_bundle(clear);
+    cleartext_cb(&cb);
+    ASSERT_EQ_INT(oca_check_payload(clear, sizeof clear, &cb, &g_authenticated, NULL),
+                  sound ? OCA_OK : OCA_FAIL_PAYLOAD_HASH);
+
+    if (CFG_AES_128) {
+        uint8_t encrypted[OCA_CLASSIC_BODY_SIZE + ENC_CT_LEN];
+        uint8_t ph[32]; memset(ph, 0x5A, 32);
+        uint8_t chain[32]; memset(chain, 0, 32);
+        build_encrypted_bundle(encrypted, ph, chain);
+        build_plaintext_toc();
+        payload_hash_ctx_init(encrypted + OCA_CLASSIC_BODY_SIZE, true, 0x5A);
+        payload_cb(&cb, decrypt_ok);
+        ASSERT_EQ_INT(oca_check_payload(encrypted, sizeof encrypted, &cb, &g_authenticated,
+                                        NULL),
+                      sound ? OCA_OK : OCA_FAIL_PAYLOAD_HASH);
+    }
+}
+
 /* The table self_unwiring_hash clears its own entry from, and after how many
  * digests. */
 static oca_callbacks_t *g_unwire_table;
@@ -4399,23 +4466,39 @@ TEST(test_every_hash_type_resolves_against_the_format_and_the_build)
 }
 
 /* Every digest the library takes, compares or chains is sized through
- * oca_hash_digest_size(), which answers 0 for anything but a row the digest
- * buffers can hold, so a corrupted row is refused where it is used rather than
- * overrunning a buffer or comparing nothing. */
-TEST(test_a_hash_row_is_used_only_at_a_size_the_buffers_hold)
+ * oca_hash_digest_size(), which answers 0 for anything but a row carrying its
+ * type's digest size within what the digest buffers hold, so a corrupted row
+ * is refused where it is used rather than overrunning a buffer or comparing
+ * fewer bytes than the digest has. */
+TEST(test_a_hash_row_is_used_only_at_its_types_digest_size)
 {
     oca_result_t status;
     ASSERT_EQ_INT(oca_hash_digest_size(oca_hash_algorithm(0x01u, &status)), 32);
     ASSERT_EQ_INT(oca_hash_digest_size(NULL), 0);
 
-    static const oca_hash_algorithm_t empty = { 0x01u, 0u };
-    static const oca_hash_algorithm_t widest = { 0x01u, OCA_HASH_MAX_DIGEST_SIZE };
-    static const oca_hash_algorithm_t too_wide = {
-        0x01u, OCA_HASH_MAX_DIGEST_SIZE + 1u
+    static const struct {
+        oca_hash_algorithm_t row;
+        size_t               want;
+    } rows[] = {
+        { { 0x01u, 32u }, 32u },   /* SHA2-256 */
+        { { 0x04u, 32u }, 32u },   /* SHA3-256 */
+        { { 0x07u, 32u }, 32u },   /* SHAKE256-256 */
+        { { 0x01u, 0u }, 0u },
+        { { 0x01u, 1u }, 0u },
+        { { 0x01u, 31u }, 0u },
+        { { 0x01u, 33u }, 0u },
+        { { 0x01u, 64u }, 0u },
+        { { 0x04u, 48u }, 0u },
+        { { 0x02u, 32u }, 0u },    /* SHA2-384 at another type's size */
+        { { 0x02u, 48u }, 0u },    /* SHA2-384: wider than the buffers */
+        { { 0x03u, 64u }, 0u },    /* SHA2-512: likewise */
+        { { 0x08u, 64u }, 0u },    /* SHAKE256-512: likewise */
+        { { 0x00u, 32u }, 0u },    /* unset */
+        { { 0x09u, 32u }, 0u },    /* reserved */
     };
-    ASSERT_EQ_INT(oca_hash_digest_size(&empty), 0);
-    ASSERT_EQ_INT(oca_hash_digest_size(&widest), OCA_HASH_MAX_DIGEST_SIZE);
-    ASSERT_EQ_INT(oca_hash_digest_size(&too_wide), 0);
+    for (size_t i = 0u; i < sizeof rows / sizeof rows[0]; ++i) {
+        ASSERT_EQ_INT(oca_hash_digest_size(&rows[i].row), rows[i].want);
+    }
 }
 
 /* Secure PQC manifest with the given secure_boot_control. BOTH class
@@ -8885,7 +8968,7 @@ int main(int argc, char **argv)
                 test_manifest_hash_refuses_an_unsupported_hash_type_before_hashing);
     RUN_TEST_IF(CFG_CLASSIC, test_the_hash_callback_is_asked_for_the_named_digest);
     RUN_TEST(test_every_hash_type_resolves_against_the_format_and_the_build);
-    RUN_TEST(test_a_hash_row_is_used_only_at_a_size_the_buffers_hold);
+    RUN_TEST(test_a_hash_row_is_used_only_at_its_types_digest_size);
     RUN_TEST(test_the_library_reports_its_portfolio);
     RUN_TEST(test_result_string_covers_the_algorithm_codes);
     RUN_TEST_IF(CFG_CLASSIC, test_deprecated_check_names_reach_the_renamed_checks);
@@ -8993,6 +9076,8 @@ int main(int argc, char **argv)
 
     /* Cleartext payload stage */
     RUN_TEST_IF(CFG_CLASSIC, test_cleartext_payload_happy_path);
+    RUN_TEST_IF(CFG_CLASSIC, test_payload_digest_fields_must_be_zero_past_the_digest);
+    RUN_TEST_IF(CFG_CLASSIC, test_every_digest_site_holds_the_hash_row_to_its_type);
     RUN_TEST_IF(CFG_CLASSIC, test_a_hash_callback_unwired_mid_payload_fails_closed);
     RUN_TEST_IF(CFG_CLASSIC && CFG_AES_128,
                 test_encrypted_payload_refuses_unsupported_algorithms_before_hashing);
