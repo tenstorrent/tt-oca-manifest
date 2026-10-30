@@ -35,7 +35,7 @@ a library upgrade that adds a switch left off changes no existing identifier.
 setting's as `name=value` lines, for a build system that chooses what else to
 compile from the configuration without parsing TOML.
 
-Python tooling imports this module rather than running it: `generate()` writes
+Python tooling can import this module rather than run it: `generate()` writes
 a header, `header_for_config()` returns one, and the steps they compose —
 `load_config()`, `resolve_settings()`, `render_header()`, `write_if_changed()`
 — are callable on their own. Each raises ConfigError naming every problem.
@@ -285,8 +285,8 @@ class ConfigError(Exception):
         self.problems = problems
 
 
-def load_config(path: str) -> tuple[dict, bytes]:
-    """Read and parse a configuration file. Returns the document and its bytes."""
+def load_config(path: str) -> dict:
+    """Read and parse a configuration file."""
     try:
         with open(path, "rb") as handle:
             raw = handle.read()
@@ -298,7 +298,7 @@ def load_config(path: str) -> tuple[dict, bytes]:
         raise ConfigError([f"{path} is not UTF-8 text"]) from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError([f"{path} is not valid TOML: {exc}"]) from exc
-    return document, raw
+    return document
 
 
 def _check_value(setting: Setting, value) -> str | None:
@@ -491,14 +491,14 @@ def render_header(values: dict[str, int], source_name: str) -> str:
 
 def header_for_config(config_path: str) -> str:
     """The oca_config.h a configuration file generates. Raises ConfigError."""
-    document, _ = load_config(config_path)
+    document = load_config(config_path)
     values = resolve_settings(document)
     return render_header(values, os.path.basename(config_path))
 
 
 def settings_for_config(config_path: str) -> dict[str, int]:
     """Every setting's resolved value, by name. Raises ConfigError."""
-    document, _ = load_config(config_path)
+    document = load_config(config_path)
     values = resolve_settings(document)
     return {setting.name: setting_value(values, setting) for setting in SETTINGS}
 

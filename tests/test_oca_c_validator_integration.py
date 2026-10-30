@@ -3170,11 +3170,12 @@ def test_cli_a_resigned_encrypted_bundle_still_decrypts(tmp_path):
     ("cipher", 0x05, "ALGORITHM_NOT_ENABLED"),       # AES-128-GCM-SIV
     ("cipher", 0x13, "ALGORITHM_RESERVED"),
 ])
-def test_cli_refuses_an_encrypted_payload_it_cannot_derive_a_key_for(tmp_path, field,
-                                                                      value, code):
-    """The reference backend always derives through SP 800-108r1 HMAC-SHA-256
-    from the pre-shared secret, so without this refusal a manifest naming any
-    other derivation decrypts as if it named that one."""
+def test_cli_refuses_an_encrypted_payload_algorithm_the_build_does_not_enable(
+        tmp_path, field, value, code):
+    """Each cipher, KDF and input-key source this build does not enable is
+    refused by the library before anything is hashed or decrypted:
+    ALGORITHM_NOT_ENABLED for one the format defines, ALGORITHM_RESERVED
+    otherwise."""
     data = _encrypted_with(field, value)
     result = _run_bundle(tmp_path, data, f"encrypted_{field}_{value:#x}",
                          flags=_read_flags("encrypted_aes"))

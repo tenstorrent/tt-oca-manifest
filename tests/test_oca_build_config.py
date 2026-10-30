@@ -130,7 +130,7 @@ def test_the_readme_documents_every_setting():
 
 
 def test_the_shipped_default_is_the_documented_default():
-    document, _ = gen_config.load_config(DEFAULT_CONFIG)
+    document = gen_config.load_config(DEFAULT_CONFIG)
     assert gen_config.resolve_settings(document) == DEFAULT_VALUES
 
 
@@ -139,9 +139,9 @@ def test_the_shipped_default_is_the_documented_default():
     ("classic_only.toml", {"OCA_CFG_VARIANT_PQC": 0, "OCA_CFG_SIG_ML_DSA_87": 0}),
     ("pqc_only.toml", {"OCA_CFG_VARIANT_CLASSIC": 0}),
 ])
-def test_the_variant_build_configs_differ_from_the_default_only_in_variants(
+def test_the_variant_build_configs_differ_from_the_default_only_as_their_variants_need(
         name, changes):
-    document, _ = gen_config.load_config(os.path.join(BUILD_CONFIG_DIR, name))
+    document = gen_config.load_config(os.path.join(BUILD_CONFIG_DIR, name))
     assert gen_config.resolve_settings(document) == {**DEFAULT_VALUES, **changes}
 
 
@@ -153,7 +153,7 @@ NO_SECURE_BOOT = {"rsa": "false", "ecdsa": "false", "ml_dsa_87": "false",
 
 
 def test_the_hash_only_build_config_verifies_nothing():
-    document, _ = gen_config.load_config(os.path.join(BUILD_CONFIG_DIR, "hash_only.toml"))
+    document = gen_config.load_config(os.path.join(BUILD_CONFIG_DIR, "hash_only.toml"))
     algorithms = {macro: 0 for macro in DEFAULT_VALUES
                   if macro.startswith(("OCA_CFG_SIG_", "OCA_CFG_DER_", "OCA_CFG_CIPHER_",
                                        "OCA_CFG_KDF_", "OCA_CFG_KEY_SOURCE_"))}
@@ -166,9 +166,9 @@ def test_a_complete_configuration_is_accepted():
 
 
 @pytest.mark.parametrize("setting", REQUIRED, ids=[s.name for s in REQUIRED])
-def test_every_setting_is_required(setting):
-    """A configuration replaces the default, so leaving a setting out is refused,
-    never filled in from a default nobody reviewed."""
+def test_a_required_setting_left_out_is_refused(setting):
+    """A configuration replaces the default, so leaving a required setting out
+    is refused, never filled in from a default nobody reviewed."""
     text = "".join(line + "\n" for line in config_text().splitlines()
                    if not line.startswith(f"{setting.key} ="))
     assert problems_for(text) == [
@@ -187,7 +187,7 @@ def test_only_algorithms_encodings_and_declarations_are_optional():
                     or setting.macro in DECLARATIONS), setting.name
 
 
-def test_an_empty_configuration_names_every_setting():
+def test_an_empty_configuration_names_every_required_setting():
     """Every required setting, and that no hash or signature algorithm is enabled."""
     assert len(problems_for("")) == len(REQUIRED) + 2
 
@@ -318,12 +318,20 @@ def test_a_build_that_declares_secure_boot_disabled_needs_only_a_hash():
     assert problems_for(config_text(**NO_SECURE_BOOT, secure_boot_disabled="true")) == []
 
 
-def test_a_build_that_declares_secure_boot_disabled_verifies_no_signature():
-    text = config_text(**{**NO_SECURE_BOOT, "ecdsa": "true"}, secure_boot_disabled="true")
+@pytest.mark.parametrize("enabled, named", [
+    pytest.param({"ecdsa": "true"},
+                 "signature_classic.ecdsa_p256_sha256 enables one; turn it",
+                 id="one"),
+    pytest.param({"rsa": "true", "ecdsa": "true"},
+                 "signature_classic.rsa_3072_pkcs1v15_sha256, "
+                 "signature_classic.ecdsa_p256_sha256 enable them; turn them",
+                 id="two"),
+])
+def test_a_build_that_declares_secure_boot_disabled_verifies_no_signature(enabled, named):
+    text = config_text(**{**NO_SECURE_BOOT, **enabled}, secure_boot_disabled="true")
     assert problems_for(text) == [
         "[secure_boot] disabled = true declares a build that verifies no "
-        "signature, but signature_classic.ecdsa_p256_sha256 enables one; turn it "
-        "off or remove the declaration"]
+        f"signature, but {named} off or remove the declaration"]
 
 
 def test_a_build_that_declares_secure_boot_disabled_decrypts_nothing():
@@ -473,7 +481,7 @@ def header_portfolio_text(header):
 
 
 def portfolio_of(directory, text, name="board.toml"):
-    document, _ = gen_config.load_config(write_config(directory, text, name))
+    document = gen_config.load_config(write_config(directory, text, name))
     return gen_config.portfolio_id(gen_config.resolve_settings(document))
 
 
@@ -821,7 +829,7 @@ def test_every_implemented_algorithm_has_a_table_row_with_its_code():
 
 def test_every_algorithm_the_packer_writes_is_enabled_by_default():
     """The producer can never emit a signature the default validator refuses."""
-    document, _ = gen_config.load_config(DEFAULT_CONFIG)
+    document = gen_config.load_config(DEFAULT_CONFIG)
     values = gen_config.resolve_settings(document)
     by_code = {
         "signature_classic": oca_constants.CLASSIC_SIGNING_TYPES,
@@ -1363,7 +1371,7 @@ def test_the_library_resolves_every_code_point_as_the_generator_lists_it(
     maps. Every value of every field is resolved by the compiled library and
     held to the generator's lists, under each configuration."""
     config = write_config(tmp_path, config_text(**changes))
-    document, _ = gen_config.load_config(config)
+    document = gen_config.load_config(config)
     values = gen_config.resolve_settings(document)
     verdicts, revoke_bits = resolve_every_code_point(
         tmp_path, gen_config.header_for_config(config))
@@ -1395,7 +1403,7 @@ def test_a_code_point_the_library_resolves_differently_is_reported(
     text = path.read_text()
     assert text.count(edit[0]) == 1
     path.write_text(text.replace(edit[0], edit[1]))
-    document, _ = gen_config.load_config(DEFAULT_CONFIG)
+    document = gen_config.load_config(DEFAULT_CONFIG)
     values = gen_config.resolve_settings(document)
     verdicts, revoke_bits = resolve_every_code_point(tmp_path, default_header(),
                                                      lib_dir=lib)

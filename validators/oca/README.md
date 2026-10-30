@@ -114,6 +114,63 @@ both around:
 make BUILD=build/cap32 CONFIG=path/to/cap32.toml all
 ```
 
+**If you script builds, use GNU Make 4.x.** Older versions of make, such as the
+3.81 macOS ships, compare timestamps at whole-second granularity. A script that
+rewrites a source file and rebuilds within the same second gets `Nothing to be
+done` and a stale binary.
+
+Interactive editing never hits this, since seconds always pass between saving and
+building. Scripted A/B harnesses that swap files in and out do. `brew install make`
+provides 4.x as `gmake`, which resolves it:
+
+```sh
+gmake -C validators/oca check
+```
+
+Verified as a drop-in — 4.4.1 produces the same results as 3.81 for every target,
+with no warnings. On the bundled 3.81, `make clean` between variants is the
+workaround.
+
+Expected `make check` output (tail) — every unit test + every fixture
+round-trip passes:
+
+```
+315/315 passed
+PASS: all_constraints
+PASS: basic
+PASS: control_plane
+PASS: encrypted_aes
+PASS: encrypted_aes_pqc
+PASS: encrypted_aes_pqc_mldsa
+PASS: multi_image
+PASS: pqc_basic
+PASS: pqc_hybrid_ecdsa
+PASS: pqc_hybrid_rsa
+PASS: pqc_secure_mldsa
+PASS: pqc_secure_rsa
+PASS: secure_ecdsa
+PASS: secure_rsa
+PASS: secure_rsa_der
+PASS: secure_rsa_e3
+PASS: secure_rsa_e3_der
+17/17 passed
+check: complete
+```
+
+(Counts grow as tests and fixtures are added; the shape is what matters — every
+unit test and every fixture round-trip passes.)
+
+`make check` runs the unit tests under the build configuration it is given.
+pytest runs them again under configurations that, between them, turn off each
+variant, each signature algorithm, each DER encoding, each cipher and payload
+encryption as a whole (`tests/test_oca_build_config.py`). A test whose fixtures
+need something a configuration can turn off registers with
+`RUN_TEST_IF(needs, test)`, `needs` being an expression over the settings. In a
+build without it, the driver prints `NOT RUN: <test> (needs ...)` and counts it
+apart from the `N/N passed` summary. Tests of each setting's off branch run in
+every build and check what it refuses instead. Under the default configuration
+every test runs.
+
 #### Settings
 
 The default is the value `lib/oca_config.toml` states. A switch the file leaves
@@ -227,68 +284,11 @@ fail until it is done.
    code-point probe there then holds its row to the generator's list, and its
    revocation bit to its definition.
 
-**If you script builds, use GNU Make 4.x.** older version of make (such as 3.81 that 
-macOS ships) compares timestamps at whole-second granularity. A script that rewrites 
-a source file and rebuilds within the same second gets `Nothing to be done` and a stale
-binary. 
-
-Interactive editing never hits this, since seconds always pass between saving and
-building. Scripted A/B harnesses that swap files in and out do. `brew install make`
-provides 4.x as `gmake`, which resolves it:
-
-```sh
-gmake -C validators/oca check
-```
-
-Verified as a drop-in — 4.4.1 produces the same results as 3.81 for every target,
-with no warnings. On the bundled 3.81, `make clean` between variants is the
-workaround.
-
-Expected `make check` output (tail) — every unit test + every fixture
-round-trip passes:
-
-```
-315/315 passed
-PASS: all_constraints
-PASS: basic
-PASS: control_plane
-PASS: encrypted_aes
-PASS: encrypted_aes_pqc
-PASS: encrypted_aes_pqc_mldsa
-PASS: multi_image
-PASS: pqc_basic
-PASS: pqc_hybrid_ecdsa
-PASS: pqc_hybrid_rsa
-PASS: pqc_secure_mldsa
-PASS: pqc_secure_rsa
-PASS: secure_ecdsa
-PASS: secure_rsa
-PASS: secure_rsa_der
-PASS: secure_rsa_e3
-PASS: secure_rsa_e3_der
-17/17 passed
-check: complete
-```
-
-(Counts grow as tests and fixtures are added; the shape is what matters — every
-unit test and every fixture round-trip passes.)
-
-`make check` runs the unit tests under the build configuration it is given.
-pytest runs them again under configurations that, between them, turn off each
-variant, each signature algorithm, each DER encoding, each cipher and payload
-encryption as a whole (`tests/test_oca_build_config.py`). A test whose fixtures
-need something a configuration can turn off registers with
-`RUN_TEST_IF(needs, test)`, `needs` being an expression over the settings. In a
-build without it, the driver prints `NOT RUN: <test> (needs ...)` and counts it
-apart from the `N/N passed` summary. Tests of each setting's off branch run in
-every build and check what it refuses instead. Under the default configuration
-every test runs.
-
 ### Prerequisites
 
 - A host C toolchain (gcc 12+ or clang 16+) with `-std=c99` support.
 - GNU Make. 3.81 (what macOS bundles) works for ordinary use; **4.x is preferred
-  if you script builds** — see "Compile-time overrides" for why.
+  if you script builds** — see "Build configuration" for why.
 - OpenSSL 3.5 or later development headers, discovered via `pkg-config` (macOS:
   `brew install openssl@3`; Debian 13+ or Ubuntu 26.04+: `apt install libssl-dev`).
   The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. When `pkg-config`
@@ -410,8 +410,8 @@ integrator knows the current boundary:
   ML-DSA-87** — the library has no rules for the format's other RSA, ECDSA,
   EdDSA, ML-DSA and SLH-DSA algorithms, so no build configuration can turn one
   on (the generator stops the build). Manifests naming them are refused with
-  `OCA_FAIL_ALGORITHM_NOT_ENABLED`. Adding one means adding its row to
-  `lib/algorithms.c` and marking it implemented in `lib/scripts/gen_config.py`.
+  `OCA_FAIL_ALGORITHM_NOT_ENABLED`. "Implementing an algorithm" above lists
+  every step of adding one.
 - **Composite CBC-HMAC and AEAD (e.g. GCM-SIV) encryption modes, SM4, KDFs
   other than SP 800-108r1 with HMAC-SHA-256, and the KEM-unwrapped DEK**
   (`input_key_source` b010) — only plain AES-128-CBC and AES-256-CBC, derived

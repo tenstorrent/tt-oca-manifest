@@ -726,7 +726,7 @@ typedef enum oca_hw_result {
  * type in oca_crypto_blob_t, oca_decrypt_input_t or a callback's signature
  * would lay them out differently in a library and a callback built with
  * different settings. Compare a value against the enumerators as usual; a
- * switch over one no longer gets -Wswitch's check for a missing enumerator.
+ * switch over one gets no -Wswitch check for a missing enumerator.
  */
 typedef uint16_t oca_key_algorithm_t;
 
@@ -767,13 +767,11 @@ enum oca_blob_kind {
  * Two consequences worth keeping in mind before editing this enum:
  *
  *   - 0x00 means the field was never populated — a secure_boot = 0 bundle
- *     zeroes the signing fields. It does NOT mean "raw". An earlier revision
- *     used RAW = 0, which silently aliased "unset" onto a real encoding and
- *     left the format's raw-little-endian value (0x02) unrepresentable.
- *   - The type is a uint16_t, not the enum, so a byte outside this set is
- *     still a value it can hold; an enum object holding one is undefined in
- *     C++. Every value the packer can emit must still have an enumerator
- *     here, so a callback can name it.
+ *     zeroes the signing fields. It does NOT mean "raw", which is 0x02; a
+ *     raw encoding of 0 would alias "unset" onto a real encoding.
+ *   - oca_encoding_t is a uint16_t, so any byte is a value it can hold. Every
+ *     value the packer can emit has an enumerator here, so a callback can
+ *     name it.
  *
  * @note A drift test fails if these values diverge from the packer's
  *       OcaClassicSignatureEncoding / OcaClassicPublicKeyEncoding. That test
@@ -2544,10 +2542,10 @@ typedef struct oca_payload_encryption {
      *  policy check. */
     bool                  encrypted;
     /** The manifest's encryption_type, reported verbatim rather than validated.
-     *  OCA_ENCRYPTION_TYPE_NONE unless @c encrypted. A value outside the enum
-     *  means the manifest names a cipher this build does not implement, which
-     *  oca_check_payload() rejects when it gets there — deciding it here would
-     *  duplicate that check in a second place. */
+     *  OCA_ENCRYPTION_TYPE_NONE unless @c encrypted. A cipher this build does
+     *  not enable, enumerated or not, is refused by oca_check_payload() when it
+     *  gets there — deciding it here would duplicate that check in a second
+     *  place. */
     oca_encryption_type_t type;
     /** Provisioned-secret index, 1-based. Zero unless @c encrypted. Resolving
      *  this to an actual secret is the ingestor's job, done before validation. */

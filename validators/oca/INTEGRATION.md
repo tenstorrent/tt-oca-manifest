@@ -114,11 +114,10 @@ must exist before then. Place that rule after `OBJS` is defined, because Make
 expands a rule's targets when it reads the rule.
 
 **Several builds from one tree**, such as a ROM that ships a Classic-only and a
-dual-variant image, each get a configuration file, chosen by a variable. This
-replaces passing `OCA_SUPPORT_PQC=0` or `-DOCA_SUPPORT_CLASSIC=0` on each
-invocation. Give each build its own directory, so each generates its own header
-and no object built for one configuration is reused for another. Set these
-ahead of the lines above, in place of their `OCA_CONFIG`:
+dual-variant image, each get a configuration file, chosen by a variable. Give
+each build its own directory, so each generates its own header and no object
+built for one configuration is reused for another. Set these ahead of the lines
+above, in place of their `OCA_CONFIG`:
 
 ```make
 # make OCA_BUILD=classic_only builds from board/oca_classic_only.toml.
@@ -160,13 +159,18 @@ algorithms are on. `gen_config.py --print NAME` writes one setting's value,
 ```make
 OCA_GEN := python3 $(OCA_LIB)/scripts/gen_config.py --config $(OCA_CONFIG)
 
-ifeq ($(shell $(OCA_GEN) --print signature_pqc.ml_dsa_87),1)
+ML_DSA_87 := $(shell $(OCA_GEN) --print signature_pqc.ml_dsa_87 || echo error)
+ifeq ($(ML_DSA_87),error)
+$(error cannot read signature_pqc.ml_dsa_87 from $(OCA_CONFIG))
+endif
+ifeq ($(ML_DSA_87),1)
 SRCS += src/crypto/ml_dsa_87_verify.c
 endif
 ```
 
-An unknown name exits 2, so a misspelled setting stops the build rather than
-reading as off. C code needs neither: it tests the `OCA_CFG_*` macros of the
+An unknown name exits 2 with a message naming it. `$(shell)` discards an exit
+status, so the snippet turns a failure into `error` and stops the build;
+without that, a misspelled setting would read as off. C code needs neither: it tests the `OCA_CFG_*` macros of the
 header it compiles against.
 
 **Compile your own code against the same header.** `OCA_TOC_MAX_IMAGES` and
@@ -844,8 +848,10 @@ at every use" below.
 
 - **Signing description** (`oca_check_signing_description()`) — each enforced
   class's signature type, encodings and size fields must describe a key and
-  signature this library accepts, and every byte of its key and signature
-  fields past the declared size must be zero (`CRYPTO_FIELD_SIZE` otherwise).
+  signature this build accepts (`ALGORITHM_NOT_ENABLED` or
+  `ALGORITHM_RESERVED` for the algorithm or an encoding, `CRYPTO_FIELD_SIZE`
+  for a size), and every byte of its key and signature fields past the
+  declared size must be zero (`CRYPTO_FIELD_SIZE` otherwise).
   The signature fields lie outside the signed region, so a padding byte that
   were allowed to vary would give one signed manifest many byte-distinct
   bundles. These are

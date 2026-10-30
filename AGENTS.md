@@ -237,12 +237,13 @@ an algorithm is off when left out, unknown keys are errors, and the settings' fo
 (`-DOCA_TOC_MAX_IMAGES=32`, `-DOCA_SUPPORT_PQC=0`) fail the compile naming the key that
 replaced each. To add a setting, add it to `SETTINGS` in `gen_config.py`, to every file that
 states settings (`lib/oca_config.toml` and `test/build_configs/*.toml`), a missing-setting
-guard for its macro to `oca_config_check.h`, and its row to the README's Settings table;
-`tests/test_oca_build_config.py` fails until all four agree and a library source reads it. The
-tests write their configurations from the shipped default (`tests/oca_fixtures/build_config.py`)
-and read each default from that table, so no test needs the new setting. A new setting is required unless leaving it out
-keeps what every existing configuration builds — an algorithm, an encoding, or a declaration
-that only admits configurations otherwise refused. The `Setting` docstring states the rule and
+guard for its macro to `oca_config_check.h` (and, for a switch, its line in that header's
+0-or-1 check), and its row to the README's Settings table; `tests/test_oca_build_config.py`
+fails until all four agree and a library source reads it. The tests write their
+configurations from the shipped default (`tests/oca_fixtures/build_config.py`) and read each
+default from that table, so no test needs the new setting. A new setting is required unless
+leaving it out keeps what every existing configuration builds — an algorithm, an encoding, or a
+declaration that only admits configurations otherwise refused. The `Setting` docstring states the rule and
 a test holds every optional setting to it. `README.md`, "Build configuration", lists the
 settings. The header also names the build's portfolio, a digest of the settings that are not
 zero rather than of the file: `oca_build_portfolio_id()` returns its first 32 bits and
