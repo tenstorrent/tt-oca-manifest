@@ -27,7 +27,8 @@
  *
  * @param[in] level  Which level's range to locate.
  * @return Byte offset within the manifest body. Zero for a level outside the
- *         enumeration, which the enum makes unreachable.
+ *         enumeration, which oca_check_version_range() refuses before calling
+ *         here.
  */
 static unsigned level_offset(oca_version_level_t level)
 {

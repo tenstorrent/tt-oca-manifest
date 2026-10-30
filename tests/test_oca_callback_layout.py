@@ -1,19 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
-"""The layout of the structs the library hands its callbacks.
+"""The layout of the types the library and its callbacks exchange.
 
 A compiler chooses an enum's size, and -fshort-enums, or an ABI that makes it
 the default, shrinks every enum to a byte. A struct with an enum member then
 lays out differently in a library and a callback built with different
-settings, and the callback reads its fields at the wrong offsets. The crypto
-types the descriptors and callbacks carry are uint16_t, with an enum listing
-their values, so the layout cannot depend on it; these tests compile the
-public header both ways and require the same layout.
+settings, a callback reads its fields at the wrong offsets, and one that writes
+an enum through a pointer writes past the library's object. The public
+header's value types are fixed-width integers, with an enum listing their
+values, so none of this can depend on it; these tests compile the public
+header both ways and require the same sizes and layout.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,10 +29,28 @@ GENERATOR = os.path.join(LIB_DIR, "scripts", "gen_config.py")
 
 REQUIRE_VALIDATOR_ENV = "TT_BOOT_MANIFEST_REQUIRE_VALIDATOR"
 
-# The crypto types, each a uint16_t whatever the compiler's enum size.
-CRYPTO_TYPES = ["oca_key_algorithm_t", "oca_blob_kind_t", "oca_encoding_t",
-                "oca_primitive_type_t", "oca_hash_type_t", "oca_encryption_type_t",
-                "oca_kdf_t", "oca_key_source_t"]
+# Every value type of the public header, with its width in bytes whatever the
+# compiler's enum size.
+VALUE_TYPES = {
+    "oca_result_t": 4,
+    "oca_id_kind_t": 2,
+    "oca_lifecycle_level_t": 2,
+    "oca_version_level_t": 2,
+    "oca_lifecycle_token_t": 2,
+    "oca_hw_result_t": 2,
+    "oca_key_algorithm_t": 2,
+    "oca_blob_kind_t": 2,
+    "oca_encoding_t": 2,
+    "oca_primitive_type_t": 2,
+    "oca_hash_type_t": 2,
+    "oca_encryption_type_t": 2,
+    "oca_kdf_t": 2,
+    "oca_key_source_t": 2,
+}
+
+# A declaration whose type is an enum: a typedef of one, or an object,
+# member or parameter declared with an enum tag.
+ENUM_TYPED = re.compile(r"\btypedef\s+enum\b|\benum\s+\w+\s+\**\w+\s*[;,()\[]")
 
 # The members of the structs a callback receives that hold one of them, or the
 # secret selector beside them.
@@ -47,12 +67,12 @@ STRUCT_MEMBERS = {
 
 
 def layout_probe() -> str:
-    """C that prints every crypto type's size, every struct's size, and every
+    """C that prints every value type's size, every struct's size, and every
     member's offset and size."""
     lines = ['#include <stddef.h>', '#include <stdio.h>', '#include "oca_validator.h"',
              "int main(void)", "{"]
-    for crypto_type in CRYPTO_TYPES:
-        lines.append(f'    printf("{crypto_type} %zu\\n", sizeof({crypto_type}));')
+    for value_type in VALUE_TYPES:
+        lines.append(f'    printf("{value_type} %zu\\n", sizeof({value_type}));')
     for struct, members in STRUCT_MEMBERS.items():
         lines.append(f'    printf("{struct} %zu\\n", sizeof({struct}));')
         for member in members:
@@ -110,11 +130,31 @@ def test_every_descriptor_field_is_two_bytes(tmp_path):
             assert printed[f"{struct}.{member}"][1] == 2, f"{struct}.{member}"
 
 
-def test_every_crypto_type_is_two_bytes(tmp_path):
+def test_every_value_type_has_its_width_whatever_the_enum_size(tmp_path):
     require_cc()
-    printed = layout(tmp_path, LIB_DIR, "-fshort-enums")
-    for crypto_type in CRYPTO_TYPES:
-        assert printed[crypto_type] == (2,), crypto_type
+    for flags in ((), ("-fshort-enums",)):
+        printed = layout(tmp_path, LIB_DIR, *flags)
+        assert {name: printed[name][0] for name in VALUE_TYPES} == VALUE_TYPES, flags
+
+
+def test_the_public_header_types_nothing_as_an_enum():
+    """An enum type anywhere in the public header puts its size back in the
+    compiler's hands; VALUE_TYPES names the fixed-width types it uses instead."""
+    with open(os.path.join(LIB_DIR, "oca_validator.h")) as handle:
+        lines = handle.read().splitlines()
+    assert [line for line in lines if ENUM_TYPED.search(line)] == []
+
+
+def test_an_enum_typed_declaration_is_recognised():
+    """The search above is only worth having if it matches what it forbids."""
+    for declaration in ("typedef enum oca_hw_result {",
+                        "    enum oca_kdf           kdf;",
+                        "        enum oca_lifecycle_token *out_state);",
+                        "static enum oca_result check(void);"):
+        assert ENUM_TYPED.search(declaration), declaration
+    for declaration in ("enum oca_kdf {", "typedef uint16_t oca_kdf_t;",
+                        " * an enum type in a struct"):
+        assert not ENUM_TYPED.search(declaration), declaration
 
 
 def test_an_enum_member_is_reported(tmp_path):

@@ -45,13 +45,17 @@ static inline int oca_integrator_byte(uint16_t value)
  *
  * Kept apart from "not enabled" so a manifest that uses DER where the format
  * defines none is a malformed description, while one that uses a DER the
- * build turned off is a portfolio refusal.
+ * build turned off is a portfolio refusal. A byte, as the public header's
+ * value types are fixed-width, so a table row holds it without padding.
  */
-typedef enum oca_der_support {
+typedef uint8_t oca_der_support_t;
+
+/** @brief The values of oca_der_support_t. */
+enum oca_der_support {
     OCA_DER_UNDEFINED = 0,  /**< The format defines no DER form for this value. */
     OCA_DER_DISABLED  = 1,  /**< Defined, but the build configuration turns it off. */
     OCA_DER_ENABLED   = 2   /**< Defined and accepted. */
-} oca_der_support_t;
+};
 
 /**
  * @brief The format's encoding rules for one signature algorithm.
@@ -61,15 +65,12 @@ typedef enum oca_der_support {
  * size is the algorithm's maximum DER length.
  */
 typedef struct oca_signature_algorithm {
-    uint8_t  type;               /**< The signature_type_* value. */
-    uint16_t public_key_raw;     /**< Raw public key length. */
-    uint16_t signature_raw;      /**< Raw signature length. */
-    /** Whether a DER public key is accepted: an oca_der_support_t value, held
-     *  in a byte so a row is 10 bytes rather than the 20 an enum pads it to. */
-    uint8_t  public_key_der;
-    /** Whether a DER signature is accepted: an oca_der_support_t value. */
-    uint8_t  signature_der;
-    uint16_t signature_der_max;  /**< Largest DER signature; 0 when undefined. */
+    uint8_t           type;               /**< The signature_type_* value. */
+    uint16_t          public_key_raw;     /**< Raw public key length. */
+    uint16_t          signature_raw;      /**< Raw signature length. */
+    oca_der_support_t public_key_der;     /**< Whether a DER public key is accepted. */
+    oca_der_support_t signature_der;      /**< Whether a DER signature is accepted. */
+    uint16_t          signature_der_max;  /**< Largest DER signature; 0 when undefined. */
 } oca_signature_algorithm_t;
 
 /**

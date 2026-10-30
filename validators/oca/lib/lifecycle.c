@@ -23,8 +23,9 @@
  *
  * @param[in] level  Which level's bitmap to locate.
  * @return Byte offset within the manifest body. Zero for a level outside the
- *         enumeration — unreachable through the enum, and harmless because the
- *         caller only reads a bitmap it was going to compare anyway.
+ *         enumeration, which oca_check_lifecycle() refuses before calling here,
+ *         and harmless because the caller only reads a bitmap it was going to
+ *         compare anyway.
  */
 static unsigned level_offset(oca_lifecycle_level_t level)
 {

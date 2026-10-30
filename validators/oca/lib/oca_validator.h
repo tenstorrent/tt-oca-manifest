@@ -130,7 +130,7 @@ extern "C" {
 #define OCA_RECHECK_SECURITY_VERSION  OCA_CFG_RECHECK_SECURITY_VERSION
 
 /* ------------------------------------------------------------------ */
-/* Result enum                                                        */
+/* Result codes                                                       */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -145,8 +145,20 @@ extern "C" {
  *
  * A non-zero value never means "probably fine". Any code other than OCA_OK
  * means the manifest or payload MUST NOT be booted.
+ *
+ * Every type in this header that names a value from a list is a fixed-width
+ * integer, and a like-named enum lists its values. A compiler chooses an
+ * enum's size — under -fshort-enums, or an ABI that makes it the default, one
+ * byte — so an enum type in a struct, a callback's signature or a pointer a
+ * callback writes through would differ between a library and a callback built
+ * with different settings. Compare a value against the enumerators as usual; a
+ * switch over one gets no -Wswitch check for a missing enumerator. This type
+ * is 32 bits wide, as oca_secure_bool_t is, and the others 16.
  */
-typedef enum oca_result {
+typedef uint32_t oca_result_t;
+
+/** @brief The values of oca_result_t. */
+enum oca_result {
     OCA_OK                              = 0,  /**< Every check in this step passed. */
     OCA_FAIL_TRUNCATED                  = 1,  /**< Buffer is shorter than the structure being read. */
     OCA_FAIL_MAGIC                      = 2,  /**< Magic bytes match no known OCA variant. */
@@ -357,7 +369,7 @@ typedef enum oca_result {
      *  OCA_FAIL_ALGORITHM_NOT_ENABLED it says the manifest is malformed rather
      *  than outside this build's portfolio. */
     OCA_FAIL_ALGORITHM_RESERVED         = 40
-} oca_result_t;
+};
 
 /**
  * @brief Human-readable name for a result code.
@@ -632,7 +644,7 @@ oca_result_t oca_peek_manifest(const uint8_t *head, size_t head_len,
                                oca_manifest_peek_t *out);
 
 /* ------------------------------------------------------------------ */
-/* Addressing enums                                                   */
+/* Addressing types                                                   */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -643,11 +655,14 @@ oca_result_t oca_peek_manifest(const uint8_t *head, size_t head_len,
  * sits in a package, a package in a system — and a manifest may constrain any
  * combination of them independently.
  */
-typedef enum oca_id_kind {
+typedef uint16_t oca_id_kind_t;
+
+/** @brief The values of oca_id_kind_t. */
+enum oca_id_kind {
     OCA_ID_CHIPLET = 0,  /**< Per-die identity. */
     OCA_ID_PACKAGE = 1,  /**< Identity of the package the die is assembled into. */
     OCA_ID_SYSTEM  = 2   /**< Identity of the board or system. */
-} oca_id_kind_t;
+};
 
 /**
  * @brief Which level's lifecycle state a check addresses.
@@ -656,23 +671,29 @@ typedef enum oca_id_kind {
  * because the two are read through different callbacks and a mix-up would
  * compare a lifecycle state against an identity constraint.
  */
-typedef enum oca_lifecycle_level {
+typedef uint16_t oca_lifecycle_level_t;
+
+/** @brief The values of oca_lifecycle_level_t. */
+enum oca_lifecycle_level {
     OCA_LIFECYCLE_LEVEL_CHIPLET = 0,  /**< Per-die lifecycle state. */
     OCA_LIFECYCLE_LEVEL_PACKAGE = 1,  /**< Package-level lifecycle state. */
     OCA_LIFECYCLE_LEVEL_SYSTEM  = 2   /**< System-level lifecycle state. */
-} oca_lifecycle_level_t;
+};
 
 /**
  * @brief Which level's version a range check addresses.
  *
  * Mirrors oca_id_kind_t's hierarchy, for the same reason oca_lifecycle_level_t
- * does: a separate type keeps the three level enums from being interchanged.
+ * does: a separate type keeps the three level types from being interchanged.
  */
-typedef enum oca_version_level {
+typedef uint16_t oca_version_level_t;
+
+/** @brief The values of oca_version_level_t. */
+enum oca_version_level {
     OCA_VERSION_LEVEL_CHIPLET = 0,  /**< Per-die version. */
     OCA_VERSION_LEVEL_PACKAGE = 1,  /**< Package-level version. */
     OCA_VERSION_LEVEL_SYSTEM  = 2   /**< System-level version. */
-} oca_version_level_t;
+};
 
 /**
  * @brief Lifecycle state a device reports for a given level.
@@ -680,7 +701,10 @@ typedef enum oca_version_level {
  * The values are the manifest's own lifecycle encoding, so a reported state is
  * compared directly against the manifest's permitted set with no translation.
  */
-typedef enum oca_lifecycle_token {
+typedef uint16_t oca_lifecycle_token_t;
+
+/** @brief The values of oca_lifecycle_token_t. */
+enum oca_lifecycle_token {
     OCA_LIFECYCLE_TEST_DEV    = 0,     /**< Test or development part. */
     OCA_LIFECYCLE_PROD        = 1,     /**< Production. */
     OCA_LIFECYCLE_PROD_END    = 2,     /**< End of production life. */
@@ -692,7 +716,7 @@ typedef enum oca_lifecycle_token {
      *  constraint — an unreadable lifecycle fails the check rather than being
      *  treated as permissive. */
     OCA_LIFECYCLE_UNKNOWN     = 0xFF
-} oca_lifecycle_token_t;
+};
 
 /**
  * @brief Outcome of a hardware-readback callback.
@@ -704,11 +728,14 @@ typedef enum oca_lifecycle_token {
  *       "constraint not applicable". A device that cannot report its identity
  *       must not boot a manifest that constrains it.
  */
-typedef enum oca_hw_result {
+typedef uint16_t oca_hw_result_t;
+
+/** @brief The values of oca_hw_result_t. */
+enum oca_hw_result {
     OCA_HW_OK          = 0,  /**< Value supplied. */
     OCA_HW_UNAVAILABLE = 1,  /**< Caller cannot supply this value (e.g. CLI flag absent). */
     OCA_HW_ERROR       = 2   /**< Read was attempted and failed. */
-} oca_hw_result_t;
+};
 
 /**
  * @brief Signature algorithm family a key, signature, or device state belongs to.
@@ -719,14 +746,7 @@ typedef enum oca_hw_result {
  * backend to consult without interpreting primitive bytes — the classical and
  * PQC signature_type value spaces both reserve 0xF0+ for integrators, so the
  * primitive value alone cannot distinguish the families there.
- *
- * This type and the other crypto types below are uint16_t, and a like-named
- * enum lists each one's values. A compiler chooses an enum's size — under
- * -fshort-enums, or an ABI that makes it the default, one byte — so an enum
- * type in oca_crypto_blob_t, oca_decrypt_input_t or a callback's signature
- * would lay them out differently in a library and a callback built with
- * different settings. Compare a value against the enumerators as usual; a
- * switch over one gets no -Wswitch check for a missing enumerator.
+
  */
 typedef uint16_t oca_key_algorithm_t;
 

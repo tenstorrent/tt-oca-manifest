@@ -6183,7 +6183,7 @@ static const oca_signature_algorithm_t *row_if_enabled(oca_key_algorithm_t famil
 /* Each row the build enables carries the format's encoded lengths, and the DER
  * rules the build chooses; an algorithm it leaves off has no row. A row's DER
  * rules are bytes, so on an ABI that aligns a uint16_t to two bytes a row is
- * 10 bytes, not the 20 two enum members pad it to. */
+ * 10 bytes. */
 TEST(test_signature_rows_carry_the_format_encoded_lengths)
 {
     ASSERT_EQ_INT(sizeof(oca_signature_algorithm_t), 10);

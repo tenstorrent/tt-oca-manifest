@@ -276,30 +276,40 @@ def scan_file(path):
     return functions
 
 
-def enum_members_by_type():
-    """Map each typedef'd enum name to its enumerators.
+def enum_members_by_type(lib_dir=None):
+    """Map each value type's name to the enumerators that list its values.
 
     Per-type rather than a single oca_result_t set: the hardware callbacks
     return oca_hw_result_t, and validating their @retval entries against the
-    result enum would report every correct one as unknown. Keyed by the typedef
+    result codes would report every correct one as unknown. Keyed by the type
     name so a block documenting OCA_HW_OK on an oca_result_t function is still
     caught.
+
+    Reads both shapes a header uses: `typedef enum tag { ... } name_t;`, and a
+    fixed-width `name_t` whose values `enum name { ... };` lists.
     """
     members = {}
-    for name in sorted(os.listdir(LIB_DIR)):
+    lib_dir = lib_dir or LIB_DIR
+    for name in sorted(os.listdir(lib_dir)):
         if not name.endswith(".h") or name in SKIPPED_FILES:
             continue
-        with open(os.path.join(LIB_DIR, name), encoding="utf-8") as handle:
+        with open(os.path.join(lib_dir, name), encoding="utf-8") as handle:
             code = make_code_view(handle.read())
-        for match in re.finditer(r"typedef\s+enum\s+\w*\s*\{", code):
+        for match in re.finditer(r"\b(typedef\s+)?enum\s+(\w*)\s*\{", code):
             body_start = code.index("{", match.start())
             body_end = match_brace(code, body_start)
             if body_end < 0:
                 continue
-            trailer = re.match(r"\s*(\w+)\s*;", code[body_end:body_end + 120])
-            if not trailer:
+            if match.group(1):
+                trailer = re.match(r"\s*(\w+)\s*;", code[body_end:body_end + 120])
+                if not trailer:
+                    continue
+                type_name = trailer.group(1)
+            elif match.group(2):
+                type_name = match.group(2) + "_t"
+            else:
                 continue
-            members[trailer.group(1)] = set(
+            members[type_name] = set(
                 re.findall(r"\b(OCA_[A-Z0-9_]+)\b", code[body_start:body_end]))
     return members
 
@@ -441,6 +451,10 @@ def main(argv=None):
         enum_members = enum_members_by_type()
     except OSError as error:
         print(f"error: {error}", file=sys.stderr)
+        return 2
+    if not enum_members.get("oca_result_t"):
+        print("error: no enumerators list the oca_result_t values, so no @retval "
+              "could be checked", file=sys.stderr)
         return 2
 
     findings = []

@@ -1282,18 +1282,22 @@ Changes an existing integration should check. Most show only at run time.
 - **The decryption input names the derivation.** `oca_decrypt_input_t` gains
   `kdf` and `key_source` (new types `oca_kdf_t`, `oca_key_source_t`), so a
   backend dispatches on what the manifest declares instead of assuming it.
-- **The crypto types are `uint16_t`.** `oca_key_algorithm_t`,
-  `oca_blob_kind_t`, `oca_encoding_t`, `oca_primitive_type_t`,
-  `oca_hash_type_t`, `oca_encryption_type_t`, `oca_kdf_t` and
-  `oca_key_source_t` are typedefs of `uint16_t`, and the enum of the same name
+- **The value types are fixed-width integers.** `oca_result_t` is a
+  `uint32_t`, and every other type that names a value from a list —
+  `oca_id_kind_t`, `oca_lifecycle_level_t`, `oca_version_level_t`,
+  `oca_lifecycle_token_t`, `oca_hw_result_t` and the crypto types
+  `oca_key_algorithm_t`, `oca_blob_kind_t`, `oca_encoding_t`,
+  `oca_primitive_type_t`, `oca_hash_type_t`, `oca_encryption_type_t`,
+  `oca_kdf_t` and `oca_key_source_t` — a `uint16_t`. The enum of the same name
   without the `_t` lists each one's values. A compiler chooses an enum's size,
   so as enums they laid `oca_crypto_blob_t` and `oca_decrypt_input_t` out
   differently in a library and a callback built with and without
-  `-fshort-enums`. `oca_payload_encryption_t::type` is an
+  `-fshort-enums`, and a `get_lifecycle_state` built without it wrote four
+  bytes into a one-byte token. `oca_payload_encryption_t::type` is an
   `oca_encryption_type_t` too, where it was a byte. Code that names the types
-  and compares against the enumerators compiles unchanged. A `switch` over one no longer gets
-  `-Wswitch`'s check for a missing enumerator, and code that wrote
-  `enum oca_encoding` for the type must use `oca_encoding_t`.
+  and compares against the enumerators compiles unchanged. A `switch` over one
+  no longer gets `-Wswitch`'s check for a missing enumerator, and code that
+  wrote `enum oca_encoding` for a type must use `oca_encoding_t`.
 - **Padding past a declared size must be zero.** Under secure boot, a key or
   signature field of an enforced class that holds a non-zero byte past its
   declared size is `CRYPTO_FIELD_SIZE`. This packer has always written zeros
