@@ -467,17 +467,24 @@ def test_the_header_holds_every_setting_and_its_portfolio(tmp_path):
     assert "limits.toc_max_images=32\n" in text
     assert "variants.pqc" not in text
     assert text.splitlines() == sorted(text.splitlines())
-    digest = gen_config.hashlib.sha256(text.encode("ascii")).hexdigest()
-    assert f'#define OCA_CFG_PORTFOLIO_SHA256 "{digest}"\n' in header
-    assert f"#define OCA_CFG_PORTFOLIO_ID 0x{digest[:8]}u\n" in header
+    digest = gen_config.hashlib.sha256(text.encode("ascii")).digest()
+    assert header_portfolio_digest(header) == digest
+    assert f"#define OCA_CFG_PORTFOLIO_ID 0x{digest[:4].hex()}u\n" in header
 
 
 def header_portfolio_text(header):
     """The OCA_CFG_PORTFOLIO_TEXT a header holds, as the string C reads it."""
     block = header[header.index("#define OCA_CFG_PORTFOLIO_TEXT"):
-                   header.index("#define OCA_CFG_PORTFOLIO_SHA256")]
+                   header.index("#define OCA_CFG_PORTFOLIO_DIGEST")]
     return "".join(literal.replace("\\n", "\n")
                    for literal in re.findall(r'"([^"]*)"', block))
+
+
+def header_portfolio_digest(header):
+    """The bytes of the OCA_CFG_PORTFOLIO_DIGEST initializer a header holds."""
+    block = header[header.index("#define OCA_CFG_PORTFOLIO_DIGEST"):
+                   header.index("#define OCA_CFG_PORTFOLIO_ID")]
+    return bytes(int(byte, 16) for byte in re.findall(r"0x([0-9a-f]{2})\b", block))
 
 
 def portfolio_of(directory, text, name="board.toml"):
@@ -804,7 +811,7 @@ def test_every_configuration_macro_the_library_reads_is_generated():
     """A misspelled macro in an #if is 0, which would silently turn a feature off."""
     generated = {s.macro for s in IMPLEMENTED} | {
         "OCA_CFG_FORMAT", "OCA_CFG_IS_SWITCH", "OCA_CFG_PORTFOLIO_TEXT",
-        "OCA_CFG_PORTFOLIO_SHA256", "OCA_CFG_PORTFOLIO_ID"}
+        "OCA_CFG_PORTFOLIO_DIGEST", "OCA_CFG_PORTFOLIO_ID"}
     for name, text in _library_sources():
         for macro in set(re.findall(r"\bOCA_CFG_[A-Z0-9_]+\b", text)):
             assert macro in generated, f"{name} reads {macro}, which nothing generates"
@@ -880,16 +887,20 @@ def default_header():
     return gen_config.header_for_config(DEFAULT_CONFIG)
 
 
+def define_pattern(macro):
+    """One #define in a generated header, continuation lines included."""
+    return re.compile(rf"^#define {macro} (?:.*\\\n)*.*\n", re.M)
+
+
 def set_define(header, macro, value):
     """Replace one #define's value in a generated header."""
-    edited, count = re.subn(rf"^#define {macro} .*$", f"#define {macro} {value}",
-                            header, flags=re.M)
+    edited, count = define_pattern(macro).subn(f"#define {macro} {value}\n", header)
     assert count == 1
     return edited
 
 
 def drop_define(header, macro):
-    edited, count = re.subn(rf"^#define {macro} .*\n", "", header, flags=re.M)
+    edited, count = define_pattern(macro).subn("", header)
     assert count == 1
     return edited
 
@@ -914,6 +925,9 @@ UNGENERATED_HEADERS = [
     pytest.param({"drop": ["OCA_CFG_PORTFOLIO_ID"]},
                  "oca_config.h is missing OCA_CFG_PORTFOLIO_ID",
                  id="no-portfolio"),
+    pytest.param({"drop": ["OCA_CFG_PORTFOLIO_DIGEST"]},
+                 "oca_config.h is missing OCA_CFG_PORTFOLIO_DIGEST",
+                 id="no-portfolio-digest"),
     pytest.param({"values": {"OCA_CFG_VARIANT_PQC": "2"}},
                  "holds a true/false setting that is neither 0 nor 1",
                  id="variant-not-bool"),
@@ -983,6 +997,19 @@ def test_a_header_the_generator_would_not_write_is_refused(tmp_path, edits, mess
     result = compile_probe(tmp_path, edit_header(default_header(), **edits))
     assert result.returncode != 0
     assert message in result.stderr
+
+
+@pytest.mark.parametrize("digest, compiles", [
+    pytest.param(", ".join(["0x5a"] * 32), True, id="whole"),
+    pytest.param(", ".join(["0x5a"] * 31), False, id="short"),
+    pytest.param(", ".join(["0x5a"] * 33), False, id="long"),
+])
+def test_the_library_holds_the_portfolio_digest_to_its_size(tmp_path, digest, compiles):
+    """An initializer short of the digest would leave its last bytes zero, so
+    the library stops the build unless the header states exactly 32 bytes."""
+    header = set_define(default_header(), "OCA_CFG_PORTFOLIO_DIGEST", digest)
+    result = compile_probe(tmp_path, header, probe_text='#include "oca_validator.c"\n')
+    assert (result.returncode == 0) == compiles, result.stderr
 
 
 @pytest.mark.parametrize("setting", IMPLEMENTED, ids=[s.name for s in IMPLEMENTED])

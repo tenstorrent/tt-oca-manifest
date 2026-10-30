@@ -209,12 +209,14 @@ static int parse_lifecycle(const char *s, oca_lifecycle_token_t *out)
 
 void cli_print_build_info(void)
 {
-    /* The identifier comes from the library, the rest from the header it was
-     * compiled against, so a mismatch between the two shows here. */
-    printf("portfolio 0x%08" PRIx32 "\n"
-           "sha256 %s\n"
-           "%s",
-           oca_build_portfolio_id(), OCA_CFG_PORTFOLIO_SHA256, OCA_CFG_PORTFOLIO_TEXT);
+    /* The label and digest come from the library, the text from the header it
+     * was compiled against, so a mismatch between the two shows here. */
+    const uint8_t *digest = oca_build_portfolio_digest();
+    printf("portfolio 0x%08" PRIx32 "\nsha256 ", oca_build_portfolio_id());
+    for (unsigned i = 0u; i < OCA_PORTFOLIO_DIGEST_SIZE; ++i) {
+        printf("%02x", digest[i]);
+    }
+    printf("\n%s", OCA_CFG_PORTFOLIO_TEXT);
 }
 
 void cli_print_help(void)

@@ -20,9 +20,23 @@
 #include "selector.h"
 #include "version_range.h"
 
+/** The portfolio digest the generated header states. */
+static const uint8_t PORTFOLIO_DIGEST[] = { OCA_CFG_PORTFOLIO_DIGEST };
+
+/** Stops the build when the header states other than a whole digest, which an
+ *  initializer short of it would otherwise pad with zeros. */
+typedef char oca_portfolio_digest_is_whole[
+    (sizeof PORTFOLIO_DIGEST == OCA_PORTFOLIO_DIGEST_SIZE) ? 1 : -1];
+
+const uint8_t *oca_build_portfolio_digest(void)
+{
+    return PORTFOLIO_DIGEST;
+}
+
 uint32_t oca_build_portfolio_id(void)
 {
-    return OCA_CFG_PORTFOLIO_ID;
+    return ((uint32_t)PORTFOLIO_DIGEST[0] << 24) | ((uint32_t)PORTFOLIO_DIGEST[1] << 16)
+           | ((uint32_t)PORTFOLIO_DIGEST[2] << 8) | (uint32_t)PORTFOLIO_DIGEST[3];
 }
 
 const char *oca_result_str(oca_result_t r)

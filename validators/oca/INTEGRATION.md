@@ -142,14 +142,18 @@ must accept, and size the image by the callbacks it wires.
 
 **Every build names its portfolio.** The generated header states the settings
 that are not zero, one `name=value` line each in name order, as
-`OCA_CFG_PORTFOLIO_TEXT`; their SHA-256 as `OCA_CFG_PORTFOLIO_SHA256`; and the
-first 32 bits of that as `OCA_CFG_PORTFOLIO_ID`, which
-`oca_build_portfolio_id()` returns. A device can log, report or attest it, and a
-harness can tell which configuration built the library it drives:
-`oca-validate --build-info` prints all three. The identifier depends on the
-settings alone, so two files that build the same library share it, whatever
-their names, comments or order, and a library upgrade that adds a switch left
-off does not change it.
+`OCA_CFG_PORTFOLIO_TEXT`; their SHA-256 as `OCA_CFG_PORTFOLIO_DIGEST`; and the
+first 32 bits of that as `OCA_CFG_PORTFOLIO_ID`. `oca_build_portfolio_digest()`
+returns the digest, which is what a device attests or a release gate holds
+against its approved portfolios. `oca_build_portfolio_id()` returns the 32-bit
+label, for a log line: it is short enough that a configuration can be searched
+for whose label matches another's, so never attest it. `oca-validate
+--build-info` prints all three, so a harness can tell which configuration built
+the library it drives. The digest depends on the settings alone, so two files
+that build the same library share it, whatever their names, comments or order,
+and a library upgrade that adds a switch left off does not change it. The
+library reports what its generated header states; `gen_config.py --check` is
+what catches a header that no longer matches its file.
 
 **Choose what else to compile from the same file.** The callbacks an algorithm
 needs are yours to compile, and the configuration already says which

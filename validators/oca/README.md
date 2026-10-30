@@ -84,11 +84,13 @@ incremental while editing the file, or switching `CONFIG`, rebuilds what
 depends on it. `INTEGRATION.md`, "Configuring the build", covers generating the
 header from another build system.
 
-The header also names the build's portfolio: `OCA_CFG_PORTFOLIO_ID` is the first
-32 bits of a SHA-256 over the settings that are not zero, so it depends on the
-settings alone and not on the file's name, comments or order. The library
-returns it from `oca_build_portfolio_id()`, and `build/test/oca-validate
---build-info` prints it with the settings behind it. `gen_config.py --print NAME`
+The header also names the build's portfolio: `OCA_CFG_PORTFOLIO_DIGEST` is a
+SHA-256 over the settings that are not zero, so it depends on the settings alone
+and not on the file's name, comments or order, and `OCA_CFG_PORTFOLIO_ID` is its
+first 32 bits. The library returns the digest from
+`oca_build_portfolio_digest()` and the shorter label from
+`oca_build_portfolio_id()`, and `build/test/oca-validate --build-info` prints
+both with the settings behind them. `gen_config.py --print NAME`
 and `--print-all` give a build system a setting's value without parsing TOML:
 
 ```sh

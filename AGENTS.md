@@ -246,8 +246,9 @@ leaving it out keeps what every existing configuration builds — an algorithm, 
 declaration that only admits configurations otherwise refused. The `Setting` docstring states the rule and
 a test holds every optional setting to it. `README.md`, "Build configuration", lists the
 settings. The header also names the build's portfolio, a digest of the settings that are not
-zero rather than of the file: `oca_build_portfolio_id()` returns its first 32 bits and
-`oca-validate --build-info` prints it. `gen_config.py --print NAME` and `--print-all` give a
+zero rather than of the file: `oca_build_portfolio_digest()` returns it,
+`oca_build_portfolio_id()` its first 32 bits as a short label, and `oca-validate --build-info`
+prints both. `gen_config.py --print NAME` and `--print-all` give a
 build system a setting's value without parsing TOML.
 
 The algorithm sections are the build's portfolio: an algorithm the file does not name is off.

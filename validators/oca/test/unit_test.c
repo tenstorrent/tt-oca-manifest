@@ -1449,8 +1449,18 @@ static const size_t UNSUPPORTED_HASH_TYPE_COUNT =
 
 /* The library reports the portfolio its header names; the CLI test holds that
  * to what the generator says of the configuration file. */
+/* The library reports the digest its header states, and a label that is the
+ * digest's first 32 bits, big-endian, and the header's own label. */
 TEST(test_the_library_reports_its_portfolio)
 {
+    static const uint8_t stated[] = { OCA_CFG_PORTFOLIO_DIGEST };
+    const uint8_t *digest = oca_build_portfolio_digest();
+    ASSERT_TRUE(digest != NULL);
+    ASSERT_EQ_INT(sizeof stated, OCA_PORTFOLIO_DIGEST_SIZE);
+    ASSERT_EQ_INT(memcmp(digest, stated, sizeof stated), 0);
+    const uint32_t label = ((uint32_t)digest[0] << 24) | ((uint32_t)digest[1] << 16)
+                           | ((uint32_t)digest[2] << 8) | (uint32_t)digest[3];
+    ASSERT_TRUE(oca_build_portfolio_id() == label);
     ASSERT_TRUE(oca_build_portfolio_id() == OCA_CFG_PORTFOLIO_ID);
 }
 
