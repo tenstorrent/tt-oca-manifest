@@ -875,9 +875,10 @@ typedef struct oca_crypto_blob {
      *  value is generally larger than the encoded content. */
     size_t               field_length;
     /** Valid bytes at the start of @c bytes: the manifest's own size field for
-     *  this blob (signature_size_* or public_key_size_*), which
-     *  oca_check_signing_description() has held to the declared algorithm and
-     *  encoding ahead of both callbacks in the composed pipeline. Exact for
+     *  this blob (signature_size_* or public_key_size_*), held to the declared
+     *  algorithm and encoding as oca_check_signing_description() holds it. The
+     *  blob is built from that same read of the field, so this is the length
+     *  that was checked even if the body has changed since. Exact for
      *  every raw value and for a DER public key, whose DER must occupy all of
      *  it; for a DER ECDSA signature it is the algorithm's maximum DER length,
      *  and the DER framing gives the encoded length within it. Read no further

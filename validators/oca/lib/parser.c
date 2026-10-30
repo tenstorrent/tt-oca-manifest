@@ -254,6 +254,25 @@ static oca_result_t required_size(oca_key_algorithm_t family, oca_encoding_t enc
     return OCA_OK;
 }
 
+/**
+ * @brief Empty a blob: no bytes, no length, no algorithm.
+ *
+ * Field by field rather than by a structure assignment, which a compiler may
+ * turn into a memset() call this freestanding library does not provide.
+ *
+ * @param[out] blob  The blob to empty.
+ */
+static void empty_blob(oca_crypto_blob_t *blob)
+{
+    blob->bytes          = 0;
+    blob->field_length   = 0u;
+    blob->length         = 0u;
+    blob->kind           = 0u;
+    blob->encoding       = 0u;
+    blob->primitive_type = 0u;
+    blob->key_algorithm  = 0u;
+}
+
 /** @brief Where one signature class keeps its signing description. */
 typedef struct class_description {
     oca_key_algorithm_t family;      /**< Which class's algorithm table applies. */
@@ -275,8 +294,10 @@ typedef struct class_description {
  * one this build does not enable, or a reserved value, is reported as that
  * rather than as a size that happens not to fit.
  *
- * @param[in] body  Whole variant body.
- * @param[in] d     Where the class's fields are.
+ * @param[in]  body  Whole variant body.
+ * @param[in]  d     Where the class's fields are.
+ * @param[out] out   Receives the blobs built from the values checked, on
+ *                   OCA_OK only; the caller has emptied it.
  * @retval OCA_OK                          The description is consistent.
  * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  The algorithm, an integrator
  *                                         encoding, or a DER encoding it uses
@@ -288,7 +309,8 @@ typedef struct class_description {
  * @return The first failing step's result, always one of the codes above.
  */
 static oca_result_t check_class_description(const uint8_t *body,
-                                             const class_description_t *d)
+                                             const class_description_t *d,
+                                             oca_class_blobs_t *out)
 {
     oca_result_t status;
     const oca_primitive_type_t type = body[d->off_type];
@@ -304,8 +326,8 @@ static oca_result_t check_class_description(const uint8_t *body,
      * exponent, so its declared size is taken as exact; the field bound below
      * is all that constrains it. A DER signature declares the algorithm's
      * maximum DER length. */
-    uint16_t sig_size = oca_le_u16(body + d->off_signature_size);
-    uint16_t key_size = oca_le_u16(body + d->off_public_key_size);
+    const uint16_t sig_size = oca_le_u16(body + d->off_signature_size);
+    const uint16_t key_size = oca_le_u16(body + d->off_public_key_size);
     uint16_t want_sig;
     uint16_t want_key;
     status = required_size(d->family, signature_encoding,
@@ -336,12 +358,30 @@ static oca_result_t check_class_description(const uint8_t *body,
                             key_size)) {
         return OCA_FAIL_CRYPTO_FIELD_SIZE;
     }
+
+    out->signature.bytes           = body + d->off_signature;
+    out->signature.field_length    = d->len_signature;
+    out->signature.length          = sig_size;
+    out->signature.kind            = OCA_BLOB_SIGNATURE;
+    out->signature.encoding        = signature_encoding;
+    out->signature.primitive_type  = type;
+    out->signature.key_algorithm   = d->family;
+    out->public_key.bytes          = body + d->off_public_key;
+    out->public_key.field_length   = d->len_public_key;
+    out->public_key.length         = key_size;
+    out->public_key.kind           = OCA_BLOB_PUBLIC_KEY;
+    out->public_key.encoding       = public_key_encoding;
+    out->public_key.primitive_type = type;
+    out->public_key.key_algorithm  = d->family;
     return OCA_OK;
 }
 
 oca_result_t oca_check_class_description(const uint8_t *body,
-                                         oca_key_algorithm_t algo)
+                                         oca_key_algorithm_t algo,
+                                         oca_class_blobs_t *out)
 {
+    empty_blob(&out->signature);
+    empty_blob(&out->public_key);
     oca_result_t status;
     const oca_variant_t *v = oca_variant_for_body(body, &status);
     if (v == 0) {
@@ -364,7 +404,7 @@ oca_result_t oca_check_class_description(const uint8_t *body,
             .off_public_key          = OCA_PQC_OFF_PUBLIC_KEY,
             .len_public_key          = OCA_PQC_LEN_PUBLIC_KEY,
         };
-        return check_class_description(body, &pqc);
+        return check_class_description(body, &pqc, out);
     }
     /* signature_classic is the one variant-positioned field here, so its
      * offset comes from the descriptor. */
@@ -380,7 +420,7 @@ oca_result_t oca_check_class_description(const uint8_t *body,
         .off_public_key          = OCA_OFF_PUBLIC_KEY,
         .len_public_key          = OCA_LEN_PUBLIC_KEY,
     };
-    return check_class_description(body, &classical);
+    return check_class_description(body, &classical, out);
 }
 #endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
@@ -420,9 +460,11 @@ oca_result_t oca_check_signing_description(const uint8_t *body,
     }
 
     /* Skipped only on an exact OCA_SECURE_FALSE, so a corrupted
-     * enforcement word runs a class's check rather than skipping it. */
+     * enforcement word runs a class's check rather than skipping it. The blobs
+     * are unused here: each check that hands them to a callback builds its own. */
+    oca_class_blobs_t blobs;
     if (ctx->secure_boot_enforce_classic != OCA_SECURE_FALSE) {
-        status = oca_check_class_description(body, OCA_KEY_ALGO_CLASSIC);
+        status = oca_check_class_description(body, OCA_KEY_ALGO_CLASSIC, &blobs);
         if (status != OCA_OK) {
             return status;
         }
@@ -434,7 +476,7 @@ oca_result_t oca_check_signing_description(const uint8_t *body,
         if (ctx->manifest_is_pqc != OCA_SECURE_TRUE) {
             return OCA_FAIL_SIGNATURE_CLASS_CONTROL;
         }
-        status = oca_check_class_description(body, OCA_KEY_ALGO_PQC);
+        status = oca_check_class_description(body, OCA_KEY_ALGO_PQC, &blobs);
         if (status != OCA_OK) {
             return status;
         }

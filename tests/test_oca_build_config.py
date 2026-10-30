@@ -1218,7 +1218,7 @@ def test_the_unit_tests_pass_under_every_build_configuration(tmp_path, changes,
 SECURE_BOOT_ONLY = {
     "authorize_key_by_class", "check_revocation_by_class", "verify_signature_by_class",
     "check_class_algorithm", "check_cohort", "classical_revoke_bit", "pqc_revoke_bit",
-    "commit_revocation_for_family", "padding_is_dirty", "required_size",
+    "commit_revocation_for_family", "padding_is_dirty", "required_size", "empty_blob",
     "check_class_description", "oca_check_class_description", "oca_signature_algorithm",
     "oca_encoding_status", "classical_signature_defined", "pqc_signature_defined",
     "oca_secure_boot_confirm_classes", "check_encrypted_payload",

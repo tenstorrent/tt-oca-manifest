@@ -23,6 +23,7 @@
 #include "oca_layout.h"
 #include "oca_layout_classic.h"
 #include "oca_layout_pqc.h"   /* PQC body size, for the cross-variant checks */
+#include "parser.h"
 #include "unit_helpers.h"
 
 /* What a test's fixtures need the build configuration to enable, for
@@ -6232,6 +6233,106 @@ TEST(test_signature_rows_carry_the_format_encoded_lengths)
         ASSERT_EQ_INT(ml_dsa->signature_der, OCA_DER_UNDEFINED);
     }
 }
+
+/* Fill both blobs with a pattern no check would leave behind, so a field the
+ * description check did not write is seen. */
+static void scribble_blobs(oca_class_blobs_t *blobs)
+{
+    memset(blobs, 0xA5, sizeof *blobs);
+}
+
+/* Whether a blob names nothing: no bytes, no length, no algorithm. */
+static int blob_is_empty(const oca_crypto_blob_t *blob)
+{
+    return blob->bytes == NULL && blob->field_length == 0u && blob->length == 0u
+        && blob->kind == 0u && blob->encoding == 0u && blob->primitive_type == 0u
+        && blob->key_algorithm == 0u;
+}
+
+/* Assert one blob is the given field as the description check validated it. */
+static void assert_blob(const oca_crypto_blob_t *blob, const uint8_t *bytes,
+                        size_t field_length, size_t length, oca_blob_kind_t kind,
+                        oca_primitive_type_t primitive, oca_key_algorithm_t family)
+{
+    ASSERT_TRUE(blob->bytes == bytes);
+    ASSERT_EQ_INT(blob->field_length, field_length);
+    ASSERT_EQ_INT(blob->length, length);
+    ASSERT_EQ_INT(blob->kind, kind);
+    ASSERT_EQ_INT(blob->encoding, OCA_ENCODING_RAW);
+    ASSERT_EQ_INT(blob->primitive_type, primitive);
+    ASSERT_EQ_INT(blob->key_algorithm, family);
+}
+
+/* The description check hands back the classical key and signature exactly as
+ * it validated them, so a caller never reads the signing fields a second
+ * time. */
+TEST(test_the_classical_description_check_returns_the_blobs_it_validated)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(buf);
+    oca_class_blobs_t blobs;
+    scribble_blobs(&blobs);
+    ASSERT_EQ_INT(oca_check_class_description(buf, OCA_KEY_ALGO_CLASSIC, &blobs), OCA_OK);
+    assert_blob(&blobs.signature, buf + OCA_CLASSIC_OFF_SIGNATURE, OCA_LEN_SIGNATURE,
+                384u, OCA_BLOB_SIGNATURE, OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256,
+                OCA_KEY_ALGO_CLASSIC);
+    assert_blob(&blobs.public_key, buf + OCA_OFF_PUBLIC_KEY, OCA_LEN_PUBLIC_KEY,
+                388u, OCA_BLOB_PUBLIC_KEY, OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256,
+                OCA_KEY_ALGO_CLASSIC);
+}
+
+TEST(test_the_pqc_description_check_returns_the_blobs_it_validated)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    build_secure_pqc_manifest(buf, 0x05u);
+    oca_class_blobs_t blobs;
+    scribble_blobs(&blobs);
+    ASSERT_EQ_INT(oca_check_class_description(buf, OCA_KEY_ALGO_PQC, &blobs), OCA_OK);
+    assert_blob(&blobs.signature, buf + OCA_PQC_OFF_SIGNATURE_PQC,
+                OCA_PQC_LEN_SIGNATURE_PQC, 4627u, OCA_BLOB_SIGNATURE,
+                OCA_PRIMITIVE_ML_DSA_87, OCA_KEY_ALGO_PQC);
+    assert_blob(&blobs.public_key, buf + OCA_PQC_OFF_PUBLIC_KEY, OCA_PQC_LEN_PUBLIC_KEY,
+                2592u, OCA_BLOB_PUBLIC_KEY, OCA_PRIMITIVE_ML_DSA_87, OCA_KEY_ALGO_PQC);
+}
+
+/* A description the check refuses leaves both blobs empty, whatever they held
+ * before, so a refusal a fault skips past hands a callback no length and no
+ * algorithm rather than fields nothing checked. */
+TEST(test_a_refused_description_returns_empty_blobs)
+{
+    static const struct {
+        size_t       off;
+        uint8_t      value;
+        oca_result_t want;
+    } refusals[] = {
+        { OCA_OFF_MAGIC,              0x00u, OCA_FAIL_MAGIC },
+        { OCA_OFF_SIGNATURE_TYPE,     0x00u, OCA_FAIL_ALGORITHM_RESERVED },
+        { OCA_OFF_SIGNATURE_ENCODING, 0x00u, OCA_FAIL_ALGORITHM_RESERVED },
+        { OCA_OFF_SIGNATURE_SIZE,     0x81u, OCA_FAIL_CRYPTO_FIELD_SIZE },
+        { OCA_OFF_PUBLIC_KEY_SIZE + 1u, 0x80u, OCA_FAIL_CRYPTO_FIELD_SIZE },
+        { OCA_OFF_PUBLIC_KEY + 388u,  0x01u, OCA_FAIL_CRYPTO_FIELD_SIZE },
+    };
+    for (size_t i = 0u; i < sizeof refusals / sizeof refusals[0]; ++i) {
+        uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+        build_secure_manifest(buf);
+        buf[refusals[i].off] = refusals[i].value;
+        oca_class_blobs_t blobs;
+        scribble_blobs(&blobs);
+        ASSERT_EQ_INT(oca_check_class_description(buf, OCA_KEY_ALGO_CLASSIC, &blobs),
+                      refusals[i].want);
+        ASSERT_TRUE(blob_is_empty(&blobs.signature));
+        ASSERT_TRUE(blob_is_empty(&blobs.public_key));
+    }
+
+    uint8_t classic[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(classic);
+    oca_class_blobs_t blobs;
+    scribble_blobs(&blobs);
+    ASSERT_EQ_INT(oca_check_class_description(classic, OCA_KEY_ALGO_PQC, &blobs),
+                  OCA_FAIL_SIGNATURE_CLASS_CONTROL);
+    ASSERT_TRUE(blob_is_empty(&blobs.signature));
+    ASSERT_TRUE(blob_is_empty(&blobs.public_key));
+}
 #endif /* CFG_SECURE_BOOT */
 
 /* A secure manifest signed with an algorithm the build turns off is refused by
@@ -9065,9 +9166,18 @@ int main(int argc, char **argv)
 #if CFG_SECURE_BOOT
     RUN_TEST(test_every_signature_type_resolves_against_the_format_and_the_build);
     RUN_TEST(test_signature_rows_carry_the_format_encoded_lengths);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_the_classical_description_check_returns_the_blobs_it_validated);
+    RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87,
+                test_the_pqc_description_check_returns_the_blobs_it_validated);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_a_refused_description_returns_empty_blobs);
 #else
     NOT_RUN(CFG_SECURE_BOOT, test_every_signature_type_resolves_against_the_format_and_the_build);
     NOT_RUN(CFG_SECURE_BOOT, test_signature_rows_carry_the_format_encoded_lengths);
+    NOT_RUN(CFG_SECURE_BOOT,
+            test_the_classical_description_check_returns_the_blobs_it_validated);
+    NOT_RUN(CFG_SECURE_BOOT, test_the_pqc_description_check_returns_the_blobs_it_validated);
+    NOT_RUN(CFG_SECURE_BOOT, test_a_refused_description_returns_empty_blobs);
 #endif
     RUN_TEST(test_a_signature_algorithm_the_build_leaves_off_is_refused);
     RUN_TEST(test_a_build_without_secure_boot_refuses_every_check_it_left_out);

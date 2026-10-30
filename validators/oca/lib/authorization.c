@@ -34,14 +34,10 @@
 /**
  * @brief Present one class's ROOT key to the Consumer's trust anchor.
  *
- * Builds the key blob exactly as oca_check_signature() will present it — the
- * same offsets, the same encoding and primitive bytes, the same algorithm
- * family — so an implementation cannot end up authorizing one reading of a
+ * Shows the anchor the public key blob oca_check_class_description() returns,
+ * built from the values it checked, as oca_check_signature() shows the
+ * verifier, so an implementation cannot end up authorizing one reading of a
  * field and verifying another.
- *
- * Every operand is at a fixed offset for its class: the classical key family
- * sits at shared offsets, and the PQC family exists in exactly one variant —
- * both arms of each selection are compile-time constants.
  *
  * @param[in] body  Whole variant body.
  * @param[in] cb    Callback table. cb->is_key_authorized is checked here as
@@ -69,36 +65,17 @@ static oca_result_t authorize_key_by_class(const uint8_t *body,
                                         const oca_callbacks_t *cb,
                                         oca_key_algorithm_t algo)
 {
-    oca_result_t described = oca_check_class_description(body, algo);
+    oca_class_blobs_t blobs;
+    oca_result_t described = oca_check_class_description(body, algo, &blobs);
     if (described != OCA_OK) {
         return described;
     }
     if (cb == 0 || cb->is_key_authorized == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    const int is_pqc  = algo == OCA_KEY_ALGO_PQC;
-    size_t off_type   = is_pqc ? (size_t)OCA_PQC_OFF_SIGNATURE_TYPE
-                               : (size_t)OCA_OFF_SIGNATURE_TYPE;
-    size_t off_enc    = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_ENCODING
-                               : (size_t)OCA_OFF_PUBLIC_KEY_ENCODING;
-    size_t off_key    = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY
-                               : (size_t)OCA_OFF_PUBLIC_KEY;
-    size_t len_key    = is_pqc ? (size_t)OCA_PQC_LEN_PUBLIC_KEY
-                               : (size_t)OCA_LEN_PUBLIC_KEY;
-    size_t off_select = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SELECT
-                               : (size_t)OCA_OFF_PUBLIC_KEY_SELECT;
-    size_t off_size   = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SIZE
-                               : (size_t)OCA_OFF_PUBLIC_KEY_SIZE;
-
-    oca_crypto_blob_t public_key = {
-        .bytes          = body + off_key,
-        .field_length   = len_key,
-        .length         = oca_le_u16(body + off_size),
-        .kind           = OCA_BLOB_PUBLIC_KEY,
-        .encoding       = body[off_enc],
-        .primitive_type = body[off_type],
-        .key_algorithm  = algo,
-    };
+    const size_t off_select = (algo == OCA_KEY_ALGO_PQC)
+                              ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SELECT
+                              : (size_t)OCA_OFF_PUBLIC_KEY_SELECT;
 
     /* A class that selects no key authorizes nothing: with secure boot in
      * force that fails (spec: no authorized key fails secure boot), and it
@@ -109,7 +86,7 @@ static oca_result_t authorize_key_by_class(const uint8_t *body,
         return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
     }
 
-    oca_result_t r = cb->is_key_authorized(&public_key, body + off_select);
+    oca_result_t r = cb->is_key_authorized(&blobs.public_key, body + off_select);
     if (r == OCA_OK || r == OCA_FAIL_CALLBACK_UNAVAILABLE) {
         return r;
     }

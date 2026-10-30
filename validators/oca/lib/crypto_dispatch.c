@@ -10,7 +10,6 @@
 #include "algorithms.h"
 #include "oca_compare.h"
 #include "oca_layout.h"
-#include "oca_layout_pqc.h"
 #include "oca_variant.h"
 #include "parser.h"
 #include "secure_boot.h"
@@ -60,18 +59,14 @@ oca_result_t oca_check_manifest_hash(const uint8_t *body,
 /**
  * @brief Verify one class's signature through the caller's verifier.
  *
- * Interface to the consumers siganature verification system. Encode a signature
- * and public key (per class; either classical or PQC) as full context blobs. Provides
- * those blobs as well as the signed data region over which to verify the signature.
- * Signature and public key blobs carry the same primitive algorithm type and class type
- * Both classes verify over the same signed region, [0, signed_region_end).
+ * Hands the verifier the class's signature and public key blobs as
+ * oca_check_class_description() returns them, built from the values it
+ * checked, with the signed region. Both classes verify over the same region,
+ * [0, signed_region_end).
  *
  * @param[in] body  Whole variant body.
- * @param[in] v     Resolved variant descriptor. Supplies the two genuinely
- *                  variant-positioned values: the classical signature offset
- *                  and the signed-region extent. Every PQC field exists in
- *                  exactly one variant, so those offsets are the fixed
- *                  OCA_PQC_* constants.
+ * @param[in] v     Resolved variant descriptor; supplies the signed-region
+ *                  extent.
  * @param[in] cb    Callback table. cb->verify_signature is checked here as well
  *                  as by the caller, so a path that skipped the caller's check
  *                  fails closed instead of calling through NULL — on a part
@@ -87,66 +82,23 @@ oca_result_t oca_check_manifest_hash(const uint8_t *body,
  *                                         not run.
  * @return Otherwise oca_check_class_description()'s refusal, checked here so
  *         the verifier is only ever handed an algorithm the build enables and
- *         lengths held to their fields; else cb->verify_signature's verdict,
- *         normalized to the three codes above.
+ *         the lengths that check held to their fields; else
+ *         cb->verify_signature's verdict, normalized to the three codes above.
  */
 static oca_result_t verify_signature_by_class(const uint8_t *body,
                                      const oca_variant_t *v,
                                      const oca_callbacks_t *cb,
                                      oca_key_algorithm_t algo)
 {
-    oca_result_t described = oca_check_class_description(body, algo);
+    oca_class_blobs_t blobs;
+    oca_result_t described = oca_check_class_description(body, algo, &blobs);
     if (described != OCA_OK) {
         return described;
     }
     if (cb == 0 || cb->verify_signature == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    const int is_pqc   = algo == OCA_KEY_ALGO_PQC;
-    size_t off_type    = is_pqc ? (size_t)OCA_PQC_OFF_SIGNATURE_TYPE
-                                : (size_t)OCA_OFF_SIGNATURE_TYPE;
-    size_t off_sig_enc = is_pqc ? (size_t)OCA_PQC_OFF_SIGNATURE_ENCODING
-                                : (size_t)OCA_OFF_SIGNATURE_ENCODING;
-    size_t off_key_enc = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_ENCODING
-                                : (size_t)OCA_OFF_PUBLIC_KEY_ENCODING;
-    /* The one genuinely variant-positioned operand: signature_classic sits at
-     * a different offset in each variant, so the classical arm reads the
-     * descriptor. Everything else is a fixed constant for its class. */
-    size_t off_sig     = is_pqc ? (size_t)OCA_PQC_OFF_SIGNATURE_PQC
-                                : v->off_signature;
-    size_t len_sig     = is_pqc ? (size_t)OCA_PQC_LEN_SIGNATURE_PQC
-                                : (size_t)OCA_LEN_SIGNATURE;
-    size_t off_key     = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY
-                                : (size_t)OCA_OFF_PUBLIC_KEY;
-    size_t len_key     = is_pqc ? (size_t)OCA_PQC_LEN_PUBLIC_KEY
-                                : (size_t)OCA_LEN_PUBLIC_KEY;
-    size_t off_sig_sz  = is_pqc ? (size_t)OCA_PQC_OFF_SIGNATURE_SIZE
-                                : (size_t)OCA_OFF_SIGNATURE_SIZE;
-    size_t off_key_sz  = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SIZE
-                                : (size_t)OCA_OFF_PUBLIC_KEY_SIZE;
-
-    oca_primitive_type_t prim = body[off_type];
-
-    oca_crypto_blob_t signature = {
-        .bytes          = body + off_sig,
-        .field_length   = len_sig,
-        .length         = oca_le_u16(body + off_sig_sz),
-        .kind           = OCA_BLOB_SIGNATURE,
-        .encoding       = body[off_sig_enc],
-        .primitive_type = prim,
-        .key_algorithm  = algo,
-    };
-    oca_crypto_blob_t public_key = {
-        .bytes          = body + off_key,
-        .field_length   = len_key,
-        .length         = oca_le_u16(body + off_key_sz),
-        .kind           = OCA_BLOB_PUBLIC_KEY,
-        .encoding       = body[off_key_enc],
-        .primitive_type = prim,
-        .key_algorithm  = algo,
-    };
-
-    oca_result_t r = cb->verify_signature(&signature, &public_key,
+    oca_result_t r = cb->verify_signature(&blobs.signature, &blobs.public_key,
                                           body, v->signed_region_end);
     if (r == OCA_OK || r == OCA_FAIL_SIGNATURE
         || r == OCA_FAIL_CALLBACK_UNAVAILABLE) {
