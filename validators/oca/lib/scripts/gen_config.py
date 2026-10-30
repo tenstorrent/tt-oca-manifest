@@ -264,7 +264,8 @@ SETTINGS = (
     # that enables no signature algorithm must state it, which makes giving up
     # authentication a decision rather than an omission.
     Setting("secure_boot", "disabled", "OCA_CFG_SECURE_BOOT_DISABLED", "bool",
-            "Declare a build that verifies no signature and decrypts no payload",
+            "Declare a build that verifies no signature and decrypts no payload, "
+            "and compile out the code that would",
             required=False),
     *HASHES,
     *CLASSICAL_SIGNATURES,

@@ -38,6 +38,7 @@
 #define CFG_DER_ECDSA  OCA_CFG_DER_ECDSA_SIGNATURE
 #define CFG_AES_128    OCA_CFG_CIPHER_AES_128_CBC
 #define CFG_AES_256    OCA_CFG_CIPHER_AES_256_CBC
+#define CFG_SECURE_BOOT (!OCA_CFG_SECURE_BOOT_DISABLED)
 
 /* The digest every fixture's hash fields hold: SHA2-256's. */
 #define SHA2_256_DIGEST_SIZE 32u
@@ -6124,6 +6125,9 @@ TEST(test_pqc_description_is_ignored_when_the_pqc_class_is_off)
     ASSERT_EQ_INT(check_sizes(buf), OCA_OK);
 }
 
+/* The signature-algorithm lookups these tests call compile out with secure
+ * boot. */
+#if CFG_SECURE_BOOT
 /* Every signature_type value the format defines, per class, written out value
  * by value from its signature_type tables rather than as ranges, so a range
  * comparison in the library cannot hide an off-by-one. */
@@ -6228,6 +6232,7 @@ TEST(test_signature_rows_carry_the_format_encoded_lengths)
         ASSERT_EQ_INT(ml_dsa->signature_der, OCA_DER_UNDEFINED);
     }
 }
+#endif /* CFG_SECURE_BOOT */
 
 /* A secure manifest signed with an algorithm the build turns off is refused by
  * its signing description, and one signed with an algorithm it keeps passes
@@ -6251,6 +6256,69 @@ TEST(test_a_signature_algorithm_the_build_leaves_off_is_refused)
         ASSERT_EQ_INT(check_sizes(pqc),
                       CFG_ML_DSA_87 ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
     }
+}
+
+/* Assert every check a build without secure boot compiles out gives one
+ * result for this manifest, callback table and context. */
+static void assert_every_left_out_check(const uint8_t *body, const oca_callbacks_t *cb,
+                                        oca_validation_context_t *ctx,
+                                        oca_result_t expected)
+{
+    ASSERT_EQ_INT(oca_check_signing_description(body, cb, ctx), expected);
+    ASSERT_EQ_INT(oca_check_signature_posture(body, cb, ctx), expected);
+    ASSERT_EQ_INT(oca_check_root_key_authorized(body, cb, ctx), expected);
+    ASSERT_EQ_INT(oca_check_root_key_revocation(body, cb, ctx), expected);
+    ASSERT_EQ_INT(oca_check_security_version(body, cb, ctx), expected);
+    ASSERT_EQ_INT(oca_check_signature(body, cb, ctx), expected);
+    ASSERT_EQ_INT(oca_commit_security_state(body, cb, ctx), expected);
+}
+
+/* Every check that needs secure boot confirms the determination: an unsettled
+ * context is refused and secure boot not in force leaves nothing to do, in
+ * every build. With secure boot in force, a build that verifies signatures
+ * verifies the manifest, and one that declares [secure_boot] disabled, which
+ * compiles those checks out, refuses it at each of them without reaching a
+ * callback the full check would call. */
+TEST(test_a_build_without_secure_boot_refuses_every_check_it_left_out)
+{
+    static uint8_t buf[OCA_PQC_BODY_SIZE];
+    const size_t len = CFG_CLASSIC ? OCA_CLASSIC_BODY_SIZE : OCA_PQC_BODY_SIZE;
+    oca_callbacks_t cb;
+    oca_validation_context_t ctx;
+
+    if (CFG_CLASSIC) {
+        build_minimal_manifest(buf);
+    } else {
+        build_minimal_pqc_manifest(buf);
+        g_fx.manifest_hash_off = OCA_PQC_OFF_MANIFEST_HASH;
+    }
+    build_devstate_cb(&cb, buf);
+    cb.is_secure_boot_active = sb_inactive_cb;
+    oca_validation_context_init(&ctx);
+    assert_every_left_out_check(buf, &cb, &ctx, OCA_FAIL_SECURE_BOOT_UNDETERMINED);
+
+    ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+    assert_every_left_out_check(buf, &cb, &ctx, OCA_OK);
+
+    if (CFG_CLASSIC) {
+        build_secure_manifest(buf);
+    } else {
+        build_secure_pqc_manifest(buf, 0x05u);   /* the PQC class alone */
+    }
+    if (!CFG_SECURE_BOOT) {
+        oca_validation_context_init(&ctx);
+        ASSERT_EQ_INT(oca_determine_secure_boot(buf, &cb, &ctx), OCA_OK);
+        g_authorize_calls = 0;
+        assert_every_left_out_check(buf, &cb, &ctx, OCA_FAIL_ALGORITHM_NOT_ENABLED);
+        ASSERT_EQ_INT(g_authorize_calls, 0);
+        ASSERT_TRUE(ctx.secure_boot_posture_met != OCA_SECURE_TRUE);
+        ASSERT_TRUE(ctx.secure_boot_authenticated != OCA_SECURE_TRUE);
+    }
+    const int verifies = CFG_SECURE_BOOT && (CFG_CLASSIC ? CFG_RSA : CFG_ML_DSA_87);
+    g_fx.sig_calls = 0;
+    ASSERT_EQ_INT(oca_validate_manifest(buf, len, &cb, NULL),
+                  verifies ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
+    ASSERT_EQ_INT(g_fx.sig_calls, verifies ? 1 : 0);
 }
 
 /* The classical description admits only the algorithms this build enables.
@@ -8779,7 +8847,7 @@ int main(int argc, char **argv)
     RUN_TEST_IF(CFG_CLASSIC, test_encryption_info_needs_no_payload_resident);
     RUN_TEST_IF(CFG_CLASSIC, test_signature_secure_boot_zero_skipped);
     RUN_TEST_IF(CFG_CLASSIC, test_signature_refuses_an_undetermined_context);
-    RUN_TEST_IF(CFG_CLASSIC,
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT,
                 test_signature_callback_unavailable_when_secure_boot_enabled);
 
     /* Canonical order */
@@ -8903,20 +8971,23 @@ int main(int argc, char **argv)
     RUN_TEST(test_result_string_covers_the_location_code);
 
     /* Secure-boot device-state: ROOT-key revocation */
-    RUN_TEST_IF(CFG_CLASSIC, test_root_key_revoked_by_manifest);
-    RUN_TEST_IF(CFG_CLASSIC, test_root_key_revoked_by_device_state);
-    RUN_TEST_IF(CFG_CLASSIC, test_root_key_not_revoked_passes);
-    RUN_TEST_IF(CFG_CLASSIC, test_root_key_reserved_bits_ignored);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT, test_root_key_revoked_by_manifest);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT, test_root_key_revoked_by_device_state);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT, test_root_key_not_revoked_passes);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT, test_root_key_reserved_bits_ignored);
     RUN_TEST_IF(CFG_CLASSIC, test_root_key_revocation_secure_boot_disabled_inert);
-    RUN_TEST_IF(CFG_CLASSIC, test_root_key_revocation_engaged_via_device_callback);
-    RUN_TEST_IF(CFG_CLASSIC, test_root_key_revocation_secure_by_default_when_unset);
-    RUN_TEST_IF(CFG_CLASSIC, test_root_key_revocation_callback_unavailable);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT,
+                test_root_key_revocation_engaged_via_device_callback);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT,
+                test_root_key_revocation_secure_by_default_when_unset);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT, test_root_key_revocation_callback_unavailable);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
                 test_an_unauthorized_key_is_refused_before_verification);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_authorization_precedes_revocation);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
                 test_a_missing_authorization_callback_fails_closed);
-    RUN_TEST_IF(CFG_CLASSIC, test_signature_refuses_a_context_without_authorization);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT,
+                test_signature_refuses_a_context_without_authorization);
     RUN_TEST_IF(CFG_CLASSIC && CFG_PQC && CFG_RSA,
                 test_authorization_refuses_a_description_the_build_does_not_accept);
     RUN_TEST_IF(CFG_CLASSIC && CFG_PQC && CFG_RSA,
@@ -8936,11 +9007,11 @@ int main(int argc, char **argv)
 #endif
 
     /* Anti-rollback security version */
-    RUN_TEST_IF(CFG_CLASSIC, test_security_version_rollback_rejected);
-    RUN_TEST_IF(CFG_CLASSIC, test_security_version_superset_accepted);
-    RUN_TEST_IF(CFG_CLASSIC, test_security_version_equal_accepted);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT, test_security_version_rollback_rejected);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT, test_security_version_superset_accepted);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT, test_security_version_equal_accepted);
     RUN_TEST_IF(CFG_CLASSIC, test_security_version_secure_boot_disabled_inert);
-    RUN_TEST_IF(CFG_CLASSIC, test_security_version_callback_unavailable);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT, test_security_version_callback_unavailable);
 
     /* Device-state commit */
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_commit_ors_in_revoke_and_secver);
@@ -8991,10 +9062,17 @@ int main(int argc, char **argv)
                 test_pqc_size_fields_must_be_the_exact_ml_dsa_87_sizes);
     RUN_TEST_IF(CFG_PQC && CFG_RSA,
                 test_pqc_description_is_ignored_when_the_pqc_class_is_off);
+#if CFG_SECURE_BOOT
     RUN_TEST(test_every_signature_type_resolves_against_the_format_and_the_build);
     RUN_TEST(test_signature_rows_carry_the_format_encoded_lengths);
+#else
+    NOT_RUN(CFG_SECURE_BOOT, test_every_signature_type_resolves_against_the_format_and_the_build);
+    NOT_RUN(CFG_SECURE_BOOT, test_signature_rows_carry_the_format_encoded_lengths);
+#endif
     RUN_TEST(test_a_signature_algorithm_the_build_leaves_off_is_refused);
-    RUN_TEST_IF(CFG_CLASSIC, test_classic_description_accepts_only_supported_primitives);
+    RUN_TEST(test_a_build_without_secure_boot_refuses_every_check_it_left_out);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT,
+                test_classic_description_accepts_only_supported_primitives);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA && CFG_ECDSA && CFG_DER_RSA && CFG_DER_ECDSA,
                 test_classic_description_accepts_only_defined_encodings);
     RUN_TEST(test_a_der_encoding_the_build_leaves_off_is_refused);
@@ -9009,15 +9087,16 @@ int main(int argc, char **argv)
                 test_non_secure_manifest_with_populated_signing_fields_validates);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
                 test_device_enforced_bit_clear_manifest_validates_end_to_end);
-    RUN_TEST_IF(CFG_PQC,
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT,
                 test_device_enforced_bit_clear_manifest_with_a_bad_description_is_refused);
     RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
                 test_hybrid_authorization_consults_each_classes_anchor);
     RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
                 test_single_class_authorization_leaves_the_other_flag_unset);
     RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87, test_a_refused_pqc_key_fails_authorization);
-    RUN_TEST_IF(CFG_CLASSIC, test_key_checks_backstop_a_context_with_no_enforced_class);
-    RUN_TEST_IF(CFG_CLASSIC,
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT,
+                test_key_checks_backstop_a_context_with_no_enforced_class);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT,
                 test_key_checks_refuse_a_record_disagreeing_with_the_class_bits);
     RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87 && CFG_DER_RSA,
                 test_authorization_presents_the_key_the_verifier_receives);
@@ -9025,17 +9104,18 @@ int main(int argc, char **argv)
                 test_hybrid_signature_verifies_both_classes);
     RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
                 test_hybrid_signature_fails_when_either_class_fails);
-    RUN_TEST_IF(CFG_PQC, test_pqc_signature_requires_the_pqc_authorization);
-    RUN_TEST_IF(CFG_CLASSIC, test_pqc_enforcement_on_a_classic_variant_fails_closed);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT, test_pqc_signature_requires_the_pqc_authorization);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT,
+                test_pqc_enforcement_on_a_classic_variant_fails_closed);
     RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
                 test_hybrid_manifest_validates_end_to_end);
     RUN_TEST(test_every_root_key_bitmap_has_the_shared_width);
-    RUN_TEST_IF(CFG_PQC, test_pqc_root_key_revoked_by_manifest);
-    RUN_TEST_IF(CFG_PQC, test_pqc_root_key_revoked_by_device_pqc_state);
-    RUN_TEST_IF(CFG_PQC, test_pqc_key_is_not_revoked_by_classic_state);
-    RUN_TEST_IF(CFG_PQC, test_pqc_root_key_reserved_bits_ignored);
-    RUN_TEST_IF(CFG_PQC, test_hybrid_revocation_checks_each_family);
-    RUN_TEST_IF(CFG_PQC, test_classic_only_ocap_manifest_ignores_pqc_revocation);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT, test_pqc_root_key_revoked_by_manifest);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT, test_pqc_root_key_revoked_by_device_pqc_state);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT, test_pqc_key_is_not_revoked_by_classic_state);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT, test_pqc_root_key_reserved_bits_ignored);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT, test_hybrid_revocation_checks_each_family);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT, test_classic_only_ocap_manifest_ignores_pqc_revocation);
     RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87,
                 test_revoked_pqc_key_skips_signature_in_pipeline);
     RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
@@ -9050,11 +9130,12 @@ int main(int argc, char **argv)
                 test_commit_revoke_disable_suppresses_both_families);
     RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87,
                 test_commit_pqc_revocation_write_failure_surfaced);
-    RUN_TEST_IF(CFG_CLASSIC, test_commit_refuses_a_class_record_it_cannot_trust);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT, test_commit_refuses_a_class_record_it_cannot_trust);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_commit_disable_revoke_only);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_commit_write_failure_surfaced);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_a_writer_unwired_by_its_reader_fails_closed);
-    RUN_TEST_IF(CFG_CLASSIC, test_a_posture_reader_unwired_by_the_first_fails_closed);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT,
+                test_a_posture_reader_unwired_by_the_first_fails_closed);
     RUN_TEST_IF(CFG_CLASSIC, test_commit_secure_boot_disabled_noop);
     RUN_TEST_IF(CFG_CLASSIC, test_device_disable_reaches_every_gated_check);
     RUN_TEST_IF(CFG_CLASSIC, test_encryption_with_bit_clear_refused_on_a_disabled_device);
@@ -9084,7 +9165,8 @@ int main(int argc, char **argv)
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
                 test_a_record_disagreeing_in_the_safe_direction_is_still_refused);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA, test_validate_is_read_only_then_commit);
-    RUN_TEST_IF(CFG_PQC, test_commit_refuses_a_context_no_signature_check_authenticated);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT,
+                test_commit_refuses_a_context_no_signature_check_authenticated);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
                 test_commit_refuses_the_context_of_a_failed_validation);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
@@ -9095,13 +9177,13 @@ int main(int argc, char **argv)
                 test_an_enforced_pqc_class_that_selects_no_key_is_unauthorized);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
                 test_select_bits_only_in_the_reserved_bytes_select_no_key);
-    RUN_TEST_IF(CFG_CLASSIC,
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT,
                 test_a_revocation_read_that_writes_nothing_revokes_every_key);
-    RUN_TEST_IF(CFG_CLASSIC,
+    RUN_TEST_IF(CFG_CLASSIC && CFG_SECURE_BOOT,
                 test_a_security_version_read_that_writes_nothing_is_a_rollback);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
                 test_a_commit_over_an_unwritten_read_writes_only_the_manifest_bits);
-    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC && CFG_SECURE_BOOT,
                 test_an_unreadable_revocation_state_fails_the_check_for_each_family);
     RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
                 test_commit_writes_nothing_when_the_classic_revocation_read_fails);
@@ -9109,24 +9191,25 @@ int main(int argc, char **argv)
                 test_commit_stops_at_an_unreadable_pqc_revocation_state);
     RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
                 test_every_blob_carries_its_declared_size);
-    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC && CFG_SECURE_BOOT,
                 test_a_device_with_no_posture_accepts_every_signature_choice);
-    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC && CFG_SECURE_BOOT,
                 test_a_disabled_algorithm_refuses_the_classes_that_use_it);
-    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC && CFG_SECURE_BOOT,
                 test_every_defined_signature_type_maps_to_its_revocation_bit);
-    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC && CFG_SECURE_BOOT,
                 test_an_undefined_signature_type_is_refused_by_the_posture_check);
-    RUN_TEST_IF(CFG_PQC, test_only_an_intact_group_code_disables_its_group);
-    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC,
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT, test_only_an_intact_group_code_disables_its_group);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_PQC && CFG_SECURE_BOOT,
                 test_the_root_cohort_demands_its_signature_classes);
-    RUN_TEST_IF(CFG_PQC, test_a_disabled_group_withdraws_its_cohort_demand);
-    RUN_TEST_IF(CFG_PQC, test_cohort_bits_outside_the_root_demand_are_ignored);
-    RUN_TEST_IF(CFG_PQC, test_posture_readers_fail_closed);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT, test_a_disabled_group_withdraws_its_cohort_demand);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT, test_cohort_bits_outside_the_root_demand_are_ignored);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT, test_posture_readers_fail_closed);
     RUN_TEST_IF(CFG_PQC, test_the_posture_is_inert_when_secure_boot_is_off);
     RUN_TEST(test_the_posture_check_needs_a_settled_context);
-    RUN_TEST_IF(CFG_PQC, test_a_refused_posture_check_withdraws_an_earlier_vouching);
-    RUN_TEST_IF(CFG_PQC,
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT,
+                test_a_refused_posture_check_withdraws_an_earlier_vouching);
+    RUN_TEST_IF(CFG_PQC && CFG_SECURE_BOOT,
                 test_a_posture_check_refused_at_the_confirm_withdraws_an_earlier_vouching);
     RUN_TEST_IF(CFG_PQC && CFG_ML_DSA_87,
                 test_the_signature_check_needs_the_posture_vouching);

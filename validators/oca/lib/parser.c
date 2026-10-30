@@ -187,6 +187,7 @@ oca_result_t oca_check_signature_class_variant(const uint8_t *body)
     return OCA_OK;
 }
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief Whether a key or signature field holds anything past its valid bytes.
  *
@@ -381,11 +382,15 @@ oca_result_t oca_check_class_description(const uint8_t *body,
     };
     return check_class_description(body, &classical);
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 oca_result_t oca_check_signing_description(const uint8_t *body,
                                           const oca_callbacks_t *cb,
                                           const oca_validation_context_t *ctx)
 {
+#if OCA_CFG_SECURE_BOOT_DISABLED
+    return oca_secure_boot_not_built(body, cb, ctx);
+#else
     if (body == 0) {
         return OCA_FAIL_INVALID_ARG;
     }
@@ -435,6 +440,7 @@ oca_result_t oca_check_signing_description(const uint8_t *body,
         }
     }
     return OCA_OK;
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 }
 
 oca_result_t oca_check_signature_class_group_codes(const uint8_t *body)

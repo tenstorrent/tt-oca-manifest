@@ -135,10 +135,10 @@ variable of the same name in the environment from choosing the build, while
 **The portfolio is policy, not footprint.** Turning an algorithm or a variant
 off makes the library refuse what it names. It does not make the library
 meaningfully smaller: an algorithm turned off loses its table row and little
-else, and even a build with nothing but a hash is a few hundred bytes smaller
-than the default. What an algorithm costs is the cryptography your callbacks
-link, which the library never contains. Choose the portfolio for what a part
-must accept, and size the image by the callbacks it wires.
+else. What an algorithm costs is the cryptography your callbacks link, which
+the library never contains. Choose the portfolio for what a part must accept,
+and size the image by the callbacks it wires. The exception is a build without
+secure boot, described below, which compiles out every check that needs it.
 
 **Every build names its portfolio.** The generated header states the settings
 that are not zero, one `name=value` line each in name order, as
@@ -174,8 +174,8 @@ endif
 
 An unknown name exits 2 with a message naming it. `$(shell)` discards an exit
 status, so the snippet turns a failure into `error` and stops the build;
-without that, a misspelled setting would read as off. C code needs neither: it tests the `OCA_CFG_*` macros of the
-header it compiles against.
+without that, a misspelled setting would read as off. C code needs neither: it
+tests the `OCA_CFG_*` macros of the header it compiles against.
 
 **Compile your own code against the same header.** `OCA_TOC_MAX_IMAGES` and
 `OCA_RECHECK_SECURITY_VERSION` are part of the public header and come from the
@@ -200,15 +200,29 @@ authenticates nothing. The declaration is refused alongside any signature
 algorithm, and alongside payload encryption, because a payload is decrypted only
 once its manifest's signature verifies (see
 [Encryption requires confirmed secure boot](#encryption-requires-confirmed-secure-boot)).
+
+The declaration compiles out everything secure boot needs: signature
+verification, ROOT-key authorization and revocation, the signing-description
+and posture checks, anti-rollback, the device-state commit and payload
+decryption. Measured for rv32imc at `-Os`, that is about 4.4 KB of the default
+build's 12.3 KB. The entry points of those checks remain, so code that composes
+them by hand links unchanged. Each confirms the secure-boot determination as the
+full check does, refusing a context it cannot confirm. While secure boot is not
+in force it has nothing to do and returns `OCA_OK`; while it is in force, it
+refuses with `OCA_FAIL_ALGORITHM_NOT_ENABLED`. `[hardening]
+recheck_security_version` is still stated in the file, and has no effect.
+
 Such a build:
 
 - refuses every manifest that asserts secure boot with
-  `OCA_FAIL_ALGORITHM_NOT_ENABLED`, before any callback runs, and every
-  encrypted payload;
+  `OCA_FAIL_ALGORITHM_NOT_ENABLED`, once the manifest hash and the
+  determination have run and before any other callback, and every encrypted
+  payload;
 - boots nothing on a part whose `is_secure_boot_active` reports enforcement,
   exactly as a full build refuses an unsigned manifest there;
-- never commits device state: `oca_commit_security_state()` needs an
-  authenticated manifest, so anti-rollback and revocation state never advance.
+- never commits device state: `oca_commit_security_state()` has nothing to
+  commit while secure boot is not in force and is refused while it is, so
+  anti-rollback and revocation state never advance.
 
 It needs the `hash` callback, a secure-boot reporter that says the part does not
 enforce secure boot (`is_secure_boot_disabled` or `is_secure_boot_active`; with

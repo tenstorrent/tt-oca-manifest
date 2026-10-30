@@ -30,6 +30,7 @@
 #include "parser.h"
 #include "secure_boot.h"
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief Present one class's ROOT key to the Consumer's trust anchor.
  *
@@ -114,11 +115,15 @@ static oca_result_t authorize_key_by_class(const uint8_t *body,
     }
     return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 oca_result_t oca_check_root_key_authorized(const uint8_t *body,
                                            const oca_callbacks_t *cb,
                                            oca_validation_context_t *ctx)
 {
+#if OCA_CFG_SECURE_BOOT_DISABLED
+    return oca_secure_boot_not_built(body, cb, ctx);
+#else
     /* Engage only when secure boot is in force, and only once the device still
      * agrees with the determination this validation recorded. Same prologue as
      * the revocation, anti-rollback and signature checks. */
@@ -175,4 +180,5 @@ oca_result_t oca_check_root_key_authorized(const uint8_t *body,
         ctx->secure_boot_key_authorized_pqc = OCA_SECURE_TRUE;
     }
     return OCA_OK;
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 }

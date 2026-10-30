@@ -68,6 +68,7 @@ oca_result_t oca_secure_boot_confirm(const uint8_t *body,
                                      const oca_validation_context_t *ctx,
                                      oca_secure_bool_t *out_engaged);
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief Confirm the context's signature-class record against the manifest.
  *
@@ -105,5 +106,32 @@ oca_result_t oca_secure_boot_confirm(const uint8_t *body,
  */
 oca_result_t oca_secure_boot_confirm_classes(const uint8_t *body,
                                              const oca_validation_context_t *ctx);
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
+
+#if OCA_CFG_SECURE_BOOT_DISABLED
+/**
+ * @brief The whole of a secure-boot check in a build that declares
+ *        `[secure_boot] disabled`.
+ *
+ * Such a build compiles out signature verification, ROOT-key authorization and
+ * revocation, the signing-description and posture checks, anti-rollback and
+ * the device-state commit. Each of their public entry points runs this
+ * instead: the determination is confirmed as the full check confirms it, and
+ * a check with nothing to do while secure boot is not in force still has
+ * nothing to do. While secure boot is in force the build cannot do the check,
+ * so the manifest is refused.
+ *
+ * @param[in] body  Whole variant body.
+ * @param[in] cb    Callback table, for the device reporters the confirm reads.
+ * @param[in] ctx   The determination being acted on.
+ * @retval OCA_OK                          Secure boot is not in force.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  Secure boot is in force, which this
+ *                                         build cannot verify.
+ * @return Otherwise oca_secure_boot_confirm()'s refusal of the determination.
+ */
+oca_result_t oca_secure_boot_not_built(const uint8_t *body,
+                                       const oca_callbacks_t *cb,
+                                       const oca_validation_context_t *ctx);
+#endif /* OCA_CFG_SECURE_BOOT_DISABLED */
 
 #endif /* OCA_SECURE_BOOT_H */

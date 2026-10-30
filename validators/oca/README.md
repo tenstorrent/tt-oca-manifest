@@ -184,7 +184,7 @@ out — every row from `[secure_boot]` down — is off.
 | `[variants] pqc` | `true` | Accept the `OCAP` variant. |
 | `[limits] toc_max_images` | `256` | Cap on payload TOC entries this build will process (exposed to code as `OCA_TOC_MAX_IMAGES`). |
 | `[hardening] recheck_security_version` | `true` | Re-evaluate anti-rollback after the signature verifies (`OCA_RECHECK_SECURITY_VERSION`). |
-| `[secure_boot] disabled` | `false` | Declare a build that verifies no signature. Required when no signature algorithm is on; refused alongside one, or alongside payload encryption. |
+| `[secure_boot] disabled` | `false` | Declare a build that verifies no signature, and compile out the code that would. Required when no signature algorithm is on; refused alongside one, or alongside payload encryption. |
 | `[hash] sha2_256` | `true` | Compute SHA2-256 for `manifest_hash_type` and `payload_hash_type`. At least one hash must be on. |
 | `[signature_classic] rsa_3072_pkcs1v15_sha256` | `true` | Verify RSA-3072, RSASSA-PKCS1-v1_5, SHA-256. |
 | `[signature_classic] ecdsa_p256_sha256` | `true` | Verify ECDSA P-256, SHA-256. |
@@ -217,12 +217,15 @@ secure boot. Leaving every signature algorithm out is refused unless the file
 also declares it, with `[secure_boot] disabled = true`, so giving up
 authentication is a decision rather than an omission. That declaration is
 refused alongside a signature algorithm, and alongside payload encryption, since
-a payload is decrypted only once its manifest's signature verifies. Such a build
-refuses every manifest that asserts secure boot with
+a payload is decrypted only once its manifest's signature verifies. The
+declaration compiles out every check that needs secure boot, about a third of
+the library; each of their entry points remains, refusing a manifest that
+needs one. Such a build refuses every manifest that asserts secure boot with
 `OCA_FAIL_ALGORITHM_NOT_ENABLED` and every encrypted payload, boots nothing on a
-part that enforces secure boot, and never commits device state, which needs an
-authenticated manifest. `test/build_configs/hash_only.toml` is that build, and
-`make hash-only` builds it.
+part that enforces secure boot, and never commits device state.
+`INTEGRATION.md`, "A part that does not use secure boot", says what remains.
+`test/build_configs/hash_only.toml` is that build, and `make hash-only` builds
+it.
 
 `recheck_security_version` is worth understanding before turning it off. The
 anti-rollback comparison runs *before* signature verification, so a replayed

@@ -68,6 +68,7 @@ static inline uint64_t oca_le_u64(const uint8_t *p)
     return (uint64_t)oca_le_u32(p) | ((uint64_t)oca_le_u32(p + 4) << 32);
 }
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief Hold one signature class's signing description to this build.
  *
@@ -97,5 +98,6 @@ static inline uint64_t oca_le_u64(const uint8_t *p)
  */
 oca_result_t oca_check_class_description(const uint8_t *body,
                                          oca_key_algorithm_t algo);
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 #endif /* OCA_PARSER_H */

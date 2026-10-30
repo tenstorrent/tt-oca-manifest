@@ -18,6 +18,7 @@
 #include "oca_layout_pqc.h"
 #include "secure_boot.h"
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief The signature_class_revoke bit of a classical signature_type.
  *
@@ -129,6 +130,7 @@ static oca_result_t check_cohort(oca_secure_bool_t demanded,
     }
     return OCA_FAIL_SIGNATURE_COHORT_REQUIRED;
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 oca_result_t oca_check_signature_posture(const uint8_t *body,
                                          const oca_callbacks_t *cb,
@@ -140,6 +142,9 @@ oca_result_t oca_check_signature_posture(const uint8_t *body,
     if (ctx != 0) {
         ctx->secure_boot_posture_met = OCA_SECURE_FALSE;
     }
+#if OCA_CFG_SECURE_BOOT_DISABLED
+    return oca_secure_boot_not_built(body, cb, ctx);
+#else
     oca_secure_bool_t engaged;
     oca_result_t confirmed = oca_secure_boot_confirm(body, cb, ctx, &engaged);
     if (confirmed != OCA_OK) {
@@ -233,4 +238,5 @@ oca_result_t oca_check_signature_posture(const uint8_t *body,
 
     ctx->secure_boot_posture_met = OCA_SECURE_TRUE;
     return OCA_OK;
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 }

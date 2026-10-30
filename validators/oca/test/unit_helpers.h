@@ -75,6 +75,10 @@ void unit_run_all(int reverse);
 
 void unit_register_if(int met, const char *needs, const char *name, unit_test_fn fn);
 
+/* NOT_RUN lists a test this build compiles out with the library code it calls,
+ * so it is counted as not run rather than silently missing. */
+#define NOT_RUN(needs, name) unit_register_if(0, #needs, #name, NULL)
+
 extern int g_unit_not_run;
 
 #define ASSERT_EQ_INT(actual, expected) do {                           \

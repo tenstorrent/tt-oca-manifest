@@ -73,6 +73,7 @@ typedef struct oca_signature_algorithm {
     uint16_t          signature_der_max;  /**< Largest DER signature; 0 when undefined. */
 } oca_signature_algorithm_t;
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief Resolve a signature_type value against the format and this build.
  *
@@ -109,6 +110,7 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
  * @return One of the codes above, by how the format treats @p encoding.
  */
 oca_result_t oca_encoding_status(oca_key_algorithm_t family, oca_encoding_t encoding);
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 /** @brief The largest digest any hash a build can enable produces. */
 #define OCA_HASH_MAX_DIGEST_SIZE 32u

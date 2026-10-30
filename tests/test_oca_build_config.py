@@ -775,17 +775,14 @@ def test_the_check_header_requires_every_setting(setting):
                      _check_header_text(), re.M)
 
 
-# Settings that change no behaviour of their own: they decide which
-# configurations are valid, so the check header is where the library reads them.
+# Settings that declare a kind of build, and are refused in a configuration
+# that is not one.
 DECLARATIONS = {"OCA_CFG_SECURE_BOOT_DISABLED"}
 
 
 @pytest.mark.parametrize("setting", IMPLEMENTED, ids=[s.name for s in IMPLEMENTED])
 def test_every_setting_reaches_the_library(setting):
     """A setting nothing reads would be a configuration key with no effect."""
-    if setting.macro in DECLARATIONS:
-        assert re.search(rf"^#if .*\b{setting.macro}\b", _check_header_text(), re.M)
-        return
     readers = []
     for name in sorted(os.listdir(LIB_DIR)):
         if name.endswith((".c", ".h")) and name != "oca_config_check.h":
@@ -1179,9 +1176,16 @@ TESTS_OF_THE_CONFIGURATION = (
     "test_a_signature_algorithm_the_build_leaves_off_is_refused",
     "test_a_der_encoding_the_build_leaves_off_is_refused",
     "test_a_cipher_the_build_leaves_off_is_refused_before_hashing",
+    "test_every_payload_algorithm_resolves_against_the_format_and_the_build",
+    "test_a_build_without_secure_boot_refuses_every_check_it_left_out",
+)
+
+# The sweeps of the signature-algorithm table, which a build that declares
+# [secure_boot] disabled compiles out with the lookups they call: they run
+# wherever secure boot is built, and are listed as not run where it is not.
+TESTS_OF_THE_SIGNATURE_TABLE = (
     "test_every_signature_type_resolves_against_the_format_and_the_build",
     "test_signature_rows_carry_the_format_encoded_lengths",
-    "test_every_payload_algorithm_resolves_against_the_format_and_the_build",
 )
 
 
@@ -1200,8 +1204,71 @@ def test_the_unit_tests_pass_under_every_build_configuration(tmp_path, changes,
     assert summary and summary.group(1) == summary.group(2), result.stderr
     for name in (*TESTS_OF_THE_CONFIGURATION, *also_passing):
         assert f"PASS: {name}\n" in result.stderr, name
+    secure_boot_built = changes.get("secure_boot_disabled") != "true"
+    for name in TESTS_OF_THE_SIGNATURE_TABLE:
+        line = f"PASS: {name}\n" if secure_boot_built else f"NOT RUN: {name} ("
+        assert line in result.stderr, name
     if not changes:
         assert "NOT RUN:" not in result.stderr
+
+
+# The functions only a build with secure boot contains: the checks a build that
+# declares [secure_boot] disabled compiles out, and the helpers and lookups
+# only they call.
+SECURE_BOOT_ONLY = {
+    "authorize_key_by_class", "check_revocation_by_class", "verify_signature_by_class",
+    "check_class_algorithm", "check_cohort", "classical_revoke_bit", "pqc_revoke_bit",
+    "commit_revocation_for_family", "padding_is_dirty", "required_size",
+    "check_class_description", "oca_check_class_description", "oca_signature_algorithm",
+    "oca_encoding_status", "classical_signature_defined", "pqc_signature_defined",
+    "oca_secure_boot_confirm_classes", "check_encrypted_payload",
+}
+
+# The entry points of those checks, which every build defines: a build without
+# secure boot defines each as a stub.
+SECURE_BOOT_ENTRY_POINTS = {
+    "oca_check_signing_description", "oca_check_signature_posture",
+    "oca_check_root_key_authorized", "oca_check_root_key_revocation",
+    "oca_check_security_version", "oca_check_signature", "oca_commit_security_state",
+}
+
+
+def defined_functions(directory, header_text):
+    """Every function the library defines when compiled against header_text.
+
+    Compiled without optimization, so a static function keeps its symbol
+    rather than being inlined away, and its absence means its source was not
+    compiled.
+    """
+    require_tools("cc", "nm")
+    gen = directory / "gen"
+    gen.mkdir(parents=True)
+    (gen / "oca_config.h").write_text(header_text)
+    names = set()
+    for source in sorted(os.listdir(LIB_DIR)):
+        if not source.endswith(".c"):
+            continue
+        obj = directory / (source[:-2] + ".o")
+        subprocess.run(["cc", "-std=c99", "-O0", "-c", "-I", LIB_DIR, "-I", str(gen),
+                        os.path.join(LIB_DIR, source), "-o", str(obj)], check=True)
+        listed = subprocess.run(["nm", str(obj)], capture_output=True, text=True,
+                                check=True)
+        for line in listed.stdout.splitlines():
+            words = line.split()
+            if len(words) == 3 and words[1] in ("t", "T"):
+                names.add(words[2][1:] if sys.platform == "darwin" else words[2])
+    return names
+
+
+def test_a_build_without_secure_boot_compiles_its_checks_out(tmp_path):
+    full = defined_functions(tmp_path / "full", default_header())
+    hash_only = defined_functions(
+        tmp_path / "hash-only",
+        gen_config.header_for_config(os.path.join(BUILD_CONFIG_DIR, "hash_only.toml")))
+    assert SECURE_BOOT_ONLY <= full, SECURE_BOOT_ONLY - full
+    assert SECURE_BOOT_ONLY & hash_only == set()
+    assert SECURE_BOOT_ENTRY_POINTS <= hash_only
+    assert hash_only - full == {"oca_secure_boot_not_built"}
 
 
 # ---------------------------------------------------------------------------
@@ -1284,22 +1351,25 @@ static const char *verdict(oca_result_t status, int has_row)
 int main(void)
 {
     oca_result_t status;
+    int row;
     for (unsigned v = 0u; v < BYTE_FIELD_PROBE_END; ++v) {
+#if !OCA_CFG_SECURE_BOOT_DISABLED
         const oca_primitive_type_t type = (oca_primitive_type_t)v;
-        int row = oca_signature_algorithm(OCA_KEY_ALGO_CLASSIC, type, &status) != 0;
+        row = oca_signature_algorithm(OCA_KEY_ALGO_CLASSIC, type, &status) != 0;
         printf("signature_classic %u %s\n", v, verdict(status, row));
         row = oca_signature_algorithm(OCA_KEY_ALGO_PQC, type, &status) != 0;
         printf("signature_pqc %u %s\n", v, verdict(status, row));
-        row = oca_hash_algorithm((oca_hash_type_t)v, &status) != 0;
-        printf("hash %u %s\n", v, verdict(status, row));
-        row = oca_cipher_algorithm((oca_encryption_type_t)v, &status) != 0;
-        printf("encryption_cipher %u %s\n", v, verdict(status, row));
         status = oca_encoding_status(OCA_KEY_ALGO_CLASSIC, (oca_encoding_t)v);
         printf("encoding_classic %u %s\n", v, verdict(status, status == OCA_OK));
         status = oca_encoding_status(OCA_KEY_ALGO_PQC, (oca_encoding_t)v);
         printf("encoding_pqc %u %s\n", v, verdict(status, status == OCA_OK));
         printf("revoke signature_classic %u %d\n", v, classical_revoke_bit(type));
         printf("revoke signature_pqc %u %d\n", v, pqc_revoke_bit(type));
+#endif
+        row = oca_hash_algorithm((oca_hash_type_t)v, &status) != 0;
+        printf("hash %u %s\n", v, verdict(status, row));
+        row = oca_cipher_algorithm((oca_encryption_type_t)v, &status) != 0;
+        printf("encryption_cipher %u %s\n", v, verdict(status, row));
     }
     for (unsigned v = 0u; v <= 0xFFFFu; ++v) {
         status = oca_kdf_status((oca_kdf_t)v);
@@ -1348,9 +1418,14 @@ def resolve_every_code_point(tmp_path, header_text, lib_dir=LIB_DIR):
 
 def expected_verdicts(values):
     """How the generator's lists, and the integrator ranges, say every value of
-    every field resolves under a configuration's resolved settings."""
+    every field resolves under a configuration's resolved settings. A build
+    that declares [secure_boot] disabled compiles out the signature and
+    encoding lookups, so their fields are not resolved there."""
     expected = {}
+    secure_boot_built = not values["OCA_CFG_SECURE_BOOT_DISABLED"]
     for field, probed in PROBED_VALUES.items():
+        if field.startswith("signature_") and not secure_boot_built:
+            continue
         settings = [s for s in gen_config.SETTINGS if s.section == field]
         defined = {s.code for s in settings} | set(INTEGRATOR_DEFINED[field])
         enabled = {s.code for s in settings if s.implemented and values[s.macro]}
@@ -1360,6 +1435,8 @@ def expected_verdicts(values):
                                         else "off" if value in defined
                                         else "reserved")
     for field, selectable in ENCODING_FIELDS.items():
+        if not secure_boot_built:
+            continue
         for value in range(BYTE_FIELD_PROBE_END):
             expected[(field, value)] = (
                 "reserved" if value > 0xFF

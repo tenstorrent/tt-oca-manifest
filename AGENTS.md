@@ -276,7 +276,11 @@ The least a build can be is one variant and one hash, for a part without secure 
 configuration that enables no signature algorithm must declare `[secure_boot] disabled = true`,
 or the generator refuses it; the declaration is in turn refused alongside a signature
 algorithm or payload encryption, which is decrypted only once a signature verifies. The check
-header holds a hand-written header to the same three rules.
+header holds a hand-written header to the same three rules. The declaration compiles out every
+check that needs secure boot; each public entry point stays, as a stub that confirms the
+determination and refuses secure boot in force with `OCA_FAIL_ALGORITHM_NOT_ENABLED`.
+`tests/test_oca_build_config.py` reads the compiled symbols to hold the code out, and
+`SECURE_BOOT_ONLY` there lists what must go.
 
 A consumer that must **never** accept a variant turns the other off in `[variants]`.
 `classic-only` builds from `test/build_configs/classic_only.toml`, `pqc-only` from
@@ -478,7 +482,9 @@ packer cannot write to be a listed format code point.
      before the signature: a manifest that cannot boot should cost as little as possible to
      reject. If the check applies only under secure boot, take an
      `oca_validation_context_t *` and open with `oca_secure_boot_confirm()` rather than
-     deriving the answer yourself. Add a fixture under `test/fixtures/configs/` and a matching
+     deriving the answer yourself, and compile its body out under
+     `OCA_CFG_SECURE_BOOT_DISABLED`, returning `oca_secure_boot_not_built()` there as the
+     other secure-boot checks do. Add a fixture under `test/fixtures/configs/` and a matching
      integration test.
    - **Not validator-relevant**: add the symbol to `NOT_REQUIRED_PREFIXES` in
      `sync_layout.py` with a one-line "why this is OK" comment.

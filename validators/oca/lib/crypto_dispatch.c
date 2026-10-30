@@ -56,6 +56,7 @@ oca_result_t oca_check_manifest_hash(const uint8_t *body,
     return OCA_OK;
 }
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief Verify one class's signature through the caller's verifier.
  *
@@ -153,11 +154,15 @@ static oca_result_t verify_signature_by_class(const uint8_t *body,
     }
     return OCA_FAIL_SIGNATURE;
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 oca_result_t oca_check_signature(const uint8_t *body,
                                  const oca_callbacks_t *cb,
                                  oca_validation_context_t *ctx)
 {
+#if OCA_CFG_SECURE_BOOT_DISABLED
+    return oca_secure_boot_not_built(body, cb, ctx);
+#else
     oca_result_t status;
     const oca_variant_t *v = oca_variant_for_body(body, &status);
     if (v == 0) {
@@ -274,4 +279,5 @@ oca_result_t oca_check_signature(const uint8_t *body,
         return OCA_FAIL_SIGNATURE;
     }
     return OCA_OK;
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 }

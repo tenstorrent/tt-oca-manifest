@@ -27,6 +27,9 @@ oca_result_t oca_check_security_version(const uint8_t *body,
                                         const oca_callbacks_t *cb,
                                         const oca_validation_context_t *ctx)
 {
+#if OCA_CFG_SECURE_BOOT_DISABLED
+    return oca_secure_boot_not_built(body, cb, ctx);
+#else
     oca_secure_bool_t engaged;
     oca_result_t confirmed = oca_secure_boot_confirm(body, cb, ctx, &engaged);
     if (confirmed != OCA_OK) {
@@ -61,8 +64,10 @@ oca_result_t oca_check_security_version(const uint8_t *body,
         return OCA_FAIL_SECURITY_VERSION;
     }
     return OCA_OK;
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 }
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief OR one family's manifest revocation bitmap into that family's device
  *        state.
@@ -121,11 +126,15 @@ static oca_result_t commit_revocation_for_family(const uint8_t *body,
     }
     return OCA_OK;
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 oca_result_t oca_commit_security_state(const uint8_t *body,
                                        const oca_callbacks_t *cb,
                                        const oca_validation_context_t *ctx)
 {
+#if OCA_CFG_SECURE_BOOT_DISABLED
+    return oca_secure_boot_not_built(body, cb, ctx);
+#else
     /* Confirmed before anything is written, not after. Every path out of this
      * function below burns fuses, and a determination that no longer matches the
      * device is not a basis on which to make an irreversible change. */
@@ -270,4 +279,5 @@ oca_result_t oca_commit_security_state(const uint8_t *body,
         }
     }
     return OCA_OK;
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 }

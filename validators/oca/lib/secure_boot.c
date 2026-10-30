@@ -308,6 +308,7 @@ oca_result_t oca_secure_boot_confirm(const uint8_t *body,
     return OCA_OK;
 }
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 oca_result_t oca_secure_boot_confirm_classes(const uint8_t *body,
                                              const oca_validation_context_t *ctx)
 {
@@ -338,3 +339,20 @@ oca_result_t oca_secure_boot_confirm_classes(const uint8_t *body,
     }
     return OCA_OK;
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
+
+#if OCA_CFG_SECURE_BOOT_DISABLED
+oca_result_t oca_secure_boot_not_built(const uint8_t *body,
+                                       const oca_callbacks_t *cb,
+                                       const oca_validation_context_t *ctx)
+{
+    oca_secure_bool_t engaged;
+    oca_result_t confirmed = oca_secure_boot_confirm(body, cb, ctx, &engaged);
+    if (confirmed != OCA_OK) {
+        return confirmed;
+    }
+    /* Only the intact FALSE pattern has nothing to do; anything else would need
+     * the check this build left out. */
+    return (engaged == OCA_SECURE_FALSE) ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED;
+}
+#endif /* OCA_CFG_SECURE_BOOT_DISABLED */

@@ -21,6 +21,7 @@
 #include "oca_layout_pqc.h"
 #include "secure_boot.h"
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief Reject one class's selected ROOT key if its family's state revokes it.
  *
@@ -81,11 +82,15 @@ static oca_result_t check_revocation_by_class(const uint8_t *body,
     }
     return OCA_OK;
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 oca_result_t oca_check_root_key_revocation(const uint8_t *body,
                                            const oca_callbacks_t *cb,
                                            const oca_validation_context_t *ctx)
 {
+#if OCA_CFG_SECURE_BOOT_DISABLED
+    return oca_secure_boot_not_built(body, cb, ctx);
+#else
     /* Engage only when secure boot is in force, and only once the device still
      * agrees with the determination this validation recorded. Same prologue as
      * the signature and anti-rollback checks. */
@@ -129,4 +134,5 @@ oca_result_t oca_check_root_key_revocation(const uint8_t *body,
         }
     }
     return OCA_OK;
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 }

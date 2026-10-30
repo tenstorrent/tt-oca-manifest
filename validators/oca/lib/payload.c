@@ -514,6 +514,7 @@ static oca_key_source_t input_key_source(const uint8_t *body)
                               >> OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT);
 }
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief Validate an encrypted payload: authenticate, decrypt, then validate.
  *
@@ -663,6 +664,7 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
     }
     return r;
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 /**
  * @brief Read whether the payload is encrypted, and how long the stored bytes are.
@@ -773,7 +775,11 @@ oca_result_t oca_check_payload_at(const uint8_t *body,
     }
 
     if (encrypted) {
+#if OCA_CFG_SECURE_BOOT_DISABLED
+        return OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT;
+#else
         return check_encrypted_payload(payload, payload_len, body, cb, out_plaintext);
+#endif
     }
     return check_cleartext_payload(payload, (size_t)declared_span, body, cb,
                                    out_plaintext);

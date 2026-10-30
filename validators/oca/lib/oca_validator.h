@@ -2849,6 +2849,12 @@ oca_result_t oca_locate_payload(const uint8_t *body,
  * @retval OCA_FAIL_TRUNCATED              @p payload_len is short of what the
  *                                         manifest declares.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   A required callback is unavailable.
+ * @retval OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT
+ *                                         The payload is encrypted and no
+ *                                         signature authenticated its manifest,
+ *                                         as in every build that declares
+ *                                         `[secure_boot] disabled`, which
+ *                                         compiles out decryption.
  * @return Otherwise the result of the payload checks it composes, as
  *         oca_check_payload() documents, or the magic or variant failure from
  *         resolving @p body.

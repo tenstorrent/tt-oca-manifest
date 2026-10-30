@@ -13,6 +13,7 @@
 /* Each table ends in a row whose type is 0x00, a value every class reserves,
  * so a build that enables nothing in a class still has a well-formed table. */
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /** @brief Whether an RSA row accepts a DER (PKCS#1) public key in this build. */
 #define RSA_PUBLIC_KEY_DER \
     (OCA_CFG_DER_RSA_PUBLIC_KEY ? OCA_DER_ENABLED : OCA_DER_DISABLED)
@@ -106,6 +107,7 @@ oca_result_t oca_encoding_status(oca_key_algorithm_t family, oca_encoding_t enco
     return oca_integrator_byte(encoding) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
                                          : OCA_FAIL_ALGORITHM_RESERVED;
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 /**
  * A hash row's digest size, as a constant expression that stops the build
