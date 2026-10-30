@@ -84,6 +84,17 @@ incremental while editing the file, or switching `CONFIG`, rebuilds what
 depends on it. `INTEGRATION.md`, "Configuring the build", covers generating the
 header from another build system.
 
+The header also names the build's portfolio: `OCA_CFG_PORTFOLIO_ID` is the first
+32 bits of a SHA-256 over the settings that are not zero, so it depends on the
+settings alone and not on the file's name, comments or order. The library
+returns it from `oca_build_portfolio_id()`, and `build/test/oca-validate
+--build-info` prints it with the settings behind it. `gen_config.py --print NAME`
+and `--print-all` give a build system a setting's value without parsing TOML:
+
+```sh
+python3 lib/scripts/gen_config.py --config lib/oca_config.toml --print signature_pqc.ml_dsa_87
+```
+
 Changing `EXTRA_CFLAGS` forces a rebuild too. `make` decides what to recompile
 from file timestamps and never from the command line it last used, so the build
 records the flags in a stamp file (`build/*/.cflags`) that every object depends

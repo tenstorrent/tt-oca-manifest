@@ -141,6 +141,34 @@ than the default. What an algorithm costs is the cryptography your callbacks
 link, which the library never contains. Choose the portfolio for what a part
 must accept, and size the image by the callbacks it wires.
 
+**Every build names its portfolio.** The generated header states the settings
+that are not zero, one `name=value` line each in name order, as
+`OCA_CFG_PORTFOLIO_TEXT`; their SHA-256 as `OCA_CFG_PORTFOLIO_SHA256`; and the
+first 32 bits of that as `OCA_CFG_PORTFOLIO_ID`, which
+`oca_build_portfolio_id()` returns. A device can log, report or attest it, and a
+harness can tell which configuration built the library it drives:
+`oca-validate --build-info` prints all three. The identifier depends on the
+settings alone, so two files that build the same library share it, whatever
+their names, comments or order, and a library upgrade that adds a switch left
+off does not change it.
+
+**Choose what else to compile from the same file.** The callbacks an algorithm
+needs are yours to compile, and the configuration already says which
+algorithms are on. `gen_config.py --print NAME` writes one setting's value,
+`--print-all` every setting as `name=value`, and neither writes a header:
+
+```make
+OCA_GEN := python3 $(OCA_LIB)/scripts/gen_config.py --config $(OCA_CONFIG)
+
+ifeq ($(shell $(OCA_GEN) --print signature_pqc.ml_dsa_87),1)
+SRCS += src/crypto/ml_dsa_87_verify.c
+endif
+```
+
+An unknown name exits 2, so a misspelled setting stops the build rather than
+reading as off. C code needs neither: it tests the `OCA_CFG_*` macros of the
+header it compiles against.
+
 **Compile your own code against the same header.** `OCA_TOC_MAX_IMAGES` and
 `OCA_RECHECK_SECURITY_VERSION` are part of the public header and come from the
 configuration, so every translation unit that includes `oca_validator.h` must
@@ -187,8 +215,8 @@ can compile against headers generated elsewhere. Generate each build's header
 on a host that has Python 3.11 and commit it beside its configuration file.
 The compile environment puts the committed directory on the include path and
 leaves out the rule that generates the header; objects still depend on it. The
-header records only its file's name and a digest of its content, so the same
-file gives the same header on any host:
+header records only its file's name and the settings, so the same file gives
+the same header on any host, and editing a comment leaves it unchanged:
 
 ```make
 OCA_CONFIG_DIR := board/oca_gen/$(OCA_BUILD)

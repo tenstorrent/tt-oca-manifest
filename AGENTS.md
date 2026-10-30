@@ -242,7 +242,10 @@ three agree and a library source reads it. A new setting is required unless leav
 keeps what every existing configuration builds — an algorithm, an encoding, or a declaration
 that only admits configurations otherwise refused. The `Setting` docstring states the rule and
 a test holds every optional setting to it. `README.md`, "Build configuration", lists the
-settings.
+settings. The header also names the build's portfolio, a digest of the settings that are not
+zero rather than of the file: `oca_build_portfolio_id()` returns its first 32 bits and
+`oca-validate --build-info` prints it. `gen_config.py --print NAME` and `--print-all` give a
+build system a setting's value without parsing TOML.
 
 The algorithm sections are the build's portfolio: an algorithm the file does not name is off.
 The generator lists every algorithm the format defines, but only those with a row in

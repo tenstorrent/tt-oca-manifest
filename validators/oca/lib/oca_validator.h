@@ -372,6 +372,28 @@ typedef enum oca_result {
  */
 const char *oca_result_str(oca_result_t r);
 
+/**
+ * @brief Identify the build configuration this library was compiled from.
+ *
+ * The generator names each build's portfolio: the settings it states, one
+ * name=value line for each that is not zero, which the generated header holds as
+ * OCA_CFG_PORTFOLIO_TEXT, and their SHA-256 as OCA_CFG_PORTFOLIO_SHA256. This
+ * returns the first 32 bits of that digest, so a device can log, report or
+ * attest which portfolio it runs, and a harness can tell which configuration
+ * built the library it is driving.
+ *
+ * The identifier depends on the settings alone. Two configuration files that
+ * build the same library share it, whatever their names, comments or order, and
+ * a library upgrade that adds a switch left off does not change it.
+ * `gen_config.py --print-all` lists the settings behind a configuration file.
+ *
+ * Nothing else in the library calls this, so a link that collects unused
+ * sections drops it from an image that does not.
+ *
+ * @return The portfolio identifier, OCA_CFG_PORTFOLIO_ID.
+ */
+uint32_t oca_build_portfolio_id(void);
+
 /* ------------------------------------------------------------------ */
 /* Validation context                                                 */
 /*                                                                    */

@@ -44,6 +44,10 @@
 #error "oca_config.h was generated for another version of this library; regenerate it with this library's lib/scripts/gen_config.py"
 #endif
 
+#ifndef OCA_CFG_PORTFOLIO_ID
+#error "oca_config.h is missing OCA_CFG_PORTFOLIO_ID; regenerate it"
+#endif
+
 #ifndef OCA_CFG_VARIANT_CLASSIC
 #error "oca_config.h is missing OCA_CFG_VARIANT_CLASSIC; regenerate it"
 #endif

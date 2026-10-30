@@ -13,6 +13,7 @@ happy-path PASS for every fixture plus the documented FAIL paths
 from __future__ import annotations
 
 import functools
+import hashlib
 import os
 import re
 import shutil
@@ -1338,6 +1339,39 @@ def test_toc_just_over_the_cap_is_rejected_and_just_under_is_not(tmp_path):
     """Boundary check against the default configuration's own value, so the test
     tracks the cap rather than hardcoding it."""
     _assert_toc_cap_is(CLI_PATH, _default_toc_max_images(), tmp_path)
+
+
+def _portfolio_from_generator(config: str) -> list[str]:
+    """The portfolio lines gen_config.py --print-all states for a configuration:
+    every setting that is not zero, in name order."""
+    printed = subprocess.run(
+        [sys.executable, os.path.join(VALIDATOR_DIR, "lib", "scripts", "gen_config.py"),
+         "--config", config, "--print-all"],
+        capture_output=True, text=True, check=True)
+    return sorted(line for line in printed.stdout.splitlines() if not line.endswith("=0"))
+
+
+def _assert_build_info_names(cli: str, config: str) -> str:
+    """The CLI's --build-info names the portfolio of config. Returns its identifier."""
+    result = _run_cli_at(cli, ["--build-info"])
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.decode().splitlines()
+    stated = _portfolio_from_generator(config)
+    digest = hashlib.sha256("".join(f"{line}\n" for line in stated).encode()).hexdigest()
+    assert lines == [f"portfolio 0x{digest[:8]}", f"sha256 {digest}", *stated]
+    return lines[0]
+
+
+def test_cli_reports_the_portfolio_it_was_built_from(tmp_path):
+    """The identifier comes from oca_build_portfolio_id() in the compiled
+    library, and must match what the generator says of the configuration file,
+    for the default build and for one built from another configuration."""
+    default = _assert_build_info_names(
+        CLI_PATH, os.path.join(VALIDATOR_DIR, "lib", "oca_config.toml"))
+    build_dir = str(tmp_path / "build")
+    cli = _configured_cli(build_dir, _build_config_text(der_ecdsa=False))
+    configured = _assert_build_info_names(cli, os.path.join(build_dir, "build_config.toml"))
+    assert configured != default
 
 
 def test_the_toc_cap_follows_the_build_configuration(tmp_path):

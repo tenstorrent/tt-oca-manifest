@@ -1435,6 +1435,13 @@ static const struct {
 static const size_t UNSUPPORTED_HASH_TYPE_COUNT =
     sizeof UNSUPPORTED_HASH_TYPES / sizeof UNSUPPORTED_HASH_TYPES[0];
 
+/* The library reports the portfolio its header names; the CLI test holds that
+ * to what the generator says of the configuration file. */
+TEST(test_the_library_reports_its_portfolio)
+{
+    ASSERT_TRUE(oca_build_portfolio_id() == OCA_CFG_PORTFOLIO_ID);
+}
+
 TEST(test_result_string_covers_the_algorithm_codes)
 {
     ASSERT_EQ_INT(strcmp(oca_result_str(OCA_FAIL_ALGORITHM_NOT_ENABLED),
@@ -8678,6 +8685,7 @@ int main(int argc, char **argv)
     RUN_TEST_IF(CFG_CLASSIC, test_the_hash_callback_is_asked_for_the_named_digest);
     RUN_TEST(test_every_hash_type_resolves_against_the_format_and_the_build);
     RUN_TEST(test_a_hash_row_is_used_only_at_a_size_the_buffers_hold);
+    RUN_TEST(test_the_library_reports_its_portfolio);
     RUN_TEST(test_result_string_covers_the_algorithm_codes);
     RUN_TEST_IF(CFG_CLASSIC, test_deprecated_check_names_reach_the_renamed_checks);
     RUN_TEST_IF(CFG_CLASSIC, test_corruption_outranks_a_field_level_violation);

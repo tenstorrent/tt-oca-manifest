@@ -461,14 +461,71 @@ def test_an_invalid_configuration_raises_before_writing(tmp_path):
     assert not out.exists()
 
 
-def test_the_header_holds_every_setting_and_its_source_digest(tmp_path):
-    config = write_config(tmp_path, config_text(toc_max_images="32"))
+def test_the_header_holds_every_setting_and_its_portfolio(tmp_path):
+    config = write_config(tmp_path, config_text(toc_max_images="32", pqc="false",
+                                                ml_dsa_87="false"))
     header = gen_config.header_for_config(config)
     assert "#define OCA_CFG_FORMAT 1\n" in header
     assert "#define OCA_CFG_TOC_MAX_IMAGES 32u\n" in header
     assert "#define OCA_CFG_VARIANT_CLASSIC 1\n" in header
-    digest = gen_config.hashlib.sha256((tmp_path / "board.toml").read_bytes())
-    assert digest.hexdigest() in header
+    text = header_portfolio_text(header)
+    assert "limits.toc_max_images=32\n" in text
+    assert "variants.pqc" not in text
+    assert text.splitlines() == sorted(text.splitlines())
+    digest = gen_config.hashlib.sha256(text.encode("ascii")).hexdigest()
+    assert f'#define OCA_CFG_PORTFOLIO_SHA256 "{digest}"\n' in header
+    assert f"#define OCA_CFG_PORTFOLIO_ID 0x{digest[:8]}u\n" in header
+
+
+def header_portfolio_text(header):
+    """The OCA_CFG_PORTFOLIO_TEXT a header holds, as the string C reads it."""
+    block = header[header.index("#define OCA_CFG_PORTFOLIO_TEXT"):
+                   header.index("#define OCA_CFG_PORTFOLIO_SHA256")]
+    return "".join(literal.replace("\\n", "\n")
+                   for literal in re.findall(r'"([^"]*)"', block))
+
+
+def portfolio_of(directory, text, name="board.toml"):
+    document, _ = gen_config.load_config(write_config(directory, text, name))
+    return gen_config.portfolio_id(gen_config.resolve_settings(document))
+
+
+def test_the_portfolio_depends_on_the_settings_not_the_file(tmp_path):
+    """Comments, order, and the file's name leave the identifier alone."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    sections = config_text().split("\n\n")
+    shuffled = "\n\n".join(["# A board's configuration.", *reversed(sections)])
+    assert portfolio_of(tmp_path / "a", config_text()) \
+        == portfolio_of(tmp_path / "b", shuffled, name="other.toml")
+
+
+def test_a_different_portfolio_has_a_different_identifier(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    assert portfolio_of(tmp_path / "a", config_text()) \
+        != portfolio_of(tmp_path / "b", config_text(der_ecdsa="false"))
+
+
+def test_a_switch_left_off_does_not_change_the_portfolio(tmp_path):
+    """A switch at zero contributes nothing, whether left out or stated false,
+    and whether or not the library implements it: an upgrade that adds one left
+    off keeps every existing identifier."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    stated = config_text().replace("ml_dsa_87 = true\n",
+                                   "ml_dsa_87 = true\nml_dsa_44 = false\n")
+    stated = stated.replace("[encryption_cipher]\n", "[encryption_cipher]\nsm4_128_cbc = false\n")
+    assert portfolio_of(tmp_path / "a", config_text()) == portfolio_of(tmp_path / "b", stated)
+
+
+def test_a_comment_only_edit_leaves_the_header_alone(tmp_path):
+    """The header holds nothing of the file but its name, so editing a comment
+    rebuilds nothing."""
+    out = tmp_path / "oca_config.h"
+    assert gen_config.generate(write_config(tmp_path, config_text()), str(out)) is True
+    edited = write_config(tmp_path, "# Reviewed.\n" + config_text())
+    assert gen_config.generate(edited, str(out)) is False
 
 
 def test_the_header_depends_only_on_the_configuration(tmp_path):
@@ -607,6 +664,67 @@ def test_check_refuses_a_missing_header_without_creating_it(tmp_path):
     assert not out.exists()
 
 
+@pytest.mark.parametrize("name, printed", [
+    ("signature_pqc.ml_dsa_87", "1"),
+    ("der.ecdsa_signature", "0"),
+    ("signature_pqc.ml_dsa_44", "0"),
+    ("limits.toc_max_images", "16"),
+], ids=["on", "off", "not-implemented", "count"])
+def test_print_writes_one_resolved_value(tmp_path, capsys, name, printed):
+    config = write_config(tmp_path, config_text(toc_max_images="16", der_ecdsa="false"))
+    assert gen_config.main(["--config", config, "--print", name]) == 0
+    assert capsys.readouterr().out == f"{printed}\n"
+    assert os.listdir(tmp_path) == ["board.toml"]
+
+
+def test_print_refuses_a_name_that_is_no_setting(tmp_path, capsys):
+    config = write_config(tmp_path, config_text())
+    assert gen_config.main(["--config", config, "--print", "ml_dsa_87"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no setting is named ml_dsa_87" in captured.err
+
+
+def test_print_all_writes_every_setting(tmp_path, capsys):
+    config = write_config(tmp_path, config_text(aes_128="false"))
+    assert gen_config.main(["--config", config, "--print-all"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert [line.split("=")[0] for line in lines] == [s.name for s in gen_config.SETTINGS]
+    printed = dict(line.split("=") for line in lines)
+    assert printed["encryption_cipher.aes_128_cbc"] == "0"
+    assert printed["encryption_cipher.aes_256_cbc"] == "1"
+    assert printed["limits.toc_max_images"] == "256"
+
+
+def test_print_all_states_the_portfolio_the_header_names(tmp_path, capsys):
+    """Every line of --print-all that is not zero is a line of the portfolio,
+    so a build system can name the header's portfolio from the file alone."""
+    config = write_config(tmp_path, config_text(pqc="false", ml_dsa_87="false"))
+    assert gen_config.main(["--config", config, "--print-all"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    stated = "".join(f"{line}\n" for line in sorted(lines) if not line.endswith("=0"))
+    assert stated == header_portfolio_text(gen_config.header_for_config(config))
+
+
+def test_print_refuses_an_invalid_configuration(tmp_path, capsys):
+    config = write_config(tmp_path, config_text(pqc="2"))
+    assert gen_config.main(["--config", config, "--print", "variants.pqc"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "variants.pqc must be true or false, not 2" in captured.err
+
+
+@pytest.mark.parametrize("argv", [
+    ["--config", "board.toml"],
+    ["--config", "board.toml", "--out", "oca_config.h", "--check", "--print-all"],
+    ["--config", "board.toml", "--print", "variants.pqc", "--print-all"],
+], ids=["no-out-nothing-to-print", "check-and-print", "print-twice"])
+def test_the_command_line_refuses_a_contradictory_request(argv):
+    with pytest.raises(SystemExit) as caught:
+        gen_config.main(argv)
+    assert caught.value.code == 2
+
+
 # ---------------------------------------------------------------------------
 # Lock-step between the generator, the check header and the library
 # ---------------------------------------------------------------------------
@@ -663,7 +781,9 @@ def _library_sources():
 
 def test_every_configuration_macro_the_library_reads_is_generated():
     """A misspelled macro in an #if is 0, which would silently turn a feature off."""
-    generated = {s.macro for s in IMPLEMENTED} | {"OCA_CFG_FORMAT", "OCA_CFG_IS_SWITCH"}
+    generated = {s.macro for s in IMPLEMENTED} | {
+        "OCA_CFG_FORMAT", "OCA_CFG_IS_SWITCH", "OCA_CFG_PORTFOLIO_TEXT",
+        "OCA_CFG_PORTFOLIO_SHA256", "OCA_CFG_PORTFOLIO_ID"}
     for name, text in _library_sources():
         for macro in set(re.findall(r"\bOCA_CFG_[A-Z0-9_]+\b", text)):
             assert macro in generated, f"{name} reads {macro}, which nothing generates"
@@ -770,6 +890,9 @@ UNGENERATED_HEADERS = [
     pytest.param({"values": {"OCA_CFG_FORMAT": "2"}},
                  "oca_config.h was generated for another version of this library",
                  id="other-format"),
+    pytest.param({"drop": ["OCA_CFG_PORTFOLIO_ID"]},
+                 "oca_config.h is missing OCA_CFG_PORTFOLIO_ID",
+                 id="no-portfolio"),
     pytest.param({"values": {"OCA_CFG_VARIANT_PQC": "2"}},
                  "holds a true/false setting that is neither 0 nor 1",
                  id="variant-not-bool"),

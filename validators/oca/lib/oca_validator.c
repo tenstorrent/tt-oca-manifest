@@ -20,6 +20,11 @@
 #include "selector.h"
 #include "version_range.h"
 
+uint32_t oca_build_portfolio_id(void)
+{
+    return OCA_CFG_PORTFOLIO_ID;
+}
+
 const char *oca_result_str(oca_result_t r)
 {
     switch (r) {
