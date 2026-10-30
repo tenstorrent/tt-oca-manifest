@@ -254,7 +254,7 @@ static oca_result_t payload_digest(const oca_callbacks_t *cb,
     if (cb == 0 || cb->hash == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    return cb->hash((oca_hash_type_t)hash->type, msg, len, digest, size) == OCA_OK
+    return cb->hash(hash->type, msg, len, digest, size) == OCA_OK
         ? OCA_OK : OCA_FAIL_CALLBACK_UNAVAILABLE;
 }
 
@@ -635,8 +635,8 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
     in.ciphertext_len = (size_t)cipher_len;
     in.iv             = body + OCA_OFF_ENCRYPTION_IV;
     in.kdf_input      = body + OCA_OFF_ENCRYPTION_KDF_INPUT;
-    in.cipher         = (oca_encryption_type_t)enc_type;
-    in.kdf            = (oca_kdf_t)kdf;
+    in.cipher         = enc_type;
+    in.kdf            = kdf;
     in.key_source     = (oca_key_source_t)key_source;
     in.secret_select  = oca_le_u16(body + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT);
     r = cb->decrypt_payload(&in, &plaintext, &plaintext_len);

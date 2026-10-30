@@ -697,11 +697,22 @@ typedef enum oca_hw_result {
  * backend to consult without interpreting primitive bytes — the classical and
  * PQC signature_type value spaces both reserve 0xF0+ for integrators, so the
  * primitive value alone cannot distinguish the families there.
+ *
+ * This type and the other crypto types below are uint16_t, and a like-named
+ * enum lists each one's values. A compiler chooses an enum's size — under
+ * -fshort-enums, or an ABI that makes it the default, one byte — so an enum
+ * type in oca_crypto_blob_t, oca_decrypt_input_t or a callback's signature
+ * would lay them out differently in a library and a callback built with
+ * different settings. Compare a value against the enumerators as usual; a
+ * switch over one no longer gets -Wswitch's check for a missing enumerator.
  */
-typedef enum oca_key_algorithm {
+typedef uint16_t oca_key_algorithm_t;
+
+/** @brief The values of oca_key_algorithm_t. */
+enum oca_key_algorithm {
     OCA_KEY_ALGO_CLASSIC = 0,  /**< The RSA / ECDSA family. */
     OCA_KEY_ALGO_PQC     = 1   /**< The post-quantum family (ML-DSA / SLH-DSA). */
-} oca_key_algorithm_t;
+};
 
 /* ------------------------------------------------------------------ */
 /* Crypto blob descriptor                                             */
@@ -713,10 +724,13 @@ typedef enum oca_key_algorithm {
  * Lets one descriptor type carry both operands of a signature check while
  * keeping them distinguishable to the verifying callback.
  */
-typedef enum oca_blob_kind {
+typedef uint16_t oca_blob_kind_t;
+
+/** @brief The values of oca_blob_kind_t. */
+enum oca_blob_kind {
     OCA_BLOB_PUBLIC_KEY = 1,  /**< The public key the signature is checked against. */
     OCA_BLOB_SIGNATURE  = 2   /**< The signature over the signed region. */
-} oca_blob_kind_t;
+};
 
 /**
  * @brief Encoding of a signature or public-key blob.
@@ -724,8 +738,8 @@ typedef enum oca_blob_kind {
  * As recorded in the manifest's signature_encoding_classic /
  * public_key_encoding_classic byte.
  *
- * THE ENUMERATOR VALUES ARE THE ON-DISK BYTE VALUES. A manifest byte is cast
- * straight to this type with no translation, the same convention
+ * THE ENUMERATOR VALUES ARE THE ON-DISK BYTE VALUES. A manifest byte reaches
+ * oca_crypto_blob_t::encoding with no translation, the same convention
  * oca_primitive_type_t follows for signature_type_classic.
  *
  * Two consequences worth keeping in mind before editing this enum:
@@ -734,11 +748,10 @@ typedef enum oca_blob_kind {
  *     zeroes the signing fields. It does NOT mean "raw". An earlier revision
  *     used RAW = 0, which silently aliased "unset" onto a real encoding and
  *     left the format's raw-little-endian value (0x02) unrepresentable.
- *   - Casting a byte outside this set is well-defined in C (the value is
- *     representable in the implementation-chosen underlying type), but is
- *     undefined behaviour if this header is compiled as C++ — which the
- *     extern "C" guard above invites. Every value the packer can emit must
- *     therefore have an enumerator here.
+ *   - The type is a uint16_t, not the enum, so a byte outside this set is
+ *     still a value it can hold; an enum object holding one is undefined in
+ *     C++. Every value the packer can emit must still have an enumerator
+ *     here, so a callback can name it.
  *
  * @note A drift test fails if these values diverge from the packer's
  *       OcaClassicSignatureEncoding / OcaClassicPublicKeyEncoding. That test
@@ -746,27 +759,33 @@ typedef enum oca_blob_kind {
  *       each enumerator below documents itself on the PRECEDING line rather
  *       than with a trailing comment.
  */
-typedef enum oca_encoding {
+typedef uint16_t oca_encoding_t;
+
+/** @brief The values of oca_encoding_t. */
+enum oca_encoding {
     /** Field never populated. Not an encoding — see the warning above. */
     OCA_ENCODING_UNSET  = 0x00,
     /** ASN.1 DER. */
     OCA_ENCODING_DER    = 0x01,
     /** Raw bytes, in the algorithm's own byte order (big-endian). */
     OCA_ENCODING_RAW    = 0x02
-} oca_encoding_t;
+};
 
 /**
  * @brief Signature primitive named by the manifest's signature_type_classic
  *        or signature_type_pqc byte.
  *
  * As with oca_encoding_t, the enumerator values are the on-disk byte values and
- * a manifest byte is cast straight to this type. The numbering is the format's,
- * which is why it is not contiguous. The classical values (0x01, 0x05) and the
+ * a manifest byte reaches oca_crypto_blob_t::primitive_type untranslated. The
+ * numbering is the format's, which is why it is not contiguous. The classical values (0x01, 0x05) and the
  * PQC values (0x31+) come from two different manifest fields with two different
  * value spaces; the blob's key_algorithm says which space a value is from,
  * which matters because both spaces reserve 0xF0+ for integrators.
  */
-typedef enum oca_primitive_type {
+typedef uint16_t oca_primitive_type_t;
+
+/** @brief The values of oca_primitive_type_t. */
+enum oca_primitive_type {
     /** No primitive — the signing fields are unpopulated. */
     OCA_PRIMITIVE_NONE                     = 0x00,
     OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256 = 0x01,  /**< RSA-3072, PKCS#1 v1.5, SHA-256. */
@@ -780,7 +799,7 @@ typedef enum oca_primitive_type {
     OCA_PRIMITIVE_SLH_DSA_SHAKE_128S       = 0x54,  /**< FIPS 205 SLH-DSA-SHAKE-128s. */
     OCA_PRIMITIVE_SLH_DSA_SHAKE_192S       = 0x55,  /**< FIPS 205 SLH-DSA-SHAKE-192s. */
     OCA_PRIMITIVE_SLH_DSA_SHAKE_256S       = 0x56   /**< FIPS 205 SLH-DSA-SHAKE-256s. */
-} oca_primitive_type_t;
+};
 
 /**
  * @brief A signature or public-key blob, with everything needed to interpret it.
@@ -821,13 +840,16 @@ typedef struct oca_crypto_blob {
 /**
  * @brief Digest algorithm named by manifest_hash_type or payload_hash_type.
  *
- * As with the other on-disk enums here, the values ARE the field's values. Only
+ * As with the other on-disk types here, the values ARE the field's values. Only
  * the algorithms a build can enable are listed; the hash callback is never asked
  * for any other.
  */
-typedef enum oca_hash_type {
+typedef uint16_t oca_hash_type_t;
+
+/** @brief The values of oca_hash_type_t. */
+enum oca_hash_type {
     OCA_HASH_TYPE_SHA2_256 = 0x01  /**< SHA2-256, a 32-byte digest. */
-} oca_hash_type_t;
+};
 
 /* ------------------------------------------------------------------ */
 /* Payload decryption descriptor                                      */
@@ -836,24 +858,30 @@ typedef enum oca_hash_type {
 /**
  * @brief Cipher named by the manifest's encryption_type byte.
  *
- * As with the other on-disk enums here, the values ARE the byte values.
+ * As with the other on-disk types here, the values ARE the byte values.
  */
-typedef enum oca_encryption_type {
+typedef uint16_t oca_encryption_type_t;
+
+/** @brief The values of oca_encryption_type_t. */
+enum oca_encryption_type {
     OCA_ENCRYPTION_TYPE_NONE        = 0x00,  /**< No encryption. */
     OCA_ENCRYPTION_TYPE_AES_128_CBC = 0x01,  /**< AES-128-CBC. */
     OCA_ENCRYPTION_TYPE_AES_256_CBC = 0x02   /**< AES-256-CBC. */
-} oca_encryption_type_t;
+};
 
 /**
  * @brief Key derivation function named by encryption_key_derivation_function.
  *
- * As with the other on-disk enums here, the values ARE the field's values. Only
+ * As with the other on-disk types here, the values ARE the field's values. Only
  * the functions a build can enable are listed; the decryption callback is never
  * handed any other.
  */
-typedef enum oca_kdf {
+typedef uint16_t oca_kdf_t;
+
+/** @brief The values of oca_kdf_t. */
+enum oca_kdf {
     OCA_KDF_SP800_108_HMAC_SHA256 = 0x0001  /**< NIST SP 800-108r1 counter mode, HMAC-SHA-256. */
-} oca_kdf_t;
+};
 
 /**
  * @brief Where a payload's input key comes from, as input_key_source names it.
@@ -861,9 +889,12 @@ typedef enum oca_kdf {
  * The values ARE the three-bit field's values. Only the sources a build can
  * enable are listed; the decryption callback is never handed any other.
  */
-typedef enum oca_key_source {
+typedef uint16_t oca_key_source_t;
+
+/** @brief The values of oca_key_source_t. */
+enum oca_key_source {
     OCA_KEY_SOURCE_PRESHARED = 0x1  /**< A provisioned secret, chosen by encryption_shared_secret_select. */
-} oca_key_source_t;
+};
 
 /**
  * @brief Everything the payload-decryption callback reads, in one place.

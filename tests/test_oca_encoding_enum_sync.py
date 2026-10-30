@@ -62,16 +62,16 @@ _EXPECTED_MEMBERS = {
 
 
 def _parse_oca_encoding_enum() -> dict[str, int]:
-    """Return {enumerator: value} for the `oca_encoding_t` enum body."""
+    """Return {enumerator: value} for the enum listing the `oca_encoding_t` values."""
     with open(VALIDATOR_HEADER) as handle:
         text = handle.read()
 
     match = re.search(
-        r"typedef\s+enum\s+oca_encoding\s*\{(?P<body>.*?)\}\s*oca_encoding_t\s*;",
+        r"\benum\s+oca_encoding\s*\{(?P<body>.*?)\}\s*;",
         text,
         re.DOTALL,
     )
-    assert match, f"oca_encoding_t enum not found in {VALIDATOR_HEADER}"
+    assert match, f"enum oca_encoding not found in {VALIDATOR_HEADER}"
 
     found: dict[str, int] = {}
     for line in match.group("body").splitlines():
@@ -213,10 +213,10 @@ def test_c_pqc_encoding_gate_matches_the_packer_pqc_encodings():
 # ---------------------------------------------------------------------------
 # oca_encryption_type_t <-> OcaEncryptionType
 #
-# The same class of gate, for the other on-disk enum the validator casts a
-# manifest byte to. The cipher table in `algorithms.c` decides whether the
+# The same class of gate, for the other on-disk enum whose value the validator
+# passes on untranslated. The cipher table in `algorithms.c` decides whether the
 # cipher is one this build enables, and the payload path passes the value on to
-# the decryption callback as a typed `oca_decrypt_input_t::cipher` — so a
+# the decryption callback in `oca_decrypt_input_t::cipher` — so a
 # divergence would both misjudge the support gate and mislead the callback.
 #
 # The encoding gate above does not cover this enum. Nothing about it had gone
@@ -243,17 +243,16 @@ _UNENCRYPTED_BYTE = 0x00
 
 
 def _parse_oca_encryption_type_enum() -> dict[str, int]:
-    """Return {enumerator: value} for the `oca_encryption_type_t` enum body."""
+    """Return {enumerator: value} for the enum listing the `oca_encryption_type_t` values."""
     with open(VALIDATOR_HEADER) as handle:
         text = handle.read()
 
     match = re.search(
-        r"typedef\s+enum\s+oca_encryption_type\s*\{(?P<body>.*?)\}"
-        r"\s*oca_encryption_type_t\s*;",
+        r"\benum\s+oca_encryption_type\s*\{(?P<body>.*?)\}\s*;",
         text,
         re.DOTALL,
     )
-    assert match, f"oca_encryption_type_t enum not found in {VALIDATOR_HEADER}"
+    assert match, f"enum oca_encryption_type not found in {VALIDATOR_HEADER}"
 
     found: dict[str, int] = {}
     for line in match.group("body").splitlines():
@@ -271,8 +270,8 @@ def test_c_encryption_type_values_match_the_packer():
         assert member.value in by_value, (
             f"the packer can write encryption_type = {member.value:#04x} "
             f"({member.name}) but oca_encryption_type_t has no enumerator for "
-            f"it; the validator casts that byte straight to the enum and hands "
-            f"it to the decryption callback"
+            f"it; the validator hands that byte to the decryption callback "
+            f"untranslated"
         )
 
 
@@ -348,12 +347,11 @@ def test_unencrypted_byte_is_not_a_supported_cipher():
 
 
 def _parse_header_enum(enum_name: str) -> dict[str, int]:
-    """Return {enumerator: value} for a `typedef enum <enum_name> {...}` body."""
+    """Return {enumerator: value} for an `enum <enum_name> {...};` body."""
     with open(VALIDATOR_HEADER) as handle:
         text = handle.read()
-    match = re.search(rf"typedef\s+enum\s+{enum_name}\s*\{{(?P<body>.*?)\}}"
-                      rf"\s*{enum_name}_t\s*;", text, re.DOTALL)
-    assert match, f"{enum_name}_t enum not found in {VALIDATOR_HEADER}"
+    match = re.search(rf"\benum\s+{enum_name}\s*\{{(?P<body>.*?)\}}\s*;", text, re.DOTALL)
+    assert match, f"enum {enum_name} not found in {VALIDATOR_HEADER}"
     return {name: int(value, 0) for name, value in re.findall(
         r"^\s*(OCA_\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)", match.group("body"), re.M)}
 

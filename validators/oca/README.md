@@ -182,12 +182,13 @@ fail until it is done.
    The packer accepts only what the boot ROM does, so this also needs the
    amendment to the cryptographic rules that `AGENTS.md` describes.
 2. **Name it in the public header.** A signature algorithm needs an
-   `oca_primitive_type_t` enumerator equal to its code, because the library
-   casts the manifest's byte straight to that enum for `verify_signature`. If
-   the enumerator is already there, remove it from `_SPEC_ONLY` in
-   `tests/test_oca_primitive_enum_sync.py`. A hash, cipher, KDF or key source
-   needs its enumerator in `oca_hash_type_t`, `oca_encryption_type_t`,
-   `oca_kdf_t` or `oca_key_source_t`, which its callback receives.
+   enumerator equal to its code in `enum oca_primitive_type`, which lists the
+   `oca_primitive_type_t` values, because the library hands the manifest's byte
+   to `verify_signature` untranslated. If the enumerator is already there,
+   remove it from `_SPEC_ONLY` in `tests/test_oca_primitive_enum_sync.py`. A
+   hash, cipher, KDF or key source needs its enumerator in `enum oca_hash_type`,
+   `oca_encryption_type`, `oca_kdf` or `oca_key_source`, the values of the
+   type its callback receives.
 3. **Add its row to `lib/algorithms.c`**, under `#if` of its macro and in the
    shape of the rows already there, with the sizes the format's encoded-length
    tables fix. A KDF or key source has no table; add its value to

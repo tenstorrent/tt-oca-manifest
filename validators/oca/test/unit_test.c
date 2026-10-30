@@ -4324,7 +4324,7 @@ TEST(test_the_hash_callback_is_asked_for_the_named_digest)
 
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
     build_minimal_manifest(buf);
-    g_hash_type = (oca_hash_type_t)0;
+    g_hash_type = 0u;
     g_hash_len = 0u;
     (void)oca_check_manifest_hash(buf, &cb);
     ASSERT_EQ_INT(g_hash_type, OCA_HASH_TYPE_SHA2_256);
@@ -4332,7 +4332,7 @@ TEST(test_the_hash_callback_is_asked_for_the_named_digest)
 
     uint8_t bundle[OCA_CLASSIC_BODY_SIZE + CLEAR_PAYLOAD_LEN];
     build_cleartext_bundle(bundle);
-    g_hash_type = (oca_hash_type_t)0;
+    g_hash_type = 0u;
     g_hash_len = 0u;
     (void)oca_check_payload(bundle, sizeof bundle, &cb, &g_authenticated, NULL);
     ASSERT_EQ_INT(g_hash_type, OCA_HASH_TYPE_SHA2_256);

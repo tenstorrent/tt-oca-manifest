@@ -94,8 +94,8 @@ static oca_result_t authorize_key_by_class(const uint8_t *body,
         .field_length   = len_key,
         .length         = oca_le_u16(body + off_size),
         .kind           = OCA_BLOB_PUBLIC_KEY,
-        .encoding       = (oca_encoding_t)body[off_enc],
-        .primitive_type = (oca_primitive_type_t)body[off_type],
+        .encoding       = body[off_enc],
+        .primitive_type = body[off_type],
         .key_algorithm  = algo,
     };
 

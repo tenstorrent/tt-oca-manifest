@@ -55,16 +55,16 @@ _SPEC_ONLY = {
 
 
 def _oca_primitive_enum_body() -> str:
-    """The text between the braces of the `oca_primitive_type_t` typedef."""
+    """The text between the braces of the enum listing the `oca_primitive_type_t` values."""
     with open(VALIDATOR_HEADER) as handle:
         text = handle.read()
 
     match = re.search(
-        r"typedef\s+enum\s+oca_primitive_type\s*\{(?P<body>.*?)\}\s*oca_primitive_type_t\s*;",
+        r"\benum\s+oca_primitive_type\s*\{(?P<body>.*?)\}\s*;",
         text,
         re.DOTALL,
     )
-    assert match, f"oca_primitive_type_t enum not found in {VALIDATOR_HEADER}"
+    assert match, f"enum oca_primitive_type not found in {VALIDATOR_HEADER}"
     return match.group("body")
 
 
@@ -105,7 +105,7 @@ def test_every_value_the_packer_can_write_has_its_enumerator():
             f"oca_primitive_type_t has no {c_name}")
         assert c_enum[c_name] == byte, (
             f"{c_name} = {c_enum[c_name]:#04x} in oca_validator.h but the packer "
-            f"writes {byte:#04x}; the validator casts the byte straight to the enum")
+            f"writes {byte:#04x}; the validator passes the byte on untranslated")
 
 
 def test_every_other_enumerator_is_a_listed_spec_code_point():

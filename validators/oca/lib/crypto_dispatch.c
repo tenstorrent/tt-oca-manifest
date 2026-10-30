@@ -38,7 +38,7 @@ oca_result_t oca_check_manifest_hash(const uint8_t *body,
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     uint8_t digest[OCA_HASH_MAX_DIGEST_SIZE];
-    oca_result_t r = cb->hash((oca_hash_type_t)hash->type, body,
+    oca_result_t r = cb->hash(hash->type, body,
                               v->signed_region_end, digest, size);
     if (r != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
@@ -124,14 +124,14 @@ static oca_result_t verify_signature_by_class(const uint8_t *body,
     size_t off_key_sz  = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SIZE
                                 : (size_t)OCA_OFF_PUBLIC_KEY_SIZE;
 
-    oca_primitive_type_t prim = (oca_primitive_type_t)body[off_type];
+    oca_primitive_type_t prim = body[off_type];
 
     oca_crypto_blob_t signature = {
         .bytes          = body + off_sig,
         .field_length   = len_sig,
         .length         = oca_le_u16(body + off_sig_sz),
         .kind           = OCA_BLOB_SIGNATURE,
-        .encoding       = (oca_encoding_t)body[off_sig_enc],
+        .encoding       = body[off_sig_enc],
         .primitive_type = prim,
         .key_algorithm  = algo,
     };
@@ -140,7 +140,7 @@ static oca_result_t verify_signature_by_class(const uint8_t *body,
         .field_length   = len_key,
         .length         = oca_le_u16(body + off_key_sz),
         .kind           = OCA_BLOB_PUBLIC_KEY,
-        .encoding       = (oca_encoding_t)body[off_key_enc],
+        .encoding       = body[off_key_enc],
         .primitive_type = prim,
         .key_algorithm  = algo,
     };
