@@ -164,8 +164,8 @@ static const char *reason_for(oca_result_t r)
                    "0x00 nor its group's constant, or a group sets every class "
                    "bit without its group code";
         case OCA_FAIL_CRYPTO_FIELD_SIZE:
-            return "signing fields name an algorithm, encoding or size this "
-                   "library does not accept";
+            return "signing fields declare a size, or a DER encoding, the "
+                   "algorithm does not define";
         case OCA_FAIL_INVALID_ARG:
             return "internal: invalid argument";
         case OCA_OK:

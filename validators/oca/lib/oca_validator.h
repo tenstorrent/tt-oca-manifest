@@ -267,14 +267,13 @@ typedef enum oca_result {
      *  and refusing a group disabled class by class keeps a whole-group
      *  disable the explicit act the code records. */
     OCA_FAIL_GROUP_CODE                 = 33,
-    /** An enforced signature class's description — its primitive, encodings,
-     *  and size fields — does not describe a key and signature this library
-     *  accepts.
+    /** An enforced signature class's description — its encodings and size
+     *  fields — does not describe a key and signature of its algorithm.
      *
      *  Each size field bounds how far a Consumer reads into its companion field,
      *  so a value that is zero, overruns the field, or disagrees with the
-     *  algorithm is rejected before any parse relies on it, as is a primitive or
-     *  encoding the library does not accept for that class, and a key or
+     *  algorithm is rejected before any parse relies on it, as is a DER
+     *  encoding the class defines but the algorithm does not, and a key or
      *  signature field whose padding past its size is not zero. Distinct from
      *  OCA_FAIL_SIGNATURE, which reports a signature that was parsed and did not
      *  verify; this one means the manifest never described a parseable value. */
@@ -338,8 +337,9 @@ typedef enum oca_result {
      *  not enable. Which algorithms a build accepts is its security portfolio,
      *  chosen in the build configuration; everything outside it is refused
      *  with this code. It covers a signature_type of an enforced class, a DER
-     *  encoding the configuration turns off, a manifest_hash_type or
-     *  payload_hash_type, and, for an encrypted payload,
+     *  encoding the configuration turns off, an integrator-defined signature or
+     *  public-key encoding, which this library implements none of, a
+     *  manifest_hash_type or payload_hash_type, and, for an encrypted payload,
      *  an encryption_type, encryption_key_derivation_function or
      *  input_key_source the build does not enable.
      *
@@ -349,13 +349,13 @@ typedef enum oca_result {
      *  OCA_FAIL_ALGORITHM_RESERVED, which no Consumer accepts. */
     OCA_FAIL_ALGORITHM_NOT_ENABLED      = 39,
     /** The manifest names an algorithm value the format reserves: a
-     *  signature_type of an enforced class, a manifest_hash_type or
-     *  payload_hash_type, or for an encrypted payload an encryption_type,
-     *  encryption_key_derivation_function or input_key_source, that the format
-     *  assigns to nothing and does not leave
-     *  to integrators. No Consumer can accept it,
-     *  so unlike OCA_FAIL_ALGORITHM_NOT_ENABLED it says the manifest is
-     *  malformed rather than outside this build's portfolio. */
+     *  signature_type, signature encoding or public-key encoding of an
+     *  enforced class, a manifest_hash_type or payload_hash_type, or for an
+     *  encrypted payload an encryption_type, encryption_key_derivation_function
+     *  or input_key_source, that the format assigns to nothing and does not
+     *  leave to integrators. No Consumer can accept it, so unlike
+     *  OCA_FAIL_ALGORITHM_NOT_ENABLED it says the manifest is malformed rather
+     *  than outside this build's portfolio. */
     OCA_FAIL_ALGORITHM_RESERVED         = 40
 } oca_result_t;
 
@@ -1649,7 +1649,9 @@ oca_result_t oca_check_signature_class_variant(const uint8_t *body);
  * value and zero-padded beyond. They bound how far a Consumer reads, so a size
  * that is zero, overruns its field, or disagrees with what the declared
  * algorithm and encoding can produce is rejected before any parse uses it, as
- * is a primitive or encoding this library does not accept for the class.
+ * is a primitive or encoding this library does not accept for the class. The
+ * primitive and both encodings are resolved before any size, so a value the
+ * format reserves, or one it leaves to integrators, is reported as that.
  *
  * Every size is an exact byte count except one: a DER ECDSA signature carries
  * the algorithm's MAXIMUM DER length instead. That field lies inside the region
@@ -1678,8 +1680,8 @@ oca_result_t oca_check_signature_class_variant(const uint8_t *body);
  * anchor.
  *
  * The PQC class accepts ML-DSA-87 only, with both encodings raw: FIPS 204
- * defines no bare ASN.1 structure for an ML-DSA key or signature, so DER is
- * undefined for PQC. The raw sizes are exact — a 2592-byte public key and a
+ * defines no bare ASN.1 structure for an ML-DSA key or signature, so the
+ * format reserves DER for PQC. The raw sizes are exact — a 2592-byte public key and a
  * 4627-byte signature.
  *
  * Structural validation of the DER itself belongs to the crypto backend, the
@@ -1700,13 +1702,15 @@ oca_result_t oca_check_signature_class_variant(const uint8_t *body);
  * @retval OCA_FAIL_INVALID_ARG         @p body was NULL.
  * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An enforced class names a
  *                                      signature algorithm the format defines
- *                                      but this build does not enable, or a
- *                                      DER encoding the build configuration
- *                                      turns off.
- * @retval OCA_FAIL_ALGORITHM_RESERVED  An enforced class's signature_type is a
- *                                      value the format reserves.
- * @retval OCA_FAIL_CRYPTO_FIELD_SIZE   An enforced class names an encoding the
- *                                      format does not define for its
+ *                                      but this build does not enable, an
+ *                                      integrator-defined encoding, or a DER
+ *                                      encoding the build configuration turns
+ *                                      off.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED  An enforced class's signature_type or
+ *                                      an encoding is a value the format
+ *                                      reserves.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE   An enforced class names a DER encoding
+ *                                      the format does not define for its
  *                                      algorithm, a size field is zero,
  *                                      overruns its field, or disagrees with
  *                                      the declared algorithm and encoding, or
@@ -2057,11 +2061,12 @@ oca_result_t oca_check_manifest_hash(
  *                                         variant with no PQC fields — both
  *                                         only reachable around the checks
  *                                         that reject them earlier.
- * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An enforced class's algorithm, or a
- *                                         DER encoding it uses, is not
- *                                         enabled in this build.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An enforced class's algorithm, an
+ *                                         integrator encoding, or a DER
+ *                                         encoding it uses is not enabled in
+ *                                         this build.
  * @retval OCA_FAIL_ALGORITHM_RESERVED     An enforced class's signature_type
- *                                         is reserved.
+ *                                         or an encoding is reserved.
  * @retval OCA_FAIL_CRYPTO_FIELD_SIZE      An enforced class's size or encoding
  *                                         does not fit its algorithm, or its
  *                                         padding is not zero. This and the
@@ -2197,11 +2202,12 @@ oca_result_t oca_check_signature_posture(
  *                                         variant with no PQC fields — both
  *                                         only reachable around the checks
  *                                         that reject them earlier.
- * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An enforced class's algorithm, or a
- *                                         DER encoding it uses, is not
- *                                         enabled in this build.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An enforced class's algorithm, an
+ *                                         integrator encoding, or a DER
+ *                                         encoding it uses is not enabled in
+ *                                         this build.
  * @retval OCA_FAIL_ALGORITHM_RESERVED     An enforced class's signature_type
- *                                         is reserved.
+ *                                         or an encoding is reserved.
  * @retval OCA_FAIL_CRYPTO_FIELD_SIZE      An enforced class's size or encoding
  *                                         does not fit its algorithm, or its
  *                                         padding is not zero. This and the

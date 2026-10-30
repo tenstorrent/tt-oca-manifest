@@ -208,26 +208,34 @@ static int padding_is_dirty(const uint8_t *field, size_t field_len, size_t valid
 /**
  * @brief The size a key or signature must declare in its stated encoding.
  *
- * Every encoding is matched against the ones its algorithm defines, so an
- * unset, reserved or integrator value never falls through to another
- * encoding's size rule.
+ * The encoding is resolved against the format before any size rule applies,
+ * so an unset, reserved or integrator value never falls through to another
+ * encoding's rule.
  *
+ * @param[in]  family    Which class's *_encoding_* field @p encoding is from.
  * @param[in]  encoding  The value's *_encoding_* byte.
  * @param[in]  raw       The algorithm's raw length for this value.
  * @param[in]  der       Whether the algorithm accepts DER for this value.
  * @param[in]  der_size  The size a DER encoding must declare.
  * @param[out] want      Receives the required size on OCA_OK.
  * @retval OCA_OK                          @p want holds the required size.
- * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  DER, which the build configuration
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An integrator-defined encoding, or
+ *                                         DER, which the build configuration
  *                                         turns off for this algorithm.
- * @retval OCA_FAIL_CRYPTO_FIELD_SIZE      DER where the format defines none
- *                                         for this algorithm, or an encoding
- *                                         that is neither raw nor DER.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     An encoding the format reserves.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE      DER where the class defines it but
+ *                                         this algorithm does not.
+ * @return oca_encoding_status()'s refusal of the encoding, else one of the
+ *         codes above.
  */
-static oca_result_t required_size(uint8_t encoding, uint16_t raw,
-                                  oca_der_support_t der, uint16_t der_size,
-                                  uint16_t *want)
+static oca_result_t required_size(oca_key_algorithm_t family, uint8_t encoding,
+                                  uint16_t raw, oca_der_support_t der,
+                                  uint16_t der_size, uint16_t *want)
 {
+    oca_result_t status = oca_encoding_status(family, encoding);
+    if (status != OCA_OK) {
+        return status;
+    }
     if (encoding == (uint8_t)OCA_ENCODING_RAW) {
         *want = raw;
         return OCA_OK;
@@ -261,16 +269,18 @@ typedef struct class_description {
 /**
  * @brief Validate one enforced class's signing description.
  *
- * The algorithm is resolved first, so a manifest naming one this build does
- * not enable, or a reserved value, is reported as that rather than as a size
- * that happens not to fit.
+ * The algorithm and both encodings are resolved first, so a manifest naming
+ * one this build does not enable, or a reserved value, is reported as that
+ * rather than as a size that happens not to fit.
  *
  * @param[in] body  Whole variant body.
  * @param[in] d     Where the class's fields are.
  * @retval OCA_OK                          The description is consistent.
- * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  The algorithm, or a DER encoding it
- *                                         uses, is not enabled in this build.
- * @retval OCA_FAIL_ALGORITHM_RESERVED     The signature_type is reserved.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  The algorithm, an integrator
+ *                                         encoding, or a DER encoding it uses
+ *                                         is not enabled in this build.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     The signature_type or an encoding is
+ *                                         reserved.
  * @retval OCA_FAIL_CRYPTO_FIELD_SIZE      A size or encoding does not fit the
  *                                         algorithm, or padding is not zero.
  * @return The first failing step's result, always one of the codes above.
@@ -285,30 +295,30 @@ static oca_result_t check_class_description(const uint8_t *body,
         return status;
     }
 
-    uint16_t sig_size = oca_le_u16(body + d->off_signature_size);
-    uint16_t key_size = oca_le_u16(body + d->off_public_key_size);
-    if (sig_size == 0u || sig_size > d->len_signature
-        || key_size == 0u || key_size > d->len_public_key) {
-        return OCA_FAIL_CRYPTO_FIELD_SIZE;
-    }
-
     /* A DER public key is PKCS#1, whose length varies with the public
-     * exponent, so its declared size is taken as exact; the field bound above
+     * exponent, so its declared size is taken as exact; the field bound below
      * is all that constrains it. A DER signature declares the algorithm's
      * maximum DER length. */
+    uint16_t sig_size = oca_le_u16(body + d->off_signature_size);
+    uint16_t key_size = oca_le_u16(body + d->off_public_key_size);
     uint16_t want_sig;
     uint16_t want_key;
-    status = required_size(body[d->off_signature_encoding],
+    status = required_size(d->family, body[d->off_signature_encoding],
                            algorithm->signature_raw, algorithm->signature_der,
                            algorithm->signature_der_max, &want_sig);
     if (status != OCA_OK) {
         return status;
     }
-    status = required_size(body[d->off_public_key_encoding],
+    status = required_size(d->family, body[d->off_public_key_encoding],
                            algorithm->public_key_raw, algorithm->public_key_der,
                            key_size, &want_key);
     if (status != OCA_OK) {
         return status;
+    }
+
+    if (sig_size == 0u || sig_size > d->len_signature
+        || key_size == 0u || key_size > d->len_public_key) {
+        return OCA_FAIL_CRYPTO_FIELD_SIZE;
     }
     if (sig_size != want_sig || key_size != want_key) {
         return OCA_FAIL_CRYPTO_FIELD_SIZE;

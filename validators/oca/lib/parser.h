@@ -71,9 +71,9 @@ static inline uint64_t oca_le_u64(const uint8_t *p)
 /**
  * @brief Hold one signature class's signing description to this build.
  *
- * The algorithm is resolved against the build's portfolio first, then the
- * declared sizes against the algorithm and the fields, then the padding past
- * them. oca_check_signing_description() runs it for each enforced class, and
+ * The algorithm and both encodings are resolved against the format and the
+ * build's portfolio first, then the declared sizes against the algorithm and
+ * the fields, then the padding past them. oca_check_signing_description() runs it for each enforced class, and
  * every check that hands a class's key or signature to a callback runs it
  * again at that point, so neither a skipped description check nor a refusal
  * glitched past puts an algorithm the build leaves off, or a length nothing
@@ -86,9 +86,11 @@ static inline uint64_t oca_le_u64(const uint8_t *p)
  * @retval OCA_FAIL_UNSUPPORTED_VARIANT      The body's variant is compiled out.
  * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL  @p algo is the PQC class and the
  *                                           variant carries no PQC fields.
- * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED    The algorithm, or a DER encoding it
- *                                           uses, is not enabled in this build.
- * @retval OCA_FAIL_ALGORITHM_RESERVED       The signature_type is reserved.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED    The algorithm, an integrator
+ *                                           encoding, or a DER encoding it uses
+ *                                           is not enabled in this build.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED       The signature_type or an encoding
+ *                                           is reserved.
  * @retval OCA_FAIL_CRYPTO_FIELD_SIZE        A size or encoding does not fit the
  *                                           algorithm, or padding is not zero.
  * @return The first failing step's result, always one of the codes above.

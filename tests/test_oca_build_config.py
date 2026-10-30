@@ -1057,6 +1057,15 @@ FIELD_VALUES = {
     "encryption_key_source": range(8),
 }
 
+# How each class's signature and public-key encodings resolve, from the
+# packer's lists: "on" for an encoding the class defines (whether the
+# algorithm defines it, and whether the build enables a DER it defines, are the
+# row's to say), "off" for an integrator encoding, and "reserved" otherwise.
+ENCODING_FIELDS = {
+    "encoding_classic": oca_constants.OCA_SELECTABLE_ENCODINGS,
+    "encoding_pqc": oca_constants.PQC_SELECTABLE_ENCODINGS,
+}
+
 # The format reserves FN-DSA's two values until FIPS 206 is published, but
 # already gives FN-DSA a signature_class_revoke bit.
 REVOCABLE_WHILE_RESERVED = {"signature_pqc": {0x41, 0x42}}
@@ -1096,6 +1105,10 @@ int main(void)
         printf("hash %u %s\n", v, verdict(status, row));
         row = oca_cipher_algorithm((uint8_t)v, &status) != 0;
         printf("encryption_cipher %u %s\n", v, verdict(status, row));
+        status = oca_encoding_status(OCA_KEY_ALGO_CLASSIC, (uint8_t)v);
+        printf("encoding_classic %u %s\n", v, verdict(status, status == OCA_OK));
+        status = oca_encoding_status(OCA_KEY_ALGO_PQC, (uint8_t)v);
+        printf("encoding_pqc %u %s\n", v, verdict(status, status == OCA_OK));
         printf("revoke signature_classic %u %d\n", v, classical_revoke_bit((uint8_t)v));
         printf("revoke signature_pqc %u %d\n", v, pqc_revoke_bit((uint8_t)v));
     }
@@ -1154,6 +1167,12 @@ def expected_verdicts(values):
             expected[(field, value)] = ("on" if value in enabled
                                         else "off" if value in defined
                                         else "reserved")
+    for field, selectable in ENCODING_FIELDS.items():
+        for value in range(0x100):
+            expected[(field, value)] = (
+                "on" if value in selectable
+                else "off" if value in oca_constants.INTEGRATOR_ENCODINGS
+                else "reserved")
     return expected
 
 
@@ -1201,6 +1220,9 @@ def test_the_library_resolves_every_code_point_as_the_generator_lists_it(
                                   "(type >= 0x01u && type <= 0x09u)"),
                  "hash 0x9: library off, generator reserved",
                  id="a-reserved-hash-defined"),
+    pytest.param("algorithms.c", ("&& family != OCA_KEY_ALGO_PQC", ""),
+                 "encoding_pqc 0x1: library on, generator reserved",
+                 id="a-reserved-encoding-defined"),
     pytest.param("signature_posture.c", ("case 0x0Bu:             return 6;", ""),
                  "signature_classic 0xB: revocation bit -1, but the format defines it",
                  id="a-defined-signature-without-a-revocation-bit"),

@@ -96,6 +96,17 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
     return 0;
 }
 
+oca_result_t oca_encoding_status(oca_key_algorithm_t family, uint8_t encoding)
+{
+    if (encoding == (uint8_t)OCA_ENCODING_RAW
+        || (encoding == (uint8_t)OCA_ENCODING_DER && family != OCA_KEY_ALGO_PQC)) {
+        return OCA_OK;
+    }
+    /* The range both classes leave to integrators. */
+    return (encoding >= 0xF0u) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                               : OCA_FAIL_ALGORITHM_RESERVED;
+}
+
 /**
  * A hash row's digest size, as a constant expression that stops the build
  * when the digest is empty or wider than the digest buffers: the array size

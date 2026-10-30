@@ -2684,8 +2684,10 @@ def test_fixture_anchor_is_the_digest_of_the_key_it_signs_with(fixture, flag, ke
      oca_constants.ML_DSA_87_SIGNATURE_BYTES - 1, "CRYPTO_FIELD_SIZE"),
     ("key-size", oca_constants.OFF_PUBLIC_KEY_SIZE_PQC, 2,
      oca_constants.ML_DSA_87_PUBLIC_KEY_BYTES + 1, "CRYPTO_FIELD_SIZE"),
-    ("signature-der", oca_constants.OFF_SIGNATURE_ENCODING_PQC, 1, 0x01, "CRYPTO_FIELD_SIZE"),
-    ("key-der", oca_constants.OFF_PUBLIC_KEY_ENCODING_PQC, 1, 0x01, "CRYPTO_FIELD_SIZE"),
+    ("signature-der", oca_constants.OFF_SIGNATURE_ENCODING_PQC, 1, 0x01, "ALGORITHM_RESERVED"),
+    ("key-der", oca_constants.OFF_PUBLIC_KEY_ENCODING_PQC, 1, 0x01, "ALGORITHM_RESERVED"),
+    ("key-integrator", oca_constants.OFF_PUBLIC_KEY_ENCODING_PQC, 1, 0xFF,
+     "ALGORITHM_NOT_ENABLED"),
 ])
 def test_cli_mldsa_refuses_a_description_it_cannot_verify(tmp_path, name, offset, width,
                                                           value, code):
@@ -2948,21 +2950,30 @@ def test_cli_refuses_a_der_key_longer_than_its_declared_size(tmp_path, fixture):
                     "CRYPTO_FIELD_SIZE")
 
 
-@pytest.mark.parametrize("fixture,offset,value", [
-    ("secure_rsa", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC, 0x00),
-    ("secure_rsa_der", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC, 0xF0),
-    ("secure_ecdsa", oca_constants.OFF_SIGNATURE_ENCODING_CLASSIC, 0x03),
-], ids=["rsa-key-unset", "rsa-key-integrator", "ecdsa-signature-reserved"])
-def test_cli_refuses_a_classical_encoding_its_primitive_does_not_define(tmp_path, fixture,
-                                                                       offset, value):
+@pytest.mark.parametrize("fixture,offset,value,refused_with", [
+    ("secure_rsa", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC, 0x00,
+     "ALGORITHM_RESERVED"),
+    ("secure_rsa_der", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC, 0xF0,
+     "ALGORITHM_NOT_ENABLED"),
+    ("secure_ecdsa", oca_constants.OFF_SIGNATURE_ENCODING_CLASSIC, 0x03,
+     "ALGORITHM_RESERVED"),
+    ("secure_ecdsa", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC,
+     oca_constants.OcaClassicPublicKeyEncoding.ASN1_DER.value, "CRYPTO_FIELD_SIZE"),
+], ids=["rsa-key-unset", "rsa-key-integrator", "ecdsa-signature-reserved",
+        "ecdsa-key-der"])
+def test_cli_refuses_a_classical_encoding_its_primitive_does_not_define(
+        tmp_path, fixture, offset, value, refused_with):
     """An encoding outside the ones the primitive defines is refused by the
     library, before any callback, rather than read under another encoding's
-    rule and left for the crypto backend to reject."""
+    rule and left for the crypto backend to reject. A value the format
+    reserves is refused as reserved, an integrator encoding as one this build
+    does not enable, and a DER the class defines but the algorithm does not as
+    a description at odds with itself."""
     data = _fixture_bytes(fixture)
     data[offset] = value
     _reseal_manifest_hash(data)
     _assert_refused(_run_bundle(tmp_path, data, f"{fixture}_encoding_{value:#04x}"),
-                    "CRYPTO_FIELD_SIZE")
+                    refused_with)
 
 
 # (fixture, field offset, declared valid bytes, field width). The signature

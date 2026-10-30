@@ -6020,11 +6020,25 @@ TEST(test_pqc_description_accepts_only_ml_dsa_87)
     }
 }
 
+/* An encoding value and how a description carrying it is refused. */
+typedef struct {
+    uint8_t      value;
+    oca_result_t refused_with;
+} refused_encoding_t;
+
 /* FIPS 204 defines no bare ASN.1 structure for an ML-DSA key or signature, so
- * DER is undefined for PQC and each encoding must be raw. */
+ * the format reserves DER for PQC and each encoding must be raw. An integrator
+ * encoding is one the format defines and this library never enables. */
 TEST(test_pqc_description_requires_raw_encodings)
 {
-    static const uint8_t refused[] = { 0x00u, OCA_ENCODING_DER, 0x03u, 0xF0u };
+    static const refused_encoding_t refused[] = {
+        { 0x00u,            OCA_FAIL_ALGORITHM_RESERVED },
+        { OCA_ENCODING_DER, OCA_FAIL_ALGORITHM_RESERVED },
+        { 0x03u,            OCA_FAIL_ALGORITHM_RESERVED },
+        { 0xEFu,            OCA_FAIL_ALGORITHM_RESERVED },
+        { 0xF0u,            OCA_FAIL_ALGORITHM_NOT_ENABLED },
+        { 0xFFu,            OCA_FAIL_ALGORITHM_NOT_ENABLED },
+    };
     static const unsigned fields[] = {
         OCA_PQC_OFF_SIGNATURE_ENCODING, OCA_PQC_OFF_PUBLIC_KEY_ENCODING,
     };
@@ -6032,9 +6046,8 @@ TEST(test_pqc_description_requires_raw_encodings)
     for (size_t f = 0u; f < sizeof fields / sizeof fields[0]; ++f) {
         for (size_t i = 0u; i < sizeof refused / sizeof refused[0]; ++i) {
             build_secure_pqc_manifest(buf, 0x05u);
-            buf[fields[f]] = refused[i];
-            ASSERT_EQ_INT(check_sizes(buf),
-                          OCA_FAIL_CRYPTO_FIELD_SIZE);
+            buf[fields[f]] = refused[i].value;
+            ASSERT_EQ_INT(check_sizes(buf), refused[i].refused_with);
         }
     }
 }
@@ -6224,28 +6237,53 @@ TEST(test_classic_description_accepts_only_supported_primitives)
 }
 
 /* The classical description admits only the encodings its primitive defines.
- * An unset, reserved or integrator encoding is refused even where its size
- * matches another encoding's rule: an RSA key at any size within the field,
- * which a DER key could be, and an ECDSA signature at the raw or DER size. */
+ * A value the format reserves, unset included, is refused as reserved, and an
+ * integrator encoding as one this library never enables. Each is refused even
+ * where its size matches another encoding's rule: an RSA key at any size
+ * within the field, which a DER key could be, and an ECDSA signature at the
+ * raw or DER size. */
 TEST(test_classic_description_accepts_only_defined_encodings)
 {
-    static const uint8_t undefined[] = { 0x00u, 0x03u, 0xF0u, 0xFFu };
+    static const refused_encoding_t refused[] = {
+        { 0x00u, OCA_FAIL_ALGORITHM_RESERVED },
+        { 0x03u, OCA_FAIL_ALGORITHM_RESERVED },
+        { 0xEFu, OCA_FAIL_ALGORITHM_RESERVED },
+        { 0xF0u, OCA_FAIL_ALGORITHM_NOT_ENABLED },
+        { 0xFFu, OCA_FAIL_ALGORITHM_NOT_ENABLED },
+    };
     static const uint16_t ecdsa_sig_sizes[] = { 64u, 72u };
-    for (size_t i = 0u; i < sizeof undefined / sizeof undefined[0]; ++i) {
+    for (size_t i = 0u; i < sizeof refused / sizeof refused[0]; ++i) {
         uint8_t buf[OCA_CLASSIC_BODY_SIZE];
         build_secure_manifest(buf);
-        buf[OCA_OFF_PUBLIC_KEY_ENCODING] = undefined[i];
-        ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+        buf[OCA_OFF_PUBLIC_KEY_ENCODING] = refused[i].value;
+        ASSERT_EQ_INT(check_sizes(buf), refused[i].refused_with);
 
         for (size_t s = 0u; s < sizeof ecdsa_sig_sizes / sizeof ecdsa_sig_sizes[0]; ++s) {
             build_secure_manifest(buf);
             buf[OCA_OFF_SIGNATURE_TYPE] = OCA_PRIMITIVE_ECDSA_P256_SHA256;
-            buf[OCA_OFF_SIGNATURE_ENCODING] = undefined[i];
+            buf[OCA_OFF_SIGNATURE_ENCODING] = refused[i].value;
             toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, ecdsa_sig_sizes[s]);
             toc_put_u16(buf + OCA_OFF_PUBLIC_KEY_SIZE, 65u);
-            ASSERT_EQ_INT(check_sizes(buf), OCA_FAIL_CRYPTO_FIELD_SIZE);
+            ASSERT_EQ_INT(check_sizes(buf), refused[i].refused_with);
         }
+
+        /* The encoding is judged before the sizes, so a size that no
+         * encoding could carry does not mask it. */
+        build_secure_manifest(buf);
+        buf[OCA_OFF_SIGNATURE_ENCODING] = refused[i].value;
+        toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 0u);
+        ASSERT_EQ_INT(check_sizes(buf), refused[i].refused_with);
     }
+
+    /* A DER the format defines for the class, but not for this algorithm, is a
+     * description at odds with itself rather than a reserved value. */
+    uint8_t mismatched[OCA_CLASSIC_BODY_SIZE];
+    build_secure_manifest(mismatched);
+    mismatched[OCA_OFF_SIGNATURE_TYPE] = OCA_PRIMITIVE_ECDSA_P256_SHA256;
+    mismatched[OCA_OFF_PUBLIC_KEY_ENCODING] = OCA_ENCODING_DER;
+    toc_put_u16(mismatched + OCA_OFF_SIGNATURE_SIZE, 64u);
+    toc_put_u16(mismatched + OCA_OFF_PUBLIC_KEY_SIZE, 65u);
+    ASSERT_EQ_INT(check_sizes(mismatched), OCA_FAIL_CRYPTO_FIELD_SIZE);
 
     /* The defined encodings still pass: a DER RSA key, and an ECDSA signature
      * in each encoding at its own size. */

@@ -253,9 +253,10 @@ touches the packer, the public header, the tables, the generator and the check h
 `validators/oca/README.md`, "Implementing an algorithm", lists every step. The lock-step tests
 in `tests/test_oca_build_config.py` hold the table rows, the generator and the packer's signing
 tables together. They also compile the library and resolve every value of every algorithm
-field, holding each to the generator's lists and the format's integrator ranges, and each
-signature type to a revocation bit, so a code point changed in one place fails until every copy
-agrees.
+field, holding each to the generator's lists and the format's integrator ranges, every
+signature and public-key encoding to the packer's, and each signature type to a revocation bit,
+so a code point changed in one place fails until every copy agrees. An integrator-defined
+encoding is refused as not enabled and a reserved one as reserved, as for an algorithm.
 
 The C unit tests must pass under any configuration, not only the default. A test whose fixture
 needs something a configuration can turn off registers with `RUN_TEST_IF(needs, test)` instead

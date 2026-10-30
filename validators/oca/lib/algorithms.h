@@ -73,6 +73,24 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
                                                          uint8_t type,
                                                          oca_result_t *status);
 
+/**
+ * @brief Resolve a signature or public-key encoding value against the format.
+ *
+ * Decides only whether the class defines the encoding at all. Whether the
+ * algorithm defines it, and whether the build enables a DER it defines, is the
+ * algorithm row's to say.
+ *
+ * @param[in] family    Which class's *_encoding_* field the value is from.
+ * @param[in] encoding  The encoding value.
+ * @retval OCA_OK                          Raw, or for the classical class DER.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An integrator-defined encoding, which
+ *                                         this library implements none of.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     A value the format reserves, unset and
+ *                                         a PQC DER included.
+ * @return One of the codes above, by how the format treats @p encoding.
+ */
+oca_result_t oca_encoding_status(oca_key_algorithm_t family, uint8_t encoding);
+
 /** @brief The largest digest any hash a build can enable produces. */
 #define OCA_HASH_MAX_DIGEST_SIZE 32u
 
