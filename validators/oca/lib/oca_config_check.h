@@ -20,6 +20,13 @@
  * hand into another valid configuration compiles, as does one left behind
  * when the file changed; `gen_config.py --check` is what finds either.
  *
+ * They do tie code to the library it links with. The library defines a guard
+ * symbol named for every setting of its header, and each file that includes
+ * this one refers to the guard its own header names, so code compiled
+ * against a header that states any setting differently does not link. The
+ * name follows the header's spelling of each value: write every value as
+ * the generator does, as one token, or the name cannot be formed.
+ *
  * This is an internal header — it is not part of the public library API.
  */
 
@@ -34,6 +41,12 @@
 #endif
 #if defined(OCA_RECHECK_SECURITY_VERSION)
 #error "OCA_RECHECK_SECURITY_VERSION is set by [hardening] recheck_security_version in the build configuration file, not with -D"
+#endif
+
+#if defined(__has_include)
+#if !__has_include("oca_config.h")
+#error "oca_config.h not found: generate it with lib/scripts/gen_config.py and put its directory on the include path (INTEGRATION.md, Configuring the build)"
+#endif
 #endif
 
 #include "oca_config.h"
@@ -161,6 +174,106 @@
 
 #if OCA_CFG_TOC_MAX_IMAGES < 1
 #error "oca_config.h sets toc_max_images below 1; regenerate it"
+#endif
+
+/**
+ * @brief Name a symbol for every setting this header states.
+ *
+ * @p prefix, then for each setting in the generator's order its macro name
+ * without OCA_CFG_, lowercased, and its value as the header spells it:
+ * `prefix_variant_classic_1_variant_pqc_1_toc_max_images_256u_...`.
+ */
+#define OCA_BUILD_GUARD_NAME(prefix) OCA_BUILD_GUARD_EXPAND(prefix, \
+    OCA_CFG_VARIANT_CLASSIC, OCA_CFG_VARIANT_PQC, OCA_CFG_TOC_MAX_IMAGES, \
+    OCA_CFG_RECHECK_SECURITY_VERSION, OCA_CFG_SECURE_BOOT_DISABLED, \
+    OCA_CFG_HASH_SHA2_256, OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256, \
+    OCA_CFG_SIG_ECDSA_P256_SHA256, OCA_CFG_SIG_ML_DSA_87, \
+    OCA_CFG_DER_RSA_PUBLIC_KEY, OCA_CFG_DER_ECDSA_SIGNATURE, \
+    OCA_CFG_CIPHER_AES_128_CBC, OCA_CFG_CIPHER_AES_256_CBC, \
+    OCA_CFG_KDF_SP800_108_HMAC_SHA256, OCA_CFG_KEY_SOURCE_PRESHARED)
+
+/**
+ * @brief Expand each setting before OCA_BUILD_GUARD_PASTE() pastes it.
+ *
+ * An argument pasted with ## is not expanded first, so without this step the
+ * name would spell each setting's macro name rather than its value.
+ */
+#define OCA_BUILD_GUARD_EXPAND(...) OCA_BUILD_GUARD_PASTE(__VA_ARGS__)
+
+/** @brief Paste OCA_BUILD_GUARD_NAME()'s name from the settings' values. */
+#define OCA_BUILD_GUARD_PASTE(prefix, variant_classic, variant_pqc, toc_max_images, \
+    recheck_security_version, secure_boot_disabled, hash_sha2_256, \
+    sig_rsa_3072_pkcs1v15_sha256, sig_ecdsa_p256_sha256, sig_ml_dsa_87, \
+    der_rsa_public_key, der_ecdsa_signature, cipher_aes_128_cbc, cipher_aes_256_cbc, \
+    kdf_sp800_108_hmac_sha256, key_source_preshared) \
+    prefix##_variant_classic_##variant_classic##_variant_pqc_##variant_pqc \
+    ##_toc_max_images_##toc_max_images \
+    ##_recheck_security_version_##recheck_security_version \
+    ##_secure_boot_disabled_##secure_boot_disabled##_hash_sha2_256_##hash_sha2_256 \
+    ##_sig_rsa_3072_pkcs1v15_sha256_##sig_rsa_3072_pkcs1v15_sha256 \
+    ##_sig_ecdsa_p256_sha256_##sig_ecdsa_p256_sha256##_sig_ml_dsa_87_##sig_ml_dsa_87 \
+    ##_der_rsa_public_key_##der_rsa_public_key \
+    ##_der_ecdsa_signature_##der_ecdsa_signature \
+    ##_cipher_aes_128_cbc_##cipher_aes_128_cbc##_cipher_aes_256_cbc_##cipher_aes_256_cbc \
+    ##_kdf_sp800_108_hmac_sha256_##kdf_sp800_108_hmac_sha256 \
+    ##_key_source_preshared_##key_source_preshared
+
+/** @brief The guard symbol: defined by the library, referred to by its users. */
+#define OCA_BUILD_GUARD OCA_BUILD_GUARD_NAME(oca_build_guard)
+
+/** @brief The reference each file that includes this header makes to OCA_BUILD_GUARD. */
+#define OCA_BUILD_GUARD_REF OCA_BUILD_GUARD_NAME(oca_build_guard_ref)
+
+/**
+ * @brief Whether this compiler can keep the guard reference through the link.
+ *
+ * A reference nothing uses is dropped by the compiler unless marked `used`,
+ * and its section by a link that collects unused sections unless marked
+ * `retain`, after which a missing guard is not reported. A compiler without
+ * `retain` therefore makes no reference and gets no guard.
+ *
+ * A file that uses the header's types and constants but is never linked with
+ * the library, such as a host tool, defines OCA_BUILD_GUARD_OMIT before
+ * including it and makes no reference. Defining it in code that is linked with
+ * the library only silences the check.
+ */
+#if defined(OCA_BUILD_GUARD_OMIT)
+#define OCA_BUILD_GUARD_ENFORCED 0
+#elif defined(__has_attribute)
+#if __has_attribute(retain)
+#define OCA_BUILD_GUARD_ENFORCED 1
+#endif
+#endif
+#ifndef OCA_BUILD_GUARD_ENFORCED
+#define OCA_BUILD_GUARD_ENFORCED 0
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/**
+ * @brief The library's guard, named for the settings of its header.
+ *
+ * Defined in oca_validator.c and referred to by OCA_BUILD_GUARD_REF. Nothing
+ * reads it: it exists only to be found, or not, by the link.
+ */
+extern const char OCA_BUILD_GUARD;
+
+#if OCA_BUILD_GUARD_ENFORCED
+/**
+ * @brief The reference that ties a file to the library its header built.
+ *
+ * Weak, and named for the settings too, so every file of one configuration
+ * shares a single copy in the image and a file of another configuration
+ * cannot share it.
+ */
+extern const char *const OCA_BUILD_GUARD_REF;
+__attribute__((weak, used, retain)) const char *const OCA_BUILD_GUARD_REF = &OCA_BUILD_GUARD;
+#endif
+
+#ifdef __cplusplus
+}
 #endif
 
 #endif /* OCA_CONFIG_CHECK_H */

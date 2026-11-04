@@ -730,6 +730,7 @@ Tests are grouped by the side they exercise:
 - **`tests/test_oca_c_validator_integration.py`** — packs fixtures and round-trips them through the compiled `oca-validate` CLI (skips, with the reason, if `make` or `pkg-config` is unavailable or OpenSSL is older than 3.5)
 - **`tests/test_oca_c_validator_layout_sync.py`** — fails on any producer↔consumer layout drift
 - **`tests/test_oca_integration_build_snippets.py`** — builds the CMake, Make and shell snippets in [validators/oca/INTEGRATION.md](validators/oca/INTEGRATION.md)'s "Configuring the build" section as written, in an adopter project that vendors `lib/`, and checks that each stays incremental and follows its configuration (skips, with the reason, without `cmake` or `ninja`)
+- **`tests/test_oca_build_guard.py`** — compiles the library and an application against different build configuration headers and requires the link to fail on the build guard, in C and C++ and with unused sections collected; and a missing header to stop the compile naming the generator
 - `make -C validators/oca check` — the validator's own C unit tests + fixture round-trips (see [validators/oca/README.md](validators/oca/README.md))
 
 Tests use the installed `tt_boot_manifest` package, so any changes to source files require the package to be installed/reinstalled (use `pip install -e .` for development mode).

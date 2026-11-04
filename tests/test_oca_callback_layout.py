@@ -68,9 +68,10 @@ STRUCT_MEMBERS = {
 
 def layout_probe() -> str:
     """C that prints every value type's size, every struct's size, and every
-    member's offset and size."""
-    lines = ['#include <stddef.h>', '#include <stdio.h>', '#include "oca_validator.h"',
-             "int main(void)", "{"]
+    member's offset and size. It reads only the header and links no library,
+    so it omits the build guard."""
+    lines = ['#include <stddef.h>', '#include <stdio.h>', "#define OCA_BUILD_GUARD_OMIT",
+             '#include "oca_validator.h"', "int main(void)", "{"]
     for value_type in VALUE_TYPES:
         lines.append(f'    printf("{value_type} %zu\\n", sizeof({value_type}));')
     for struct, members in STRUCT_MEMBERS.items():

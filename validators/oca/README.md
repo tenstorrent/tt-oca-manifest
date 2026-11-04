@@ -97,6 +97,20 @@ and `--print-all` give a build system a setting's value without parsing TOML:
 python3 lib/scripts/gen_config.py --config lib/oca_config.toml --print signature_pqc.ml_dsa_87
 ```
 
+Code compiled against another header does not link with the library. The
+library defines a guard symbol named for every setting of the header it was
+compiled against, `oca_build_guard_variant_classic_1_variant_pqc_1_...`, and
+every file that includes `oca_validator.h` refers to the guard its own header
+names. A file compiled against a stale header, another board's, or one edited by
+hand therefore fails the link with an undefined reference to its guard, whose
+name spells the settings that file was compiled with. The reference costs one
+4-byte pointer in the image, shared by every file. It needs gcc 11 or later or
+clang 13 or later, which can keep it through a link that collects unused
+sections; another compiler builds without the guard. A program that includes
+the header but never links the library defines `OCA_BUILD_GUARD_OMIT` before
+including it. A missing header stops the compile with a message naming the
+generator.
+
 Changing `EXTRA_CFLAGS` forces a rebuild too. `make` decides what to recompile
 from file timestamps and never from the command line it last used, so the build
 records the flags in a stamp file (`build/*/.cflags`) that every object depends
@@ -279,7 +293,10 @@ fail until it is done.
    Those are the signature guards (no algorithm, and `[secure_boot] disabled`),
    the PQC-variant guard, the no-hash guard and the payload-encryption guards.
    The guard that pairs the cipher, KDF and key source compares one of each, so
-   a second KDF or key source means rewriting it to compare any of each.
+   a second KDF or key source means rewriting it to compare any of each. Add it
+   to the build guard's name too, in `OCA_BUILD_GUARD_NAME()` and
+   `OCA_BUILD_GUARD_PASTE()`, in the generator's order;
+   `tests/test_oca_build_guard.py` fails until the name spells every setting.
 8. **Turn it on** in `lib/oca_config.toml`, add it to the settings table above,
    and decide its value in each file in `test/build_configs/`.
 9. **Test it.** Implement it in the CLI's `test/openssl_crypto.c`, add a fixture

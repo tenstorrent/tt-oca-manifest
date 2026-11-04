@@ -197,6 +197,29 @@ the CMake example and the `CPPFLAGS` in the Make example do that. Two builds
 that share a configuration file, such as firmware and its host tests, each
 generate the same header from it.
 
+The link enforces this. The library defines a guard symbol named for every
+setting of its header, and each file that includes `oca_validator.h` refers to
+the guard its own header names, so a file compiled against any other header
+fails the link:
+
+```
+undefined reference to `oca_build_guard_variant_classic_1_variant_pqc_1_toc_max_images_16u_...'
+```
+
+The name spells the settings that file was compiled with; compare it with the
+library's guard (`nm` lists it) to see which setting differs, and build both
+from one header. Code that sizes a buffer by `OCA_TOC_MAX_IMAGES` is why this
+matters: against a stale header it would size the buffer by one limit while
+the library accepts manifests up to another. The guard needs gcc 11 or later
+or clang 13 or later; with another compiler, nothing checks this, so hold the
+include paths to it yourself. A file that cannot find `oca_config.h` at all
+stops the compile with a message naming the generator.
+
+Every program that includes `oca_validator.h` therefore links the library. A
+host tool that uses only the header's types and constants, and never links the
+library, defines `OCA_BUILD_GUARD_OMIT` before including it. Defining it in
+code that does link the library only silences the check.
+
 **Compile with `-Wundef`**, as the library's own build does. A macro nothing
 defines reads as 0 in `#if`, so a misspelled setting, or code still testing a
 name the library no longer defines, silently compiles its branch out; with

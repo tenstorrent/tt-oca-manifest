@@ -20,6 +20,10 @@
 #include "selector.h"
 #include "version_range.h"
 
+/** The guard every file compiled against this build's header refers to; see
+ *  oca_config_check.h. */
+const char OCA_BUILD_GUARD = 0;
+
 /** The portfolio digest the generated header states. */
 static const uint8_t PORTFOLIO_DIGEST[] = { OCA_CFG_PORTFOLIO_DIGEST };
 

@@ -241,7 +241,12 @@ replaced each. To add a setting, add it to `SETTINGS` in `gen_config.py`, to eve
 states settings (`lib/oca_config.toml` and `test/build_configs/*.toml`), a missing-setting
 guard for its macro to `oca_config_check.h` (and, for a switch, its line in that header's
 0-or-1 check), and its row to the README's Settings table; `tests/test_oca_build_config.py`
-fails until all four agree and a library source reads it. The tests write their
+fails until all four agree and a library source reads it. The setting also joins the build
+guard's name in `oca_config_check.h`, `OCA_BUILD_GUARD_NAME()` and `OCA_BUILD_GUARD_PASTE()`,
+in the generator's order, and `tests/test_oca_build_guard.py` fails until it does. That guard
+is a symbol the library defines, named for every setting of its header; each file including
+`oca_validator.h` refers to the one its own header names, so code compiled against another
+header does not link. The tests write their
 configurations from the shipped default (`tests/oca_fixtures/build_config.py`) and read each
 default from that table, so no test needs the new setting. A new setting is required unless
 leaving it out keeps what every existing configuration builds — an algorithm, an encoding, or a
@@ -653,7 +658,8 @@ Keep pull requests focused; unrelated changes belong in separate ones. Branch na
 | A green run with far fewer tests than expected | A missing toolchain turned gates into skips. Confirm `make`, `pkg-config`, `cmake`, `ninja` and a non-1.9.8 doxygen are present |
 | `make check` succeeds but validated nothing | A "nothing to build" path. Look for `skipping archive`, `skipping link`, `no fixtures yet`, and for two `N/N passed` summaries |
 | A setting change has no effect on the built binary | Objects were reused across the change. Check `build/lib/.cflags` and `build/gen/oca_config.h`, or clean. GNU Make 3.81 compares timestamps to the whole second, so a script that switches configurations within one second can hit this; use GNU Make 4 |
-| The library fails to compile with `oca_config.h: No such file`, or an `#error` naming a configuration key | The build configuration header was not generated, or a setting was passed with `-D`. Build through the Makefile, or run `lib/scripts/gen_config.py` and put its output directory on the include path; set the key in the configuration file instead of the `-D` |
+| The library fails to compile with `oca_config.h not found`, or an `#error` naming a configuration key | The build configuration header was not generated, or a setting was passed with `-D`. Build through the Makefile, or run `lib/scripts/gen_config.py` and put its output directory on the include path; set the key in the configuration file instead of the `-D` |
+| A link fails with an undefined reference to `oca_build_guard_...` | A file was compiled against a different `oca_config.h` from the library's — stale, another board's, or edited by hand. The name spells that file's settings; compare it with the guard the library defines (`nm`) and build both from one header. A program that includes the header but never links the library defines `OCA_BUILD_GUARD_OMIT` before including it |
 | `gen_config.py needs Python 3.11 or later` | The generator uses `tomllib`. The Makefile runs `$PYTHON` when set, else `python3`; point `CONFIG_PYTHON` at a 3.11+ interpreter |
 | `make check` cannot import the packer | The Makefile's interpreter search found a Python without the editable install. Pass `PYTHON=<path>` explicitly |
 | A new manifest field passes Python tests but the validator ignores it | The completeness gate was satisfied with an allowlist entry instead of a decoder, or the check was composed into `oca_validate()` where the staged flow skips it |
