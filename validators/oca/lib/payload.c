@@ -755,6 +755,24 @@ static oca_result_t check_payload_algorithms(const uint8_t *body, bool encrypted
     return oca_kdf_status(oca_le_u16(body + OCA_OFF_ENCRYPTION_KDF));
 }
 
+oca_result_t oca_check_payload_algorithms(const uint8_t *body)
+{
+    if (body == 0) {
+        return OCA_FAIL_INVALID_ARG;
+    }
+    oca_result_t status;
+    if (oca_variant_for_body(body, &status) == 0) {
+        return status;
+    }
+    bool encrypted;
+    uint64_t declared_span;
+    read_payload_shape(body, &encrypted, &declared_span);
+    if (!encrypted && declared_span == 0u) {
+        return OCA_OK;
+    }
+    return check_payload_algorithms(body, encrypted);
+}
+
 oca_result_t oca_check_payload_at(const uint8_t *body,
                                   const uint8_t *payload, size_t payload_len,
                                   const oca_callbacks_t *cb,

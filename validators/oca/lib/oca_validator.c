@@ -335,6 +335,15 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
     r = oca_check_payload_encryption_precondition(body, cb, vctx);
     if (r != OCA_OK) return r;
 
+    /* Refuse a payload whose hash, cipher, KDF or key source this build does
+     * not enable. These are manifest fields, so a manifest read is enough to
+     * reject it before any expensive check runs. It comes after the encryption
+     * precondition so that an encrypted payload on a part without secure boot
+     * reports that failure instead. oca_check_payload_at() checks again at the
+     * point of use. */
+    r = oca_check_payload_algorithms(body);
+    if (r != OCA_OK) return r;
+
     /* The signing description, under secure boot only, keyed on the
      * determination rather than the manifest's enforced bit: a part that
      * enforces secure boot itself uses these fields whatever that bit says. A

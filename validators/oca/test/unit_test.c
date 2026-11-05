@@ -7849,7 +7849,8 @@ static void build_device_decided_manifest(uint8_t buf[OCA_CLASSIC_BODY_SIZE])
 TEST(test_a_reporter_that_changes_its_answer_is_caught_at_each_consumer)
 {
     /* The determination itself is consultation 0, the encryption precondition
-     * consultation 1 — which is why the manifest below declares encryption —
+     * consultation 1 — which is why the manifest below declares encryption,
+     * and names an enabled cipher so the payload algorithm check lets it pass —
      * and the GATED_CONSUMERS follow. Flipping before consultation N means
      * 0..N-1 agree and N does not, so each iteration lands the disagreement on
      * a different consumer. */
@@ -7858,6 +7859,8 @@ TEST(test_a_reporter_that_changes_its_answer_is_caught_at_each_consumer)
         uint8_t buf[OCA_CLASSIC_BODY_SIZE];
         build_device_decided_manifest(buf);
         buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
+        buf[OCA_OFF_ENCRYPTION_TYPE] = CFG_AES_128 ? OCA_ENCRYPTION_TYPE_AES_128_CBC
+                                                   : OCA_ENCRYPTION_TYPE_AES_256_CBC;
         test_fixture_reset();
 
         oca_callbacks_t cb;
@@ -7950,9 +7953,16 @@ TEST(test_the_determination_costs_one_consultation_per_consumer)
     ASSERT_EQ_INT(g_fx.sig_calls, 1);
     ASSERT_EQ_INT(g_fx.revoke_calls, 1);
 
-    /* Encryption declared: the precondition now confirms too. */
+    /* Encryption declared: the precondition now confirms too. This half needs
+     * a cipher the build enables. A build with none rejects the manifest at the
+     * payload algorithm check, so there is no count to compare. */
+    if (!(CFG_AES_128 || CFG_AES_256)) {
+        return;
+    }
     build_device_decided_manifest(buf);
     buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
+    buf[OCA_OFF_ENCRYPTION_TYPE] = CFG_AES_128 ? OCA_ENCRYPTION_TYPE_AES_128_CBC
+                                               : OCA_ENCRYPTION_TYPE_AES_256_CBC;
     test_fixture_reset();
     build_devstate_cb(&cb, buf);
     cb.is_secure_boot_disabled = sb_disabled_false_cb;
@@ -8890,6 +8900,123 @@ TEST(test_validation_applies_the_posture_before_any_key_is_used)
     ASSERT_EQ_INT(g_fx.sig_calls, 0);
 }
 
+/* Payload algorithms are checked from the manifest alone. The hash type is
+ * checked whenever a payload is declared, and an encrypted payload's cipher,
+ * KDF and key source are checked too. A manifest with no payload is not
+ * checked, and a cleartext payload's key fields are ignored. */
+TEST(test_payload_algorithms_are_judged_from_the_manifest_alone)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+
+    ASSERT_EQ_INT(oca_check_payload_algorithms(NULL), OCA_FAIL_INVALID_ARG);
+    build_minimal_manifest(buf);
+    buf[OCA_OFF_MAGIC] ^= 0xFFu;
+    ASSERT_EQ_INT(oca_check_payload_algorithms(buf), oca_check_magic(buf));
+    ASSERT_TRUE(oca_check_magic(buf) != OCA_OK);
+
+    build_minimal_manifest(buf);
+    buf[OCA_OFF_PAYLOAD_HASH_TYPE] = 0xFFu;
+    toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, 0x0009u);
+    ASSERT_EQ_INT(oca_check_payload_algorithms(buf), OCA_OK);
+
+    for (size_t i = 0u; i < UNSUPPORTED_HASH_TYPE_COUNT; ++i) {
+        build_minimal_manifest(buf);
+        toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, 1u);
+        buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i].type;
+        ASSERT_EQ_INT(oca_check_payload_algorithms(buf), UNSUPPORTED_HASH_TYPES[i].code);
+    }
+    build_minimal_manifest(buf);
+    toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, 1u);
+    toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, 0x0009u);
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] =
+        (uint8_t)(0x3u << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT);
+    ASSERT_EQ_INT(oca_check_payload_algorithms(buf), OCA_OK);
+
+    /* Encrypted with a payload length of zero: the encryption bit alone
+     * counts as declaring a payload. */
+    build_minimal_manifest(buf);
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
+    buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;
+    ASSERT_EQ_INT(oca_check_payload_algorithms(buf),
+                  CFG_AES_128 ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
+    buf[OCA_OFF_ENCRYPTION_TYPE] = 0x00u;
+    ASSERT_EQ_INT(oca_check_payload_algorithms(buf), OCA_FAIL_ALGORITHM_RESERVED);
+    if (CFG_AES_128) {
+        buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;
+        toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, 0x0009u);
+        ASSERT_EQ_INT(oca_check_payload_algorithms(buf), OCA_FAIL_ALGORITHM_RESERVED);
+        build_minimal_manifest(buf);
+        buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;
+        set_key_source(buf, 0x2u);
+        ASSERT_EQ_INT(oca_check_payload_algorithms(buf), OCA_FAIL_ALGORITHM_NOT_ENABLED);
+    }
+}
+
+/* oca_validate_manifest() rejects an unsupported payload algorithm before the
+ * signing description check, so no key is authorized, no identity is read and
+ * no signature is verified. The manifest also has a signature_size that the
+ * signing description check rejects, so the returned code shows which check ran
+ * first. With the payload fixed, the signing description's rejection comes
+ * back instead, which shows that defect is real. */
+TEST(test_validation_refuses_payload_algorithms_before_the_signature)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    oca_callbacks_t cb;
+    oca_validation_context_t ctx;
+
+    for (size_t i = 0u; i < UNSUPPORTED_HASH_TYPE_COUNT; ++i) {
+        build_secure_manifest(buf);
+        toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 383u);
+        toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, 1u);
+        buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i].type;
+        test_fixture_reset();
+        g_authorize_calls = 0;
+        build_devstate_cb(&cb, buf);
+        oca_validation_context_init(&ctx);
+        ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx),
+                      UNSUPPORTED_HASH_TYPES[i].code);
+        ASSERT_EQ_INT(g_authorize_calls, 0);
+        ASSERT_EQ_INT(g_fx.identity_calls, 0);
+        ASSERT_EQ_INT(g_fx.sig_calls, 0);
+    }
+
+    build_secure_manifest(buf);
+    toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 383u);
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
+    test_fixture_reset();
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx),
+                  OCA_FAIL_ALGORITHM_RESERVED);
+    ASSERT_EQ_INT(g_fx.sig_calls, 0);
+
+    build_secure_manifest(buf);
+    toc_put_u16(buf + OCA_OFF_SIGNATURE_SIZE, 383u);
+    toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, 1u);
+    test_fixture_reset();
+    build_devstate_cb(&cb, buf);
+    oca_validation_context_init(&ctx);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, &ctx),
+                  OCA_FAIL_CRYPTO_FIELD_SIZE);
+}
+
+/* The encryption precondition runs before the payload algorithm check. An
+ * encrypted payload on a part without secure boot is therefore reported as
+ * that, even when its cipher is also invalid. */
+TEST(test_the_encryption_precondition_is_reported_before_the_payload_algorithms)
+{
+    uint8_t buf[OCA_CLASSIC_BODY_SIZE];
+    oca_callbacks_t cb;
+    build_minimal_manifest(buf);
+    buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
+    test_fixture_reset();
+    build_devstate_cb(&cb, buf);
+    cb.is_secure_boot_active = sb_inactive_cb;
+    ASSERT_EQ_INT(oca_check_payload_algorithms(buf), OCA_FAIL_ALGORITHM_RESERVED);
+    ASSERT_EQ_INT(oca_validate_manifest(buf, sizeof buf, &cb, NULL),
+                  OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT);
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                               */
 /* ------------------------------------------------------------------ */
@@ -9352,7 +9479,7 @@ int main(int argc, char **argv)
     RUN_TEST_IF(CFG_CLASSIC,
                 test_a_corrupted_determination_flag_refuses_at_every_consumer);
     RUN_TEST_IF(CFG_CLASSIC, test_deciding_and_recording_are_one_consultation);
-    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA && (CFG_AES_128 || CFG_AES_256),
                 test_a_reporter_that_changes_its_answer_is_caught_at_each_consumer);
     RUN_TEST_IF(CFG_CLASSIC,
                 test_a_flip_to_secure_is_caught_as_readily_as_a_flip_to_insecure);
@@ -9421,6 +9548,11 @@ int main(int argc, char **argv)
                 test_the_signature_check_needs_the_posture_vouching);
     RUN_TEST_IF(CFG_PQC && CFG_RSA && CFG_ML_DSA_87,
                 test_validation_applies_the_posture_before_any_key_is_used);
+    RUN_TEST_IF(CFG_CLASSIC, test_payload_algorithms_are_judged_from_the_manifest_alone);
+    RUN_TEST_IF(CFG_CLASSIC && CFG_RSA,
+                test_validation_refuses_payload_algorithms_before_the_signature);
+    RUN_TEST_IF(CFG_CLASSIC,
+                test_the_encryption_precondition_is_reported_before_the_payload_algorithms);
 
     int reverse = (argc > 1 && strcmp(argv[1], "--reverse") == 0);
     unit_run_all(reverse);

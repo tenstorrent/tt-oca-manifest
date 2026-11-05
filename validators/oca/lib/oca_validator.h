@@ -2502,6 +2502,34 @@ oca_result_t oca_check_payload_encryption_precondition(
     const oca_validation_context_t *ctx);
 
 /**
+ * @brief Refuse a manifest whose payload uses an algorithm this build does not
+ *        enable.
+ *
+ * Checks payload_hash_type and, for an encrypted payload, encryption_type,
+ * input_key_source and encryption_kdf. These are manifest fields, so the check
+ * needs only the manifest: no callbacks and no payload. oca_validate_manifest()
+ * runs it before any device read or signature check. A manifest whose payload
+ * can never be checked is therefore rejected cheaply, and before the caller
+ * commits device state for it.
+ *
+ * oca_check_payload_at() runs the same check again when the payload is
+ * verified, so a caller that skips the manifest stage gets the same result.
+ *
+ * A cleartext manifest with no payload is not checked. For a cleartext payload
+ * only the hash type is checked, because the key fields are not used.
+ *
+ * @param[in] body  Whole variant body. See the length contract above.
+ * @retval OCA_OK                          No payload is declared, or every
+ *                                         algorithm it names is enabled.
+ * @retval OCA_FAIL_INVALID_ARG            @p body was NULL.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An algorithm the format defines and
+ *                                         this build does not enable.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     A value the format reserves.
+ * @return Otherwise the magic or variant failure from resolving @p body.
+ */
+oca_result_t oca_check_payload_algorithms(const uint8_t *body);
+
+/**
  * @brief Refuse an encrypted payload without CONFIRMED authentication.
  *
  * Reads ctx->secure_boot_authenticated rather than re-deriving anything, so a
@@ -3106,6 +3134,10 @@ oca_result_t oca_commit_security_state(
  *     determination: it is the only gated check that spends no hardware read at
  *     all, so an encrypted payload on a non-secure part is rejected before any
  *     identity callback and long before a public-key operation;
+ *   - oca_check_payload_algorithms() runs next. It reads only the manifest,
+ *     and rejects a payload whose hash, cipher, key source or KDF this build
+ *     does not enable before the signature check, and before the caller
+ *     commits device state for a manifest that can never boot;
  *   - oca_check_signature_posture() runs after oca_check_signing_description(),
  *     whose checks make the signature_type bytes meaningful, and before any key
  *     is authorized or used: a manifest relying on an algorithm the device has

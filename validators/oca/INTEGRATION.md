@@ -1339,7 +1339,13 @@ Changes an existing integration should check. Most show only at run time.
   `OCA_FAIL_ALGORITHM_RESERVED` for a value the format reserves — before
   anything is hashed or decrypted. Such a manifest was previously hashed or
   decrypted as if it named the supported algorithm, and an unsupported cipher
-  reported `OCA_FAIL_DECRYPT` after the payload hash. A `switch` over
+  reported `OCA_FAIL_DECRYPT` after the payload hash. The payload's algorithms
+  are manifest fields, so `oca_validate_manifest()` now checks them too. It
+  does so before any device read or signature check, so a staged boot rejects
+  such a manifest before it copies the payload or commits device state. A
+  hand-composed sequence gets the same early check by calling
+  `oca_check_payload_algorithms()`. `oca_check_payload_at()` still checks again
+  when the payload is verified. A `switch` over
   `oca_result_t` with no `default` needs both new cases.
 - **The hash callback names its digest.** `sha256` is replaced by `hash`, which
   takes the `oca_hash_type_t` the manifest names and the digest length to
