@@ -16,6 +16,7 @@ Three layers, each catching what the others cannot:
 
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import os
 import re
@@ -447,6 +448,24 @@ def test_a_missing_file_is_refused(tmp_path):
     assert caught.value.problems[0].startswith("cannot read ")
 
 
+def test_a_missing_relative_path_names_where_it_was_looked_for(tmp_path, monkeypatch):
+    """The Makefile resolves CONFIG from its own directory, so a relative path
+    can name a file other than the one the user meant. The message says which
+    file was tried."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(gen_config.ConfigError) as caught:
+        gen_config.load_config("absent.toml")
+    assert f"(looked for {os.path.abspath('absent.toml')})" in caught.value.problems[0]
+
+
+def test_a_missing_absolute_path_is_named_once(tmp_path):
+    path = str(tmp_path / "absent.toml")
+    with pytest.raises(gen_config.ConfigError) as caught:
+        gen_config.load_config(path)
+    assert "looked for" not in caught.value.problems[0]
+    assert caught.value.problems[0].startswith(f"cannot read {path}: ")
+
+
 def test_an_invalid_configuration_raises_before_writing(tmp_path):
     config = write_config(tmp_path, config_text(pqc="2"))
     out = tmp_path / "gen" / "oca_config.h"
@@ -704,6 +723,86 @@ def test_the_header_gets_the_mode_any_new_file_would(tmp_path, restore_umask, ma
     changed = write_config(tmp_path, config_text(pqc="false", ml_dsa_87="false"))
     assert gen_config.generate(changed, str(out))
     assert out.stat().st_mode & 0o777 == mode
+
+
+def refuse_to_set_the_umask(mask):
+    raise AssertionError("the generator set the process umask")
+
+
+def test_writing_the_header_leaves_the_umask_alone(tmp_path, monkeypatch):
+    """Changing the umask, even briefly, can give another thread's new file the
+    wrong mode."""
+    monkeypatch.setattr(gen_config.os, "umask", refuse_to_set_the_umask)
+    out = tmp_path / "gen" / "oca_config.h"
+    assert gen_config.generate(write_config(tmp_path, config_text()), str(out))
+    changed = write_config(tmp_path, config_text(pqc="false", ml_dsa_87="false"))
+    assert gen_config.generate(changed, str(out))
+
+
+def repeat_then_vary(values):
+    """An os.urandom stand-in that returns each of values in turn."""
+    remaining = iter(values)
+    return lambda size: next(remaining)
+
+
+def test_a_file_already_at_the_temporary_name_is_left_alone(tmp_path, monkeypatch):
+    """The temporary file is created exclusively, so a name already in use is
+    skipped rather than overwritten."""
+    out = tmp_path / "oca_config.h"
+    taken = tmp_path / f".oca_config.h.{'00' * 6}.tmp"
+    taken.write_text("someone else's file")
+    monkeypatch.setattr(gen_config.os, "urandom", repeat_then_vary([b"\0" * 6, b"\1" * 6]))
+    config = write_config(tmp_path, config_text())
+    assert gen_config.generate(config, str(out))
+    assert out.read_text() == gen_config.header_for_config(config)
+    assert taken.read_text() == "someone else's file"
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        taken.name, "board.toml", "oca_config.h"]
+
+
+def test_a_header_that_is_not_utf8_is_stale_and_rewritten(tmp_path, capsys):
+    """A damaged header must not stop the build that would repair it."""
+    config = write_config(tmp_path, config_text())
+    out = tmp_path / "oca_config.h"
+    out.write_bytes(b"\xff\xfe not a header\n")
+    assert gen_config.header_is_current(str(out), gen_config.header_for_config(config)) is False
+    assert gen_config.main(["--config", config, "--out", str(out), "--check"]) == 1
+    assert "is missing or stale" in capsys.readouterr().err
+    assert gen_config.main(["--config", config, "--out", str(out)]) == 0
+    assert out.read_text() == gen_config.header_for_config(config)
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["write", "check"])
+def test_a_header_path_that_is_a_directory_is_reported_in_one_line(tmp_path, capsys, check):
+    config = write_config(tmp_path, config_text())
+    out = tmp_path / "oca_config.h"
+    out.mkdir()
+    flags = ["--check"] if check else []
+    assert gen_config.main(["--config", config, "--out", str(out), *flags]) == 2
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 1, lines
+    assert lines[0].startswith(f"gen_config: {out}: ")
+
+
+def refuse_to_open_the_header(path, *args, **kwargs):
+    """An open() stand-in that refuses only oca_config.h."""
+    if str(path).endswith("oca_config.h"):
+        raise PermissionError(13, "Permission denied")
+    return builtins.open(path, *args, **kwargs)
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["write", "check"])
+def test_a_header_that_cannot_be_read_is_reported_in_one_line(
+        tmp_path, capsys, monkeypatch, check):
+    config = write_config(tmp_path, config_text())
+    out = tmp_path / "oca_config.h"
+    gen_config.generate(config, str(out))
+    monkeypatch.setattr(gen_config, "open", refuse_to_open_the_header, raising=False)
+    with pytest.raises(PermissionError):
+        gen_config.generate(config, str(out))
+    flags = ["--check"] if check else []
+    assert gen_config.main(["--config", config, "--out", str(out), *flags]) == 2
+    assert capsys.readouterr().err == f"gen_config: {out}: Permission denied\n"
 
 
 # The command line is what the Makefile and an adopter's build run, so its exit
@@ -1297,6 +1396,56 @@ def test_an_invalid_configuration_stops_the_build_before_any_compile(tmp_path):
     assert result.returncode != 0
     assert "limits.toc_max_images must be between 1" in result.stderr
     assert not list((tmp_path / "build").rglob("*.o"))
+
+
+def test_the_build_runs_the_generator_isolated_from_pythonpath(tmp_path):
+    """Without -I, a module on PYTHONPATH with the same name as one the
+    generator imports would run inside the build."""
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    (shadow / "tomllib.py").write_text('raise SystemExit("a shadowing tomllib ran")\n')
+    build = tmp_path / "build"
+    result = run_make(build, str(build / "gen" / "oca_config.h"),
+                      environment={"PYTHONPATH": str(shadow)})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (build / "gen" / "oca_config.h").read_text() == default_header()
+
+
+# Every place that tells someone how to run the generator, and the Makefile
+# that runs it.
+GENERATOR_RUNNERS = [os.path.join(VALIDATOR_DIR, "Makefile"),
+                     os.path.join(VALIDATOR_DIR, "README.md"),
+                     os.path.join(VALIDATOR_DIR, "INTEGRATION.md"),
+                     GENERATOR]
+INTERPRETER = r"(?:python3|\$\{Python3_EXECUTABLE\}|\$\(CONFIG_PYTHON\))"
+
+
+def runs_without_isolation(text):
+    """Every line of text that runs gen_config.py with an interpreter but
+    without -I."""
+    return [line for line in text.splitlines()
+            if re.search(rf"{INTERPRETER}\s.*gen_config\.py", line)
+            and not re.search(rf"{INTERPRETER} -I \S*gen_config\.py", line)]
+
+
+@pytest.mark.parametrize("path", GENERATOR_RUNNERS, ids=os.path.basename)
+def test_every_documented_run_of_the_generator_is_isolated(path):
+    with open(path) as handle:
+        text = handle.read()
+    assert "gen_config.py" in text
+    assert runs_without_isolation(text) == []
+
+
+def test_a_run_without_isolation_is_found():
+    """The check above is only worth having if it notices a missing -I."""
+    assert runs_without_isolation(
+        "python3 lib/scripts/gen_config.py --config a.toml\n"
+        "  COMMAND ${Python3_EXECUTABLE} ${OCA_LIB}/scripts/gen_config.py\n"
+        "\t@$(CONFIG_PYTHON) lib/scripts/gen_config.py --out $@\n"
+        "python3 -I lib/scripts/gen_config.py --config a.toml\n") == [
+        "python3 lib/scripts/gen_config.py --config a.toml",
+        "  COMMAND ${Python3_EXECUTABLE} ${OCA_LIB}/scripts/gen_config.py",
+        "\t@$(CONFIG_PYTHON) lib/scripts/gen_config.py --out $@"]
 
 
 def test_a_changed_configuration_rebuilds_and_an_unchanged_one_does_not(tmp_path):

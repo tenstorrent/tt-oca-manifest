@@ -192,9 +192,11 @@ FORCE:
 
 # Regenerated on every build from CONFIG, but rewritten only when its content
 # changes. An invalid configuration stops the build here, before any compile,
-# with the generator naming each problem.
+# with the generator naming each problem. -I runs the generator in isolated
+# mode, so PYTHONPATH and the current directory cannot replace the
+# standard-library modules it imports.
 $(CONFIG_HEADER): FORCE | $(GEN_BUILD)
-	@$(CONFIG_PYTHON) lib/scripts/gen_config.py --config $(CONFIG) --out $@
+	@$(CONFIG_PYTHON) -I lib/scripts/gen_config.py --config $(CONFIG) --out $@
 
 $(LIB_STAMP): FORCE | $(LIB_BUILD)
 	@printf '%s' '$(LIB_CFLAGS)' | cmp -s - $@ 2>/dev/null \

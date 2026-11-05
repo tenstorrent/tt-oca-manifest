@@ -2,10 +2,10 @@
 # SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 """Generate the validator library's build configuration header.
 
-    python3 lib/scripts/gen_config.py --config board.toml --out <dir>/oca_config.h
-    python3 lib/scripts/gen_config.py --config board.toml --out <dir>/oca_config.h --check
-    python3 lib/scripts/gen_config.py --config board.toml --print signature_pqc.ml_dsa_87
-    python3 lib/scripts/gen_config.py --config board.toml --print-all
+    python3 -I lib/scripts/gen_config.py --config board.toml --out <dir>/oca_config.h
+    python3 -I lib/scripts/gen_config.py --config board.toml --out <dir>/oca_config.h --check
+    python3 -I lib/scripts/gen_config.py --config board.toml --print signature_pqc.ml_dsa_87
+    python3 -I lib/scripts/gen_config.py --config board.toml --print-all
 
 A TOML configuration file is the single source of truth for every compile-time
 setting of the library. This script turns one into `oca_config.h`, which the
@@ -49,8 +49,8 @@ a header, `header_for_config()` returns one, and the steps they compose —
 Needs Python 3.11 or later and nothing outside the standard library.
 
 Exit codes: 0 the header is current, or the value was printed; 1 `--check` found
-the header missing or stale; 2 the configuration is unreadable or invalid, or
-`--print` names no setting.
+the header missing or stale; 2 the configuration is unreadable or invalid, the
+header cannot be read or written, or `--print` names no setting.
 """
 
 from __future__ import annotations
@@ -59,7 +59,6 @@ import argparse
 import hashlib
 import os
 import sys
-import tempfile
 from dataclasses import dataclass
 
 try:
@@ -298,7 +297,8 @@ def load_config(path: str) -> dict:
         with open(path, "rb") as handle:
             raw = handle.read()
     except OSError as exc:
-        raise ConfigError([f"cannot read {path}: {exc.strerror}"]) from exc
+        where = "" if os.path.isabs(path) else f" (looked for {os.path.abspath(path)})"
+        raise ConfigError([f"cannot read {path}{where}: {exc.strerror}"]) from exc
     try:
         document = tomllib.loads(raw.decode("utf-8"))
     except UnicodeDecodeError as exc:
@@ -557,19 +557,19 @@ def write_if_changed(path: str, text: str) -> bool:
     on every host, so a committed header is the same file wherever it was
     generated. The new text is
     written to a temporary file and moved into place, so a failed write leaves
-    the previous header, and no temporary file, behind. The temporary file is
-    created private, so it is given the mode any new file gets under the
-    process umask before it becomes the header.
+    the previous header, and no temporary file, behind. The temporary file gets
+    the mode any new file gets under the process umask, so the header does too.
+
+    Raises OSError when the header cannot be read or written.
     """
     if header_is_current(path, text):
         return False
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    descriptor, temporary = create_temporary(directory, os.path.basename(path))
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
-        os.chmod(temporary, new_file_mode())
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(text.encode("utf-8"))
         os.replace(temporary, path)
     except BaseException:
         os.unlink(temporary)
@@ -577,22 +577,34 @@ def write_if_changed(path: str, text: str) -> bool:
     return True
 
 
-def new_file_mode() -> int:
-    """The mode open() gives a new file under the process umask.
+def create_temporary(directory: str, name: str) -> tuple[int, str]:
+    """Create a new, empty file in directory to become name. Returns its
+    descriptor, open for writing, and its path.
 
-    Reading the umask means setting it. It is put straight back, which is safe
-    while nothing else in the process creates files at the same moment.
+    Created with mode 0o666, which the kernel reduces by the process umask, so
+    the file gets the same mode as any other new file. Python can read the
+    umask only by changing it, and while it is changed another thread could
+    create a file with the wrong mode, so this never touches it.
     """
-    umask = os.umask(0)
-    os.umask(umask)
-    return 0o666 & ~umask
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    while True:
+        temporary = os.path.join(directory, f".{name}.{os.urandom(6).hex()}.tmp")
+        try:
+            return os.open(temporary, flags, 0o666), temporary
+        except FileExistsError:
+            continue
 
 
 def header_is_current(path: str, text: str) -> bool:
-    """Whether path already holds exactly text, line endings included."""
+    """Whether path already holds exactly text, line endings included.
+
+    Compares bytes, so a header that is not UTF-8 is simply not current. A
+    missing header is not current either. Raises OSError when the header exists
+    but cannot be read.
+    """
     try:
-        with open(path, encoding="utf-8", newline="") as handle:
-            return handle.read() == text
+        with open(path, "rb") as handle:
+            return handle.read() == text.encode("utf-8")
     except FileNotFoundError:
         return False
 
@@ -626,14 +638,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"gen_config: {args.config}: {problem}", file=sys.stderr)
         return 2
 
-    if args.check:
-        if header_is_current(args.out, text):
-            return 0
-        print(f"gen_config: {args.out} is missing or stale for {args.config}; "
-              f"regenerate it", file=sys.stderr)
-        return 1
-    if write_if_changed(args.out, text):
-        print(f"gen_config: wrote {args.out} from {args.config}")
+    try:
+        if args.check:
+            if header_is_current(args.out, text):
+                return 0
+            print(f"gen_config: {args.out} is missing or stale for {args.config}; "
+                  f"regenerate it", file=sys.stderr)
+            return 1
+        if write_if_changed(args.out, text):
+            print(f"gen_config: wrote {args.out} from {args.config}")
+    except OSError as exc:
+        print(f"gen_config: {args.out}: {exc.strerror or exc}", file=sys.stderr)
+        return 2
     return 0
 
 

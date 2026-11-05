@@ -59,7 +59,8 @@ The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic -Wundef
 Every compile-time setting of the library lives in one TOML file. The build
 generates `build/gen/oca_config.h` from it before compiling anything, and the
 library does not compile without that header. `lib/oca_config.toml` is the
-default; name another with `CONFIG`:
+default; name another with `CONFIG`. A relative path is resolved from
+`validators/oca`, the Makefile's directory, not from where you ran `make`:
 
 ```sh
 make CONFIG=path/to/board.toml test
@@ -103,7 +104,7 @@ differ. `gen_config.py --print NAME`
 and `--print-all` give a build system a setting's value without parsing TOML:
 
 ```sh
-python3 lib/scripts/gen_config.py --config lib/oca_config.toml --print signature_pqc.ml_dsa_87
+python3 -I lib/scripts/gen_config.py --config lib/oca_config.toml --print signature_pqc.ml_dsa_87
 ```
 
 Code compiled against another header does not link with the library. The

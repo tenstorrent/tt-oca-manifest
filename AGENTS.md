@@ -223,7 +223,8 @@ holding the CLI flags that fixture needs.
 ### Build configuration
 
 Every compile-time setting of the library comes from one TOML file. `lib/oca_config.toml` is
-the default; `CONFIG` names another:
+the default; `CONFIG` names another. A relative path is resolved from `validators/oca`,
+not from where you ran `make`:
 
 ```bash
 make -C validators/oca CONFIG=path/to/board.toml test

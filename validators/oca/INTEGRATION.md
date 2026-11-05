@@ -58,12 +58,14 @@ Generate the header before compiling anything that includes `oca_validator.h`,
 and put its directory on the include path:
 
 ```sh
-python3 third_party/oca_validator/scripts/gen_config.py \
+python3 -I third_party/oca_validator/scripts/gen_config.py \
     --config board/oca_config.toml --out build/oca_gen/oca_config.h
 ```
 
 The generator needs Python 3.11 or later and nothing outside its standard
-library. It validates the whole file and names every problem, exits 2 on an
+library. Run it with `-I`, Python's isolated mode, as every example here does:
+it ignores `PYTHONPATH` and the current directory, so a stray module there
+cannot replace one the generator imports. It validates the whole file and names every problem, exits 2 on an
 invalid one, and rewrites the header only when its content changes, so a build
 that depends on the header stays incremental. In CMake:
 
@@ -78,7 +80,7 @@ file(GLOB OCA_SOURCES CONFIGURE_DEPENDS ${OCA_LIB}/*.c)
 add_custom_command(
   OUTPUT     ${OCA_CONFIG_DIR}/oca_config.stamp
   BYPRODUCTS ${OCA_CONFIG_DIR}/oca_config.h
-  COMMAND ${Python3_EXECUTABLE} ${OCA_LIB}/scripts/gen_config.py
+  COMMAND ${Python3_EXECUTABLE} -I ${OCA_LIB}/scripts/gen_config.py
           --config ${OCA_CONFIG} --out ${OCA_CONFIG_DIR}/oca_config.h
   COMMAND ${CMAKE_COMMAND} -E touch ${OCA_CONFIG_DIR}/oca_config.stamp
   DEPENDS ${OCA_CONFIG} ${OCA_LIB}/scripts/gen_config.py)
@@ -113,7 +115,7 @@ CPPFLAGS       += -I$(OCA_LIB) -I$(OCA_CONFIG_DIR)
 oca-config:
 
 $(OCA_CONFIG_H): oca-config
-	python3 $(OCA_LIB)/scripts/gen_config.py --config $(OCA_CONFIG) --out $@
+	python3 -I $(OCA_LIB)/scripts/gen_config.py --config $(OCA_CONFIG) --out $@
 
 # Every object whose source includes oca_validator.h, not only the library's.
 $(OBJS): $(OCA_CONFIG_H)
@@ -185,7 +187,7 @@ algorithms are on. `gen_config.py --print NAME` writes one setting's value,
 `--print-all` every setting as `name=value`, and neither writes a header:
 
 ```make
-OCA_GEN := python3 $(OCA_LIB)/scripts/gen_config.py --config $(OCA_CONFIG)
+OCA_GEN := python3 -I $(OCA_LIB)/scripts/gen_config.py --config $(OCA_CONFIG)
 
 ML_DSA_87 := $(shell $(OCA_GEN) --print signature_pqc.ml_dsa_87 || echo error)
 ifeq ($(ML_DSA_87),error)
@@ -295,7 +297,7 @@ OCA_BUILDS     := default classic_only
 .PHONY: oca-config-regen
 oca-config-regen:
 	for build in $(OCA_BUILDS); do \
-	    python3 $(OCA_LIB)/scripts/gen_config.py --config board/oca_$$build.toml \
+	    python3 -I $(OCA_LIB)/scripts/gen_config.py --config board/oca_$$build.toml \
 	        --out board/oca_gen/$$build/oca_config.h || exit 1; \
 	done
 ```
@@ -307,7 +309,7 @@ the file:
 
 ```sh
 for build in default classic_only; do
-    python3 third_party/oca_validator/scripts/gen_config.py --check \
+    python3 -I third_party/oca_validator/scripts/gen_config.py --check \
         --config board/oca_$build.toml --out board/oca_gen/$build/oca_config.h || exit 1
 done
 ```
