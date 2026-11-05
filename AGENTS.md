@@ -299,7 +299,9 @@ A consumer that must **never** accept a variant turns the other off in `[variant
 build directory. An excluded variant is then reported as an unsupported-variant failure rather
 than validated. This is the only build-time variant choice — there is no per-variant source
 fork, and all three configurations must keep building. `hash-only` builds the least
-configuration, `test/build_configs/hash_only.toml`, and must keep building too.
+configuration, `test/build_configs/hash_only.toml`, and must keep building too. The
+integration tests run every fixture through its CLI, so a new fixture is held to what that
+build accepts and refuses without further work.
 
 `EXTRA_CFLAGS` remains for compiler flags only. Changing it, or the configuration, forces a
 rebuild. Make decides what to recompile from timestamps, never from the last command line, so

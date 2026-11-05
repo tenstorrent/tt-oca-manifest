@@ -128,8 +128,9 @@ def _run_cli(args: list[str]) -> subprocess.CompletedProcess:
 
 
 def _gated_cli(target: str) -> str:
-    """Build a variant-gated CLI (`classic-only` / `pqc-only` / `both`) and
-    return the path to its binary. Idempotent — `make` is a no-op once built."""
+    """Build the CLI for one of the Makefile's configuration targets
+    (`classic-only` / `pqc-only` / `both` / `hash-only`) and return the path to
+    its binary. Idempotent — `make` is a no-op once built."""
     result = subprocess.run(
         ["make", "-C", VALIDATOR_DIR, target],
         cwd=PROJECT_ROOT,
@@ -414,6 +415,95 @@ def test_gate_default_build_accepts_both(fixture):
     assert result.returncode == 0, (
         f"default build must accept {fixture}; got exit {result.returncode}\n"
         f"stderr: {result.stderr!r}")
+
+
+# ---------------------------------------------------------------------------
+# Hash-only build: integrity checks only, with secure boot compiled out
+# ---------------------------------------------------------------------------
+
+_FIXTURES = sorted(name[:-len(".yaml")] for name in os.listdir(FIXTURE_DIR)
+                   if name.endswith(".yaml"))
+
+
+def _asserts_secure_boot(fixture: str) -> bool:
+    return bool(load_config(os.path.join(FIXTURE_DIR, f"{fixture}.yaml"))["secure_boot"])
+
+
+def test_the_hash_only_sweep_covers_both_outcomes():
+    """The sweep below must hold at least one fixture on each side, or one
+    half of it would pass without checking anything."""
+    asserting = [fixture for fixture in _FIXTURES if _asserts_secure_boot(fixture)]
+    assert asserting and len(asserting) < len(_FIXTURES), asserting
+
+
+def test_the_hash_only_cli_is_built_without_secure_boot():
+    """The sweep is only meaningful if the binary it runs is the hash-only
+    build, not the default one."""
+    result = _run_cli_at(_gated_cli("hash-only"), ["--build-info"])
+    assert result.returncode == 0, result.stderr
+    assert b"secure_boot.disabled=1\n" in result.stdout, result.stdout
+    assert not re.search(rb"^(signature|encryption)_", result.stdout, re.M), result.stdout
+
+
+@pytest.mark.parametrize("fixture", _FIXTURES)
+def test_hash_only_cli_passes_cleartext_and_refuses_secure_boot(fixture):
+    """Every fixture runs through the hash-only CLI with the flags it needs.
+    A manifest that does not assert secure boot passes. One that does,
+    whether signed, hybrid or encrypted, is refused as needing an algorithm
+    this build leaves out."""
+    cli = _gated_cli("hash-only")
+    result = _run_cli_at(cli, ["--manifest", _pack_fixture(fixture), *_read_flags(fixture)])
+    if _asserts_secure_boot(fixture):
+        assert result.returncode == 1, result.stderr
+        assert re.match(rb"^FAIL: ALGORITHM_NOT_ENABLED: ", result.stderr), result.stderr
+        assert result.stdout == b""
+    else:
+        assert result.returncode == 0, result.stderr
+        assert PASS_RE.match(result.stdout), result.stdout
+
+
+@pytest.mark.parametrize("fixture", ["secure_rsa", "pqc_secure_mldsa"])
+def test_hash_only_cli_refuses_secure_boot_on_a_part_without_it(fixture):
+    """Telling the CLI the part does not use secure boot does not help. The
+    manifest still asserts secure boot, so its signature must still be checked,
+    and this build cannot check it."""
+    cli = _gated_cli("hash-only")
+    result = _run_cli_at(cli, ["--manifest", _pack_fixture(fixture),
+                               *_read_flags(fixture), "--secure-boot-disabled"])
+    assert result.returncode == 1, result.stderr
+    assert re.match(rb"^FAIL: ALGORITHM_NOT_ENABLED: ", result.stderr), result.stderr
+
+
+def test_hash_only_cli_boots_nothing_on_a_part_that_enforces_secure_boot():
+    """A manifest without secure boot passes on its own, but not on a part
+    that enforces secure boot."""
+    cli = _gated_cli("hash-only")
+    bundle = _pack_fixture("basic")
+    assert _run_cli_at(cli, ["--manifest", bundle]).returncode == 0
+    result = _run_cli_at(cli, ["--manifest", bundle, "--secure-boot-active"])
+    assert result.returncode == 1, result.stderr
+    assert re.match(rb"^FAIL: SIGNATURE_CLASS_CONTROL: ", result.stderr), result.stderr
+
+
+@pytest.mark.parametrize("fixture", ["basic", "pqc_basic"])
+def test_hash_only_cli_rejects_a_tampered_manifest(fixture, tmp_path):
+    """With no signature to check, the manifest hash is all that protects the
+    manifest, so this build must still check it."""
+    data = bytearray(open(_pack_fixture(fixture), "rb").read())
+    data[1000] ^= 0xFF
+    tampered = tmp_path / f"{fixture}.bin"
+    tampered.write_bytes(bytes(data))
+    result = _run_cli_at(_gated_cli("hash-only"), ["--manifest", str(tampered)])
+    assert result.returncode == 1, result.stderr
+    assert re.match(rb"^FAIL: MANIFEST_HASH: ", result.stderr), result.stderr
+
+
+def test_hash_only_cli_rejects_a_tampered_payload(tmp_path):
+    path = _tampered_bundle(tmp_path, "basic", "image_flip", _flip_image_byte,
+                            reseal=False)
+    result = _run_cli_at(_gated_cli("hash-only"), ["--manifest", path])
+    assert result.returncode == 1, result.stderr
+    assert re.match(rb"^FAIL: PAYLOAD_HASH_CHAIN: ", result.stderr), result.stderr
 
 
 # ---------------------------------------------------------------------------

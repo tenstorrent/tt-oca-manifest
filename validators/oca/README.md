@@ -249,7 +249,8 @@ needs one. Such a build refuses every manifest that asserts secure boot with
 part that enforces secure boot, and never commits device state.
 `INTEGRATION.md`, "A part that does not use secure boot", says what remains.
 `test/build_configs/hash_only.toml` is that build, and `make hash-only` builds
-it.
+it. `tests/test_oca_c_validator_integration.py` runs every fixture through that
+build's CLI: those without secure boot must pass, and the rest must be refused.
 
 `recheck_security_version` is worth understanding before turning it off. The
 anti-rollback comparison runs *before* signature verification, so a replayed
