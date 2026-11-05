@@ -31,6 +31,12 @@ OCA_CFG_PORTFOLIO_ID is the first 32 bits of that. The identifier depends on the
 name, comments or order, so two files that build the same library share it, and
 a library upgrade that adds a switch left off changes no existing identifier.
 
+The header also carries a seal: a macro named for the digest's bytes and every
+setting's value as the header spells it, which `oca_config_check.h` rebuilds
+from the macros it finds. A header edited by hand, so that its settings or
+digest no longer agree with each other, then fails the compile rather than
+reporting a portfolio it does not build.
+
 `--print NAME` writes one setting's resolved value, and `--print-all` every
 setting's as `name=value` lines, for a build system that chooses what else to
 compile from the configuration without parsing TOML.
@@ -459,6 +465,26 @@ def portfolio_id(values: dict[str, int]) -> int:
     return int.from_bytes(portfolio_digest(values)[:4], "big")
 
 
+def spelled_value(setting: Setting, value: int) -> str:
+    """A setting's value as the header spells it: a count unsigned."""
+    return f"{value}u" if setting.kind == "count" else str(value)
+
+
+def portfolio_seal(values: dict[str, int], digest: bytes) -> str:
+    """The name of the macro that seals a header.
+
+    The digest's bytes as the header spells them, then each implemented
+    setting's macro without OCA_CFG_, lowercased, and its value, in the order of
+    SETTINGS: the name `oca_config_check.h` pastes from the macros it finds.
+    """
+    parts = ["OCA_CFG_PORTFOLIO_SEAL_" + "".join(f"0x{byte:02x}" for byte in digest)]
+    for setting in SETTINGS:
+        if setting.implemented:
+            parts.append(f"{setting.macro.removeprefix('OCA_CFG_').lower()}_"
+                         f"{spelled_value(setting, values[setting.macro])}")
+    return "_".join(parts)
+
+
 def render_header(values: dict[str, int], source_name: str) -> str:
     """The text of oca_config.h. Deterministic for a given configuration."""
     text_lines = [f'    "{line}\\n"' for line in portfolio_text(values).splitlines()]
@@ -484,14 +510,17 @@ def render_header(values: dict[str, int], source_name: str) -> str:
         "#define OCA_CFG_PORTFOLIO_DIGEST \\",
         ", \\\n".join(digest_lines),
         f"#define OCA_CFG_PORTFOLIO_ID 0x{portfolio_id(values):08x}u",
+        "",
+        "/* The seal: named for the digest and every setting below, so a header",
+        " * whose settings no longer match its digest does not compile. */",
+        f"#define {portfolio_seal(values, digest)} 1",
     ]
     for setting in SETTINGS:
         if not setting.implemented:
             continue
-        value = values[setting.macro]
-        rendered = f"{value}u" if setting.kind == "count" else str(value)
         lines += ["", f"/* {setting.name}: {setting.description}. */",
-                  f"#define {setting.macro} {rendered}"]
+                  f"#define {setting.macro} "
+                  f"{spelled_value(setting, values[setting.macro])}"]
     lines += ["", "#endif", ""]
     return "\n".join(lines)
 

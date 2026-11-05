@@ -231,9 +231,11 @@ make -C validators/oca CONFIG=path/to/board.toml test
 
 `lib/scripts/gen_config.py` generates `build/gen/oca_config.h` from it before anything
 compiles, and `lib/oca_config_check.h` refuses a header that is missing, malformed or from
-another library version, naming any setting it lacks. It does not tie a header to its
-configuration file, so a hand edit that leaves a valid configuration compiles;
-`gen_config.py --check` is what catches a header that has drifted from its file. A
+another library version, naming any setting it lacks. The generator also seals the header
+with a macro named for the portfolio digest and every setting's value, which the check header
+rebuilds from what it finds, so a hand edit to a setting, the digest or the portfolio ID fails
+the compile. It does not tie a header to its configuration file, so one left behind when the
+file changed compiles; `gen_config.py --check` is what catches it. A
 configuration **replaces** the default: every required setting must be stated, a switch such as
 an algorithm is off when left out, unknown keys are errors, and the settings' former `-D` forms
 (`-DOCA_TOC_MAX_IMAGES=32`, `-DOCA_SUPPORT_PQC=0`) fail the compile naming the key that
@@ -243,7 +245,8 @@ guard for its macro to `oca_config_check.h` (and, for a switch, its line in that
 0-or-1 check), and its row to the README's Settings table; `tests/test_oca_build_config.py`
 fails until all four agree and a library source reads it. The setting also joins the build
 guard's name in `oca_config_check.h`, `OCA_BUILD_GUARD_NAME()` and `OCA_BUILD_GUARD_PASTE()`,
-in the generator's order, and `tests/test_oca_build_guard.py` fails until it does. That guard
+in the generator's order, and `tests/test_oca_build_guard.py` fails until it does; so does
+every build, because the seal is pasted from the same name. That guard
 is a symbol the library defines, named for every setting of its header; each file including
 `oca_validator.h` refers to the one its own header names, so code compiled against another
 header does not link. The tests write their
@@ -379,7 +382,10 @@ break is unrecoverable.
 
 Changes to the layout or the digest computation are breaking: bump the package version (while
 the package is 0.x, a breaking change bumps the MINOR) and update the layout constants in a
-single atomic change. Adding optional fields in reserved or padded regions is permitted
+single atomic change. The validator library's version is the package's:
+`OCA_VALIDATOR_VERSION_MAJOR`, `_MINOR` and `_PATCH` in `lib/oca_validator.h` move with
+`pyproject.toml` and `tt_boot_manifest.__version__`, and `tests/test_oca_validator_version.py`
+fails until all three agree. Adding optional fields in reserved or padded regions is permitted
 provided existing parsers ignore them. There is no `CHANGELOG.md` in this repository and none
 should be created.
 
@@ -659,7 +665,8 @@ Keep pull requests focused; unrelated changes belong in separate ones. Branch na
 | `make check` succeeds but validated nothing | A "nothing to build" path. Look for `skipping archive`, `skipping link`, `no fixtures yet`, and for two `N/N passed` summaries |
 | A setting change has no effect on the built binary | Objects were reused across the change. Check `build/lib/.cflags` and `build/gen/oca_config.h`, or clean. GNU Make 3.81 compares timestamps to the whole second, so a script that switches configurations within one second can hit this; use GNU Make 4 |
 | The library fails to compile with `oca_config.h not found`, or an `#error` naming a configuration key | The build configuration header was not generated, or a setting was passed with `-D`. Build through the Makefile, or run `lib/scripts/gen_config.py` and put its output directory on the include path; set the key in the configuration file instead of the `-D` |
-| A link fails with an undefined reference to `oca_build_guard_...` | A file was compiled against a different `oca_config.h` from the library's — stale, another board's, or edited by hand. The name spells that file's settings; compare it with the guard the library defines (`nm`) and build both from one header. A program that includes the header but never links the library defines `OCA_BUILD_GUARD_OMIT` before including it |
+| A link fails with an undefined reference to `oca_build_guard_...` | A file was compiled against a different `oca_config.h` from the library's — stale or another board's. The name spells that file's settings; compare it with the guard the library defines (`nm`) and build both from one header. A program that includes the header but never links the library defines `OCA_BUILD_GUARD_OMIT` before including it |
+| The compile stops with `oca_config.h states settings its portfolio digest was not computed from` or `...a portfolio ID that is not the first 32 bits of its digest` | The generated header was edited by hand, so its settings, digest and ID no longer agree with the seal the generator wrote. Change the configuration file and regenerate instead. Every build failing it after a setting was added means the setting is in `SETTINGS` but not yet in `OCA_BUILD_GUARD_NAME()` |
 | `gen_config.py needs Python 3.11 or later` | The generator uses `tomllib`. The Makefile runs `$PYTHON` when set, else `python3`; point `CONFIG_PYTHON` at a 3.11+ interpreter |
 | `make check` cannot import the packer | The Makefile's interpreter search found a Python without the editable install. Pass `PYTHON=<path>` explicitly |
 | A new manifest field passes Python tests but the validator ignores it | The completeness gate was satisfied with an allowlist entry instead of a decoder, or the check was composed into `oca_validate()` where the staged flow skips it |

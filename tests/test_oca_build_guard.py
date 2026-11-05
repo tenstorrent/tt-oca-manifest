@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -208,15 +207,6 @@ def link(directory, objects, archive=None, language="c") -> subprocess.Completed
                           capture_output=True, text=True)
 
 
-def hand_edited(header_text, macro, value) -> str:
-    """header_text with one setting's value changed and nothing else, so the
-    portfolio text, digest and ID it states still name the original."""
-    edited, count = re.subn(rf"^#define {macro} \S+$", f"#define {macro} {value}",
-                            header_text, flags=re.M)
-    assert count == 1, macro
-    return edited
-
-
 # ---------------------------------------------------------------------------
 # The guard's name
 # ---------------------------------------------------------------------------
@@ -268,13 +258,7 @@ def portfolio_header(tmp_path) -> str:
     return header_of(tmp_path, CONFIGURATIONS["classic-only"])
 
 
-def edited_header(tmp_path) -> str:
-    """The library's header with toc_max_images edited by hand."""
-    return hand_edited(header_of(tmp_path, config_text()), "OCA_CFG_TOC_MAX_IMAGES", "16u")
-
-
-MISMATCHES = {"stale": stale_header, "another-portfolio": portfolio_header,
-              "hand-edited": edited_header}
+MISMATCHES = {"stale": stale_header, "another-portfolio": portfolio_header}
 
 
 @pytest.mark.parametrize("language", sorted(LANGUAGES))
@@ -295,17 +279,6 @@ def test_an_application_compiled_against_another_header_does_not_link(
     result = link(tmp_path, [obj], archive, language)
     assert result.returncode != 0
     assert "oca_build_guard_variant_classic_" in result.stderr, result.stderr
-
-
-def test_the_hand_edited_header_still_states_the_library_portfolio(tmp_path):
-    """The hand-edited case is worth having only because the portfolio a header
-    states cannot catch it."""
-    original = header_of(tmp_path, config_text())
-    edited = edited_header(tmp_path)
-    for macro in ("OCA_CFG_PORTFOLIO_TEXT", "OCA_CFG_PORTFOLIO_DIGEST", "OCA_CFG_PORTFOLIO_ID"):
-        block = re.compile(rf"^#define {macro}(?:.*\\\n)*.*$", re.M)
-        assert block.search(original).group(0) == block.search(edited).group(0)
-    assert original != edited
 
 
 def test_one_stale_file_stops_the_link(tmp_path):

@@ -209,9 +209,12 @@ static int parse_lifecycle(const char *s, oca_lifecycle_token_t *out)
 
 void cli_print_build_info(void)
 {
-    /* The label and digest come from the library, the text from the header it
-     * was compiled against, so a mismatch between the two shows here. */
+    /* The version, label and digest come from the library, the text from the
+     * header it was compiled against, so a mismatch between the two shows here. */
+    const uint32_t version = oca_validator_version();
     const uint8_t *digest = oca_build_portfolio_digest();
+    printf("library %" PRIu32 ".%" PRIu32 ".%" PRIu32 "\n", version >> 16,
+           (version >> 8) & 0xffu, version & 0xffu);
     printf("portfolio 0x%08" PRIx32 "\nsha256 ", oca_build_portfolio_id());
     for (unsigned i = 0u; i < OCA_PORTFOLIO_DIGEST_SIZE; ++i) {
         printf("%02x", digest[i]);
@@ -306,9 +309,10 @@ void cli_print_help(void)
         "                              each image entry (type, offset, length,\n"
         "                              load_addr, entry_point, version)\n"
         "  --quiet                     suppress the PASS line on stdout\n"
-        "  --build-info                print the build configuration this\n"
-        "                              binary's library was compiled from\n"
-        "                              (its portfolio) and exit 0\n"
+        "  --build-info                print the version of this binary's\n"
+        "                              library and the build configuration it\n"
+        "                              was compiled from (its portfolio), and\n"
+        "                              exit 0\n"
         "  --help                      print this help and exit 0\n"
         "\n"
         "Exit codes: 0 = PASS, 1 = FAIL, 2 = usage error,\n"

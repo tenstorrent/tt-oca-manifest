@@ -386,6 +386,44 @@ enum oca_result {
  */
 const char *oca_result_str(oca_result_t r);
 
+/** @brief This library's major version: the version of the package that ships it. */
+#define OCA_VALIDATOR_VERSION_MAJOR 0u
+
+/** @brief This library's minor version. At most 255. */
+#define OCA_VALIDATOR_VERSION_MINOR 7u
+
+/** @brief This library's patch version. At most 255. */
+#define OCA_VALIDATOR_VERSION_PATCH 0u
+
+/**
+ * @brief This header's library version as one number.
+ *
+ * The major version in bits 16 and up, the minor in bits 8 to 15 and the patch
+ * in bits 0 to 7, so versions compare in order as numbers.
+ */
+#define OCA_VALIDATOR_VERSION \
+    ((OCA_VALIDATOR_VERSION_MAJOR << 16) | (OCA_VALIDATOR_VERSION_MINOR << 8) \
+     | OCA_VALIDATOR_VERSION_PATCH)
+
+/**
+ * @brief The version of the library this code is linked with.
+ *
+ * OCA_VALIDATOR_VERSION as the library was compiled, which is the version of
+ * the header it was compiled against. Code compiled against another version's
+ * header sees its own OCA_VALIDATOR_VERSION differ from this.
+ *
+ * Two versions of the library built from one configuration report the same
+ * portfolio, and can still decide a manifest differently. A device that
+ * reports what it runs, or a list of approved builds, therefore names the
+ * version as well as oca_build_portfolio_digest().
+ *
+ * Nothing else in the library calls this, so a link that collects unused
+ * sections drops it from an image that does not.
+ *
+ * @return OCA_VALIDATOR_VERSION, as the library was compiled.
+ */
+uint32_t oca_validator_version(void);
+
 /** @brief Size in bytes of the portfolio digest, a SHA-256. */
 #define OCA_PORTFOLIO_DIGEST_SIZE 32u
 
@@ -405,9 +443,14 @@ const char *oca_result_str(oca_result_t r);
  * library upgrade that adds a switch left off does not change it.
  * `gen_config.py --print-all` lists the settings behind a configuration file.
  *
- * The library reports what its generated header states, so it names the
- * configuration a header was generated from; `gen_config.py --check` is what
- * catches a header that no longer matches its file.
+ * The library reports what its generated header states, and the header
+ * cannot state a digest other than its settings': a header edited by hand so
+ * that they disagree does not compile. It names the configuration a header was
+ * generated from; `gen_config.py --check` is what catches a header that no
+ * longer matches its file.
+ *
+ * The digest does not include the library version, so a release that changes
+ * no setting changes no digest. Attest oca_validator_version() beside it.
  *
  * Nothing else in the library calls this, so a link that collects unused
  * sections drops it from an image that does not.

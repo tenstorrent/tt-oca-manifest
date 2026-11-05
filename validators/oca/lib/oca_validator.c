@@ -24,6 +24,16 @@
  *  oca_config_check.h. */
 const char OCA_BUILD_GUARD = 0;
 
+/** Stops the build if the minor or patch version exceeds 255, the most its 8
+ *  bits of OCA_VALIDATOR_VERSION can hold. */
+typedef char oca_validator_version_fits[
+    (OCA_VALIDATOR_VERSION_MINOR <= 0xffu && OCA_VALIDATOR_VERSION_PATCH <= 0xffu) ? 1 : -1];
+
+uint32_t oca_validator_version(void)
+{
+    return OCA_VALIDATOR_VERSION;
+}
+
 /** The portfolio digest the generated header states. */
 static const uint8_t PORTFOLIO_DIGEST[] = { OCA_CFG_PORTFOLIO_DIGEST };
 

@@ -870,7 +870,9 @@ def test_every_configuration_macro_the_library_reads_is_generated():
     """A misspelled macro in an #if is 0, which would silently turn a feature off."""
     generated = {s.macro for s in IMPLEMENTED} | {
         "OCA_CFG_FORMAT", "OCA_CFG_IS_SWITCH", "OCA_CFG_PORTFOLIO_TEXT",
-        "OCA_CFG_PORTFOLIO_DIGEST", "OCA_CFG_PORTFOLIO_ID"}
+        "OCA_CFG_PORTFOLIO_DIGEST", "OCA_CFG_PORTFOLIO_ID", "OCA_CFG_PORTFOLIO_SEAL_",
+        "OCA_CFG_ID_OF", "OCA_CFG_ID_OF_BYTES", "OCA_CFG_SEAL_PREFIX", "OCA_CFG_SEAL_EXPAND",
+        "OCA_CFG_SEAL_PASTE"}
     for name, text in _library_sources():
         for macro in set(re.findall(r"\bOCA_CFG_[A-Z0-9_]+\b", text)):
             assert macro in generated, f"{name} reads {macro}, which nothing generates"
@@ -962,6 +964,28 @@ def drop_define(header, macro):
     edited, count = define_pattern(macro).subn("", header)
     assert count == 1
     return edited
+
+
+SEAL_DEFINE = re.compile(r"^#define OCA_CFG_PORTFOLIO_SEAL_\w+ 1\n", re.M)
+
+
+def default_settings():
+    return gen_config.resolve_settings(gen_config.load_config(DEFAULT_CONFIG))
+
+
+def restated(header, values, digest):
+    """header stating values, digest, the label digest gives, and the seal they
+    give, as a hand edit that kept them all in agreement would."""
+    for setting in IMPLEMENTED:
+        header = set_define(header, setting.macro,
+                            gen_config.spelled_value(setting, values[setting.macro]))
+    header = set_define(header, "OCA_CFG_PORTFOLIO_DIGEST",
+                        ", ".join(f"0x{byte:02x}" for byte in digest))
+    header = set_define(header, "OCA_CFG_PORTFOLIO_ID", f"0x{digest[:4].hex()}u")
+    header, count = SEAL_DEFINE.subn(
+        f"#define {gen_config.portfolio_seal(values, digest)} 1\n", header)
+    assert count == 1
+    return header
 
 
 def edit_header(header, drop=(), values=None):
@@ -1058,17 +1082,120 @@ def test_a_header_the_generator_would_not_write_is_refused(tmp_path, edits, mess
     assert message in result.stderr
 
 
-@pytest.mark.parametrize("digest, compiles", [
-    pytest.param(", ".join(["0x5a"] * 32), True, id="whole"),
-    pytest.param(", ".join(["0x5a"] * 31), False, id="short"),
-    pytest.param(", ".join(["0x5a"] * 33), False, id="long"),
+@pytest.mark.parametrize("size, compiles", [
+    pytest.param(32, True, id="whole"),
+    pytest.param(31, False, id="short"),
+    pytest.param(33, False, id="long"),
 ])
-def test_the_library_holds_the_portfolio_digest_to_its_size(tmp_path, digest, compiles):
+def test_the_library_holds_the_portfolio_digest_to_its_size(tmp_path, size, compiles):
     """An initializer short of the digest would leave its last bytes zero, so
-    the library stops the build unless the header states exactly 32 bytes."""
-    header = set_define(default_header(), "OCA_CFG_PORTFOLIO_DIGEST", digest)
+    the build stops unless the header states exactly 32 bytes, even with a
+    label and seal that agree with them."""
+    values = default_settings()
+    stated = bytes([0x5a] * size)
+    header = restated(default_header(), values, stated)
     result = compile_probe(tmp_path, header, probe_text='#include "oca_validator.c"\n')
     assert (result.returncode == 0) == compiles, result.stderr
+
+
+def library_at_version(tmp_path, minor, patch):
+    """A copy of the library whose public header states minor and patch."""
+    lib = tmp_path / "lib"
+    shutil.copytree(LIB_DIR, lib, ignore=shutil.ignore_patterns("scripts"))
+    header = lib / "oca_validator.h"
+    text = header.read_text()
+    for part, value in (("MINOR", minor), ("PATCH", patch)):
+        text, count = re.subn(rf"^#define OCA_VALIDATOR_VERSION_{part} \S+$",
+                              f"#define OCA_VALIDATOR_VERSION_{part} {value}u", text, flags=re.M)
+        assert count == 1, part
+    header.write_text(text)
+    return lib
+
+
+@pytest.mark.parametrize("minor, patch, fits", [
+    pytest.param(255, 255, True, id="both-at-255"),
+    pytest.param(256, 0, False, id="minor-256"),
+    pytest.param(0, 256, False, id="patch-256"),
+])
+def test_the_library_holds_each_version_part_to_its_bits(tmp_path, minor, patch, fits):
+    """A minor or patch version past 255 would carry into the next part of
+    OCA_VALIDATOR_VERSION, so 0.256.0 would read as 1.0.0; the library stops
+    the build instead."""
+    result = compile_probe(tmp_path, default_header(),
+                           lib_dir=library_at_version(tmp_path, minor, patch),
+                           probe_text='#include "oca_validator.c"\n')
+    assert (result.returncode == 0) == fits, result.stderr
+    if not fits:
+        assert "oca_validator_version_fits" in result.stderr, result.stderr
+
+
+SEAL_BROKEN = "oca_config.h states settings its portfolio digest was not computed from"
+LABEL_BROKEN = "oca_config.h states a portfolio ID that is not the first 32 bits of its digest"
+
+
+def another_value(setting, value):
+    """A value of setting other than value: a switch flipped, a count halved."""
+    return value // 2 if setting.kind == "count" else 1 - value
+
+
+@pytest.mark.parametrize("setting", IMPLEMENTED, ids=[s.name for s in IMPLEMENTED])
+def test_a_setting_edited_by_hand_is_refused(tmp_path, setting):
+    """The portfolio the library reports must be the one it builds."""
+    values = default_settings()
+    edited = gen_config.spelled_value(setting, another_value(setting, values[setting.macro]))
+    result = compile_probe(tmp_path, set_define(default_header(), setting.macro, edited))
+    assert result.returncode != 0
+    assert SEAL_BROKEN in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("index", [0, 4, 31])
+def test_a_digest_edited_by_hand_is_refused(tmp_path, index):
+    """A byte inside the label breaks the label too; any byte breaks the seal."""
+    digest = bytearray(gen_config.portfolio_digest(default_settings()))
+    digest[index] ^= 0x01
+    header = set_define(default_header(), "OCA_CFG_PORTFOLIO_DIGEST",
+                        ", ".join(f"0x{byte:02x}" for byte in digest))
+    result = compile_probe(tmp_path, header)
+    assert result.returncode != 0
+    assert SEAL_BROKEN in result.stderr, result.stderr
+    assert (LABEL_BROKEN in result.stderr) == (index < 4), result.stderr
+
+
+def test_a_label_edited_by_hand_is_refused(tmp_path):
+    header = set_define(default_header(), "OCA_CFG_PORTFOLIO_ID", "0x00000000u")
+    result = compile_probe(tmp_path, header)
+    assert result.returncode != 0
+    assert LABEL_BROKEN in result.stderr, result.stderr
+    assert SEAL_BROKEN not in result.stderr, result.stderr
+
+
+def test_a_header_without_its_seal_is_refused(tmp_path):
+    header, count = SEAL_DEFINE.subn("", default_header())
+    assert count == 1
+    result = compile_probe(tmp_path, header)
+    assert result.returncode != 0
+    assert SEAL_BROKEN in result.stderr, result.stderr
+
+
+def test_a_header_restated_in_agreement_compiles(tmp_path):
+    """The seal holds a header's parts to each other, not to the generator: one
+    whose settings, digest, label and seal agree compiles, so the checks above
+    refuse the edits themselves and not anything that was not generated."""
+    values = dict(default_settings(), OCA_CFG_TOC_MAX_IMAGES=16)
+    header = restated(default_header(), values, gen_config.portfolio_digest(values))
+    result = compile_probe(tmp_path, header, probe_text='#include "oca_validator.c"\n')
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_generated_seal_is_named_for_the_digest_and_every_setting(tmp_path):
+    values = default_settings()
+    digest = gen_config.portfolio_digest(values)
+    seal = gen_config.portfolio_seal(values, digest)
+    assert seal.startswith("OCA_CFG_PORTFOLIO_SEAL_" + "".join(f"0x{b:02x}" for b in digest))
+    for setting in IMPLEMENTED:
+        assert (f"_{setting.macro.removeprefix('OCA_CFG_').lower()}_"
+                f"{gen_config.spelled_value(setting, values[setting.macro])}") in seal
+    assert f"#define {seal} 1\n" in default_header()
 
 
 @pytest.mark.parametrize("setting", IMPLEMENTED, ids=[s.name for s in IMPLEMENTED])

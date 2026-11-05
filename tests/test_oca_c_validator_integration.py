@@ -25,6 +25,7 @@ import tomllib
 
 import pytest
 
+import tt_boot_manifest
 from tt_boot_manifest.oca import constants as oca_constants
 from tt_boot_manifest.oca.entry import pack_oca_bundle
 from tt_boot_manifest.oca.signing import (build_pqc_signing_key, build_signing_key,
@@ -1346,14 +1347,16 @@ def _portfolio_from_generator(config: str) -> list[str]:
 
 
 def _assert_build_info_names(cli: str, config: str) -> str:
-    """The CLI's --build-info names the portfolio of config. Returns its identifier."""
+    """The CLI's --build-info names the library's version and the portfolio of
+    config. Returns the portfolio's identifier."""
     result = _run_cli_at(cli, ["--build-info"])
     assert result.returncode == 0, result.stderr
     lines = result.stdout.decode().splitlines()
     stated = _portfolio_from_generator(config)
     digest = hashlib.sha256("".join(f"{line}\n" for line in stated).encode()).hexdigest()
-    assert lines == [f"portfolio 0x{digest[:8]}", f"sha256 {digest}", *stated]
-    return lines[0]
+    assert lines == [f"library {tt_boot_manifest.__version__}", f"portfolio 0x{digest[:8]}",
+                     f"sha256 {digest}", *stated]
+    return lines[1]
 
 
 def test_cli_reports_the_portfolio_it_was_built_from(tmp_path):

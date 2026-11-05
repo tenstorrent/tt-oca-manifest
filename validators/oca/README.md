@@ -90,7 +90,16 @@ and not on the file's name, comments or order, and `OCA_CFG_PORTFOLIO_ID` is its
 first 32 bits. The library returns the digest from
 `oca_build_portfolio_digest()` and the shorter label from
 `oca_build_portfolio_id()`, and `build/test/oca-validate --build-info` prints
-both with the settings behind them. `gen_config.py --print NAME`
+both with the settings behind them and the library version. The header is
+sealed: it defines a macro named for the digest and every setting's value,
+which `lib/oca_config_check.h` rebuilds from what it finds, and it requires the
+label to be the digest's first 32 bits. A header whose settings, digest or
+label were edited apart from each other therefore fails the compile, so the
+library never reports a portfolio it does not build. The digest leaves out the
+library version, which `oca_validator_version()` returns and
+`OCA_VALIDATOR_VERSION_MAJOR`, `_MINOR` and `_PATCH` state; they are the
+package version, and `tests/test_oca_validator_version.py` fails when the two
+differ. `gen_config.py --print NAME`
 and `--print-all` give a build system a setting's value without parsing TOML:
 
 ```sh
@@ -101,8 +110,8 @@ Code compiled against another header does not link with the library. The
 library defines a guard symbol named for every setting of the header it was
 compiled against, `oca_build_guard_variant_classic_1_variant_pqc_1_...`, and
 every file that includes `oca_validator.h` refers to the guard its own header
-names. A file compiled against a stale header, another board's, or one edited by
-hand therefore fails the link with an undefined reference to its guard, whose
+names. A file compiled against a stale header or another board's therefore
+fails the link with an undefined reference to its guard, whose
 name spells the settings that file was compiled with. The reference costs one
 4-byte pointer in the image, shared by every file. It needs gcc 11 or later or
 clang 13 or later, which can keep it through a link that collects unused

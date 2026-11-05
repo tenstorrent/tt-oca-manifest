@@ -16,9 +16,13 @@
  * settings' former -D forms, so a stale override fails loudly instead of being
  * ignored.
  *
- * They do not tie the header to its configuration file. A header edited by
- * hand into another valid configuration compiles, as does one left behind
- * when the file changed; `gen_config.py --check` is what finds either.
+ * They hold the header to the portfolio it states. The generator seals it
+ * with a macro named for the portfolio digest and every setting's value, and
+ * the label must be the digest's first 32 bits, so a header whose settings,
+ * digest or label were edited apart from each other fails the compile instead
+ * of reporting a portfolio it does not build. They do not tie the header to
+ * its configuration file: one left behind when the file changed still
+ * compiles, and `gen_config.py --check` is what finds it.
  *
  * They do tie code to the library it links with. The library defines a guard
  * symbol named for every setting of its header, and each file that includes
@@ -217,6 +221,57 @@
     ##_cipher_aes_128_cbc_##cipher_aes_128_cbc##_cipher_aes_256_cbc_##cipher_aes_256_cbc \
     ##_kdf_sp800_108_hmac_sha256_##kdf_sp800_108_hmac_sha256 \
     ##_key_source_preshared_##key_source_preshared
+
+#if defined(OCA_CFG_PORTFOLIO_DIGEST) && defined(OCA_CFG_PORTFOLIO_ID)
+
+/**
+ * @brief The first 32 bits of a digest, big-endian, from its bytes.
+ *
+ * Undefined again once the check below has used it.
+ */
+#define OCA_CFG_ID_OF(...) OCA_CFG_ID_OF_BYTES(__VA_ARGS__)
+
+/** @brief Combine OCA_CFG_ID_OF()'s first four bytes. */
+#define OCA_CFG_ID_OF_BYTES(b0, b1, b2, b3, ...) \
+    (((b0) << 24) | ((b1) << 16) | ((b2) << 8) | (b3))
+
+#if OCA_CFG_ID_OF(OCA_CFG_PORTFOLIO_DIGEST) != OCA_CFG_PORTFOLIO_ID
+#error "oca_config.h states a portfolio ID that is not the first 32 bits of its digest; regenerate it rather than editing it"
+#endif
+#undef OCA_CFG_ID_OF
+#undef OCA_CFG_ID_OF_BYTES
+
+/**
+ * @brief The seal's name up to its settings: OCA_CFG_PORTFOLIO_SEAL_ and the
+ *        digest's 32 bytes.
+ *
+ * A digest of any other length fails here, as too many or too few arguments.
+ * Undefined again once the check below has used it.
+ */
+#define OCA_CFG_SEAL_PREFIX OCA_CFG_SEAL_EXPAND(OCA_CFG_PORTFOLIO_DIGEST)
+
+/** @brief Expand the digest into its bytes before OCA_CFG_SEAL_PASTE() pastes them. */
+#define OCA_CFG_SEAL_EXPAND(...) OCA_CFG_SEAL_PASTE(__VA_ARGS__)
+
+/** @brief Paste OCA_CFG_SEAL_PREFIX from the digest's bytes. */
+#define OCA_CFG_SEAL_PASTE(b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, \
+    b14, b15, b16, b17, b18, b19, b20, b21, b22, b23, b24, b25, b26, b27, b28, b29, \
+    b30, b31) \
+    OCA_CFG_PORTFOLIO_SEAL_##b0##b1##b2##b3##b4##b5##b6##b7##b8##b9##b10##b11##b12 \
+    ##b13##b14##b15##b16##b17##b18##b19##b20##b21##b22##b23##b24##b25##b26##b27##b28 \
+    ##b29##b30##b31
+
+/* The generator defines the seal for the digest and settings it wrote. A
+ * setting or digest edited since names a macro that does not exist, which an
+ * #if reads as 0. */
+#if !OCA_BUILD_GUARD_NAME(OCA_CFG_SEAL_PREFIX)
+#error "oca_config.h states settings its portfolio digest was not computed from; regenerate it rather than editing it"
+#endif
+#undef OCA_CFG_SEAL_PREFIX
+#undef OCA_CFG_SEAL_EXPAND
+#undef OCA_CFG_SEAL_PASTE
+
+#endif
 
 /** @brief The guard symbol: defined by the library, referred to by its users. */
 #define OCA_BUILD_GUARD OCA_BUILD_GUARD_NAME(oca_build_guard)

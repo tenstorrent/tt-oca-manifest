@@ -164,8 +164,20 @@ for whose label matches another's, so never attest it. `oca-validate
 the library it drives. The digest depends on the settings alone, so two files
 that build the same library share it, whatever their names, comments or order,
 and a library upgrade that adds a switch left off does not change it. The
-library reports what its generated header states; `gen_config.py --check` is
-what catches a header that no longer matches its file.
+library reports what its generated header states, and the header cannot state a
+digest other than its settings': the generator seals it with a macro named for
+the digest and every setting's value, so a header edited by hand so that they
+disagree does not compile. `gen_config.py --check` is what catches a header
+that no longer matches its file.
+
+**Attest the library version beside the digest.** Two versions of the library
+built from one configuration share a digest, and a release that changes how a
+manifest is checked changes no setting. `oca_validator_version()` returns the
+library's version as one number, the major version in bits 16 and up, the minor
+in bits 8 to 15 and the patch in bits 0 to 7, and `OCA_VALIDATOR_VERSION` is the
+same number as the header you compile against states it. A device that reports
+what it runs reports both, and a release gate approves the pair. `oca-validate
+--build-info` prints the version on its first line.
 
 **Choose what else to compile from the same file.** The callbacks an algorithm
 needs are yours to compile, and the configuration already says which
@@ -305,10 +317,12 @@ that was not generated, comes from another library version, is missing a
 setting, holds a switch other than 0 or 1, or combines settings no build can use
 fails the compile with an `#error` naming the problem. It also refuses the
 settings' former `-D` forms, such as `-DOCA_TOC_MAX_IMAGES=32`, so a stale
-override fails instead of being ignored. It does not compare the header with
-its configuration file: a hand edit that leaves a valid configuration, such as
-turning one algorithm off, compiles. Generate the header in the build, or check
-a committed one with `gen_config.py --check`. The settings and their defaults
+override fails instead of being ignored. A header edited by hand, such as one
+with an algorithm turned off, fails too: its settings no longer match the seal
+and portfolio digest the generator wrote. It does not compare the header with
+its configuration file, so one left behind when the file changed compiles.
+Generate the header in the build, or check a committed one with
+`gen_config.py --check`. The settings and their defaults
 are listed in [README.md](README.md#settings).
 
 ## Callbacks you must provide

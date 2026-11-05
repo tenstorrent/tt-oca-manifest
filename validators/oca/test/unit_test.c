@@ -1465,6 +1465,17 @@ TEST(test_the_library_reports_its_portfolio)
     ASSERT_TRUE(oca_build_portfolio_id() == OCA_CFG_PORTFOLIO_ID);
 }
 
+/* The library reports the version of the header it was compiled against,
+ * each part where OCA_VALIDATOR_VERSION puts it. The Python suite holds the
+ * header's version to the package's. */
+TEST(test_the_library_reports_its_version)
+{
+    ASSERT_TRUE(oca_validator_version() == OCA_VALIDATOR_VERSION);
+    ASSERT_TRUE((oca_validator_version() >> 16) == OCA_VALIDATOR_VERSION_MAJOR);
+    ASSERT_TRUE(((oca_validator_version() >> 8) & 0xffu) == OCA_VALIDATOR_VERSION_MINOR);
+    ASSERT_TRUE((oca_validator_version() & 0xffu) == OCA_VALIDATOR_VERSION_PATCH);
+}
+
 TEST(test_result_string_covers_the_algorithm_codes)
 {
     ASSERT_EQ_INT(strcmp(oca_result_str(OCA_FAIL_ALGORITHM_NOT_ENABLED),
@@ -8970,6 +8981,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_every_hash_type_resolves_against_the_format_and_the_build);
     RUN_TEST(test_a_hash_row_is_used_only_at_its_types_digest_size);
     RUN_TEST(test_the_library_reports_its_portfolio);
+    RUN_TEST(test_the_library_reports_its_version);
     RUN_TEST(test_result_string_covers_the_algorithm_codes);
     RUN_TEST_IF(CFG_CLASSIC, test_deprecated_check_names_reach_the_renamed_checks);
     RUN_TEST_IF(CFG_CLASSIC, test_corruption_outranks_a_field_level_violation);
