@@ -9,7 +9,8 @@
 #
 # Targets:
 #   all        — default; builds the test CLI (depends on lib + test).
-#   lib        — builds the host static archive build/lib/liboca_validator.a.
+#   lib        — builds the static archive build/lib/liboca_validator.a, for
+#                the host unless CC, AR and EXTRA_CFLAGS name a target.
 #                Library translation units are compiled freestanding to prove
 #                target portability; the archive itself is for the host test
 #                CLI and CI, not a release artifact.
@@ -30,6 +31,9 @@
 #   every required setting. The library refuses the settings' former -D forms.
 
 CC          ?= cc
+# A cross build names the archiver that matches its compiler, such as
+# AR=riscv64-unknown-elf-ar.
+AR          ?= ar
 PROJECT_ROOT := $(abspath $(CURDIR)/../..)
 
 # The generator needs Python 3.11 or later and nothing else, so it takes PYTHON
@@ -231,7 +235,7 @@ $(LIB_ARCHIVE): $(LIB_OBJS) | $(LIB_BUILD)
 	@if [ -z "$(LIB_OBJS)" ]; then \
 		echo "lib: no library sources yet — skipping archive"; \
 	else \
-		ar rcs $@ $(LIB_OBJS); \
+		$(AR) rcs $@ $(LIB_OBJS); \
 		echo "lib: built $@"; \
 	fi
 

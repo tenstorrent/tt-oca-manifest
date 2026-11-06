@@ -19,6 +19,7 @@ import sys
 import pytest
 
 from oca_fixtures import build_config
+from oca_fixtures.toolchain import C_COMPILER
 
 LIB_DIR = os.path.join(build_config.VALIDATOR_DIR, "lib")
 GENERATOR = os.path.join(LIB_DIR, "scripts", "gen_config.py")
@@ -38,10 +39,10 @@ def result_codes(lib_dir=LIB_DIR) -> list[str]:
 def printed_names(tmp_path, lib_dir=LIB_DIR) -> dict[str, str]:
     """What oca_result_str() returns for every result code, compiled from
     lib_dir."""
-    if shutil.which("cc") is None:
+    if shutil.which(C_COMPILER[0]) is None:
         if os.environ.get(REQUIRE_VALIDATOR_ENV):
-            pytest.fail(f"needs cc ({REQUIRE_VALIDATOR_ENV} is set)")
-        pytest.skip("needs cc")
+            pytest.fail(f"needs {C_COMPILER[0]} ({REQUIRE_VALIDATOR_ENV} is set)")
+        pytest.skip(f"needs {C_COMPILER[0]}")
     gen = tmp_path / "gen"
     gen.mkdir(exist_ok=True)
     subprocess.run([sys.executable, GENERATOR, "--config", build_config.DEFAULT_CONFIG,
@@ -55,7 +56,7 @@ def printed_names(tmp_path, lib_dir=LIB_DIR) -> dict[str, str]:
     sources = [os.path.join(lib_dir, name) for name in sorted(os.listdir(lib_dir))
                if name.endswith(".c")]
     binary = tmp_path / "names"
-    built = subprocess.run(["cc", "-std=c99", "-Wall", "-Werror", "-I", str(lib_dir),
+    built = subprocess.run([*C_COMPILER, "-std=c99", "-Wall", "-Werror", "-I", str(lib_dir),
                             "-I", str(gen), str(probe), *sources, "-o", str(binary)],
                            capture_output=True, text=True)
     assert built.returncode == 0, built.stderr

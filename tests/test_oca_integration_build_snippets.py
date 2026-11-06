@@ -26,6 +26,7 @@ import time
 import pytest
 
 from oca_fixtures import build_config
+from oca_fixtures.toolchain import C_COMPILER
 
 GUIDE = os.path.join(build_config.VALIDATOR_DIR, "INTEGRATION.md")
 SECTION_HEADING = "## Configuring the build"
@@ -266,7 +267,7 @@ def add_library_source(root):
 
 def make_project(tmp_path, *middle, build_dir="BUILD_DIR := build\n") -> str:
     """An adopter project whose Makefile is the scaffolding around middle."""
-    require_tools("cc")
+    require_tools(C_COMPILER[0])
     root = adopter_project(tmp_path / "project")
     write(os.path.join(root, "Makefile"),
           build_dir + MAKE_PREFIX + "\n".join(middle) + "\n" + MAKE_SUFFIX)
@@ -445,7 +446,7 @@ def test_the_check_passes_a_comment_edit_and_fails_a_setting_edit(tmp_path):
 
 def cmake_project(tmp_path, generator) -> tuple[str, dict[str, str]]:
     """An adopter project built by the CMake snippet, configured for generator."""
-    require_tools("cc", "cmake", *({"Ninja": ("ninja",)}.get(generator, ())))
+    require_tools(C_COMPILER[0], "cmake", *({"Ninja": ("ninja",)}.get(generator, ())))
     root = adopter_project(tmp_path / "project")
     write(os.path.join(root, "CMakeLists.txt"),
           CMAKE_PREFIX + snippet("cmake", "add_library(oca_validator") + CMAKE_SUFFIX)

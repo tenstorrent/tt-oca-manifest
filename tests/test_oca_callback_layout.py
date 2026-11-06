@@ -23,6 +23,7 @@ import sys
 import pytest
 
 from oca_fixtures import build_config
+from oca_fixtures.toolchain import C_COMPILER
 
 LIB_DIR = os.path.join(build_config.VALIDATOR_DIR, "lib")
 GENERATOR = os.path.join(LIB_DIR, "scripts", "gen_config.py")
@@ -86,10 +87,10 @@ def layout_probe() -> str:
 
 def require_cc():
     """Skip without a C compiler, or fail under the validator-required setting."""
-    if shutil.which("cc") is None:
+    if shutil.which(C_COMPILER[0]) is None:
         if os.environ.get(REQUIRE_VALIDATOR_ENV):
-            pytest.fail(f"needs cc ({REQUIRE_VALIDATOR_ENV} is set)")
-        pytest.skip("needs cc")
+            pytest.fail(f"needs {C_COMPILER[0]} ({REQUIRE_VALIDATOR_ENV} is set)")
+        pytest.skip(f"needs {C_COMPILER[0]}")
 
 
 def layout(tmp_path, lib_dir, *flags) -> dict[str, tuple[int, ...]]:
@@ -101,8 +102,8 @@ def layout(tmp_path, lib_dir, *flags) -> dict[str, tuple[int, ...]]:
     probe = tmp_path / "layout.c"
     probe.write_text(layout_probe())
     binary = tmp_path / ("layout" + "".join(flags).replace("-", "_"))
-    built = subprocess.run(["cc", "-std=c99", "-Wall", "-Werror", *flags, "-I", str(lib_dir),
-                            "-I", str(gen), str(probe), "-o", str(binary)],
+    built = subprocess.run([*C_COMPILER, "-std=c99", "-Wall", "-Werror", *flags,
+                            "-I", str(lib_dir), "-I", str(gen), str(probe), "-o", str(binary)],
                            capture_output=True, text=True)
     assert built.returncode == 0, built.stderr
     printed = subprocess.run([str(binary)], capture_output=True, text=True, check=True)

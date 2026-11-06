@@ -118,7 +118,14 @@ drop-in.
 Needed to build the validator and to run the validator integration tests, which **skip**
 rather than fail when it is absent:
 
-- A host C toolchain with `-std=c99` support (gcc 12+ or clang 16+)
+- A host C toolchain with `-std=c99` support (gcc 12+ or clang 16+). The tests compile with
+  `CC` and `CXX` when they are set, as make does, and with `cc` and `c++` otherwise. Each must
+  build programs for the machine running the tests, because the tests run what they build.
+  CI runs the test files that compile C under both gcc and clang. They are listed in
+  `COMPILER_TESTS` in `.github/workflows/ci.yml`; a test file that imports
+  `oca_fixtures.toolchain` must be on that list, and `tests/test_oca_fixtures_toolchain.py`
+  fails until it is. CI also builds the library for 32-bit RISC-V with `-fshort-enums`, as
+  `validators/oca/README.md`, "Build", shows
 - OpenSSL **3.5 or later** development headers, discovered via `pkg-config` (macOS:
   `brew install openssl@3`; Debian 13+ or Ubuntu 26.04+: `apt install libssl-dev pkg-config`).
   The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. With an older OpenSSL the CLI

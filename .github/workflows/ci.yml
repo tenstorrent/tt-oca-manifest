@@ -21,6 +21,20 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The test files that compile C. Whether they pass depends on the compiler,
+  # not the Python version, so the c-validator job runs them under gcc and
+  # clang, and the pytest job runs them on one Python version only. Every test
+  # file that imports oca_fixtures.toolchain belongs on this list;
+  # tests/test_oca_fixtures_toolchain.py fails until it is.
+  COMPILER_TESTS: >-
+    tests/test_oca_build_config.py
+    tests/test_oca_build_guard.py
+    tests/test_oca_callback_layout.py
+    tests/test_oca_hash_row_size.py
+    tests/test_oca_integration_build_snippets.py
+    tests/test_oca_result_names.py
+
 jobs:
   pytest:
     name: pytest (Python ${{ matrix.python-version }}, cryptography ${{ matrix.cryptography }})
@@ -41,9 +55,17 @@ jobs:
         # other leg resolves the newest release, so without this one the floor
         # is never exercised. Paired with the Python floor: the oldest
         # combination a user can install.
+        #
+        # Only the 3.11 / latest leg runs the compiler tests, so the build
+        # configuration generator is still tested on the oldest Python. The
+        # c-validator job runs them under each compiler.
         include:
           - python-version: '3.11'
             cryptography: '48.0.0'
+            skip-compiler-tests: true
+          - python-version: '3.12'
+            cryptography: 'latest'
+            skip-compiler-tests: true
     steps:
       - uses: actions/checkout@v5
 
@@ -138,7 +160,12 @@ jobs:
       - name: Run the producer and consumer test suites
         env:
           TT_BOOT_MANIFEST_REQUIRE_VALIDATOR: "1"
-        run: python -m pytest -m "not aws"
+        run: |
+          ignored=""
+          if [ "${{ matrix.skip-compiler-tests }}" = true ]; then
+            for path in $COMPILER_TESTS; do ignored="$ignored --ignore=$path"; done
+          fi
+          python -m pytest -m "not aws" $ignored
 
   c-validator:
     name: C validator (${{ matrix.cc }})
@@ -148,6 +175,11 @@ jobs:
       fail-fast: false
       matrix:
         cc: [gcc, clang]
+        include:
+          - cc: gcc
+            cxx: g++
+          - cc: clang
+            cxx: clang++
     steps:
       - uses: actions/checkout@v5
 
@@ -156,11 +188,13 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Install C toolchain and OpenSSL headers
+      # The integration guide's snippet tests, among the compiler tests below,
+      # need CMake and Ninja.
+      - name: Install C toolchain, OpenSSL headers, CMake and Ninja
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential clang pkg-config libssl-dev
+            build-essential clang pkg-config libssl-dev cmake ninja-build
 
       # `make check` runs a fixture sweep that packs manifests with the producer,
       # so the Python package has to be importable by the interpreter the
@@ -230,6 +264,16 @@ jobs:
             gcc:yes)   echo "::error::-Wdocumentation reached a gcc build; the probe is not gating"; exit 1 ;;
           esac
 
+      # The tests compile with whatever CC and CXX name. Setting them here runs
+      # the tests with this leg's compiler instead of the runner's cc, which is
+      # gcc.
+      - name: Run the compiler tests under ${{ matrix.cc }}
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+          TT_BOOT_MANIFEST_REQUIRE_VALIDATOR: "1"
+        run: python -m pytest -m "not aws" $COMPILER_TESTS
+
       # A consumer that must never accept a variant turns it off in [variants] of
       # its build configuration. All three configurations have to keep building,
       # or that setting has quietly stopped being an option; so does the least
@@ -240,4 +284,51 @@ jobs:
             make -C validators/oca CC=${{ matrix.cc }} "$target"
             binary="validators/oca/build/$target/test/oca-validate"
             test -x "$binary" || { echo "::error::$target produced no CLI at $binary"; exit 1; }
+          done
+
+  # Firmware cross-compiles the library for a small target. Within that target,
+  # pointers and size_t are 32 bits and an enum can be smaller than an int,
+  # which a host build never shows. This job builds every configuration for
+  # 32-bit RISC-V with -fshort-enums. Warnings are errors, so any warning fails
+  # the job. Nothing is linked or run, because that needs an integrator's
+  # callbacks.
+  cross-build:
+    name: C validator library (rv32, short enums)
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install the RISC-V cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf
+          riscv64-unknown-elf-gcc --version
+
+      # Each archive must hold one 32-bit RISC-V object for each library source.
+      # A leftover host object or a skipped source fails the check.
+      - name: Build every configuration for rv32 with short enums
+        run: |
+          cross=riscv64-unknown-elf
+          sources=$(ls validators/oca/lib/*.c | wc -l)
+          for config in lib/oca_config.toml validators/oca/test/build_configs/*.toml; do
+            config=${config#validators/oca/}
+            name=$(basename "$config" .toml)
+            make -C validators/oca BUILD="build/rv32-$name" CONFIG="$config" \
+              CC=$cross-gcc AR=$cross-ar \
+              EXTRA_CFLAGS="-march=rv32imac -mabi=ilp32 -fshort-enums" lib
+            archive="validators/oca/build/rv32-$name/lib/liboca_validator.a"
+            headers=$($cross-readelf -h "$archive" 2>&1 || true)
+            members=$($cross-ar t "$archive" | wc -l)
+            elf32=$(grep -cE 'Class:[[:space:]]+ELF32' <<<"$headers" || true)
+            riscv=$(grep -cE 'Machine:[[:space:]]+RISC-V' <<<"$headers" || true)
+            if [ "$members" -ne "$sources" ] || [ "$elf32" -ne "$sources" ] \
+                || [ "$riscv" -ne "$sources" ]; then
+              echo "::error::$name: $members members, $elf32 ELF32, $riscv RISC-V; expected $sources of each"
+              exit 1
+            fi
+            echo "$name: $sources rv32 objects, $($cross-size -t "$archive" | tail -n 1 | awk '{print $4}') bytes"
           done

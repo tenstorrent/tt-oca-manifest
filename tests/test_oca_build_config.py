@@ -20,6 +20,7 @@ import builtins
 import importlib.util
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,7 @@ import pytest
 
 from tt_boot_manifest.oca import constants as oca_constants
 from oca_fixtures import build_config
+from oca_fixtures.toolchain import C_COMPILER
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1030,7 +1032,7 @@ def compile_probe(tmp_path, header_text, *defines, lib_dir=LIB_DIR, probe_text=P
     header_text becomes the oca_config.h on the include path; None leaves it
     out entirely. Returns the completed compiler run.
     """
-    require_tools("cc")
+    require_tools(C_COMPILER[0])
     gen = tmp_path / "gen"
     gen.mkdir(exist_ok=True)
     if header_text is not None:
@@ -1038,7 +1040,7 @@ def compile_probe(tmp_path, header_text, *defines, lib_dir=LIB_DIR, probe_text=P
     probe = tmp_path / "probe.c"
     probe.write_text(probe_text)
     return subprocess.run(
-        ["cc", "-std=c99", "-Wall", "-Werror", "-pedantic", "-fsyntax-only",
+        [*C_COMPILER, "-std=c99", "-Wall", "-Werror", "-pedantic", "-fsyntax-only",
          "-I", str(lib_dir), "-I", str(gen), *defines, str(probe)],
         capture_output=True, text=True)
 
@@ -1371,11 +1373,14 @@ def test_no_hash_row_may_outgrow_the_digest_buffers(tmp_path, size, fits):
 
 
 def run_make(build_dir, *args, environment=None):
-    require_tools("make", "cc")
+    """Run the validator's Makefile with the tests' C compiler, unless args
+    name another."""
+    require_tools("make", C_COMPILER[0])
     return subprocess.run(
         ["make", "-C", VALIDATOR_DIR, f"BUILD={build_dir}", *args],
         capture_output=True, text=True,
-        env={**os.environ, "PYTHON": sys.executable, **(environment or {})})
+        env={**os.environ, "PYTHON": sys.executable, "CC": shlex.join(C_COMPILER),
+             **(environment or {})})
 
 
 def test_a_config_variable_in_the_environment_does_not_choose_the_configuration(
@@ -1470,14 +1475,14 @@ def test_a_changed_configuration_rebuilds_and_an_unchanged_one_does_not(tmp_path
 
 
 def write_compiler(path, version, machine):
-    """Write a compiler that compiles with the host's cc but reports the given
-    --version line and -dumpmachine target. Returns the path."""
+    """Write a compiler that compiles with the tests' C compiler but reports
+    the given --version line and -dumpmachine target. Returns the path."""
     path.write_text("#!/bin/sh\n"
                     "case \"$1\" in\n"
                     f"  --version) echo \"{version}\"; exit 0 ;;\n"
                     f"  -dumpmachine) echo \"{machine}\"; exit 0 ;;\n"
                     "esac\n"
-                    f"exec {shutil.which('cc')} \"$@\"\n")
+                    f"exec {shlex.join(C_COMPILER)} \"$@\"\n")
     path.chmod(0o755)
     return str(path)
 
@@ -1526,6 +1531,27 @@ def test_the_same_command_naming_another_compiler_rebuilds(tmp_path, stamped_obj
     time.sleep(1.1)
     write_compiler(tmp_path / "cc", version, machine)
     assert object_built_by(tmp_path, compiler, stamped_object) != first
+
+
+def write_archiver(path, record):
+    """Write an archiver that notes it ran in record, then runs the host's ar."""
+    path.write_text("#!/bin/sh\n"
+                    f"echo ran > {shlex.quote(str(record))}\n"
+                    f"exec {shutil.which('ar')} \"$@\"\n")
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_the_library_is_archived_with_the_named_archiver(tmp_path):
+    """make archives with the AR it is given, so a cross build can name its
+    target's archiver."""
+    require_tools("ar")
+    record = tmp_path / "archiver-ran"
+    build = tmp_path / "build"
+    result = run_make(build, f"AR={write_archiver(tmp_path / 'cross-ar', record)}", "lib")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert record.read_text() == "ran\n"
+    assert (build / "lib" / "liboca_validator.a").stat().st_size > 0
 
 
 def test_a_quote_in_the_compiler_version_does_not_break_the_build(tmp_path):
@@ -1643,7 +1669,7 @@ def defined_functions(directory, header_text):
     rather than being inlined away, and its absence means its source was not
     compiled.
     """
-    require_tools("cc", "nm")
+    require_tools(C_COMPILER[0], "nm")
     gen = directory / "gen"
     gen.mkdir(parents=True)
     (gen / "oca_config.h").write_text(header_text)
@@ -1652,7 +1678,7 @@ def defined_functions(directory, header_text):
         if not source.endswith(".c"):
             continue
         obj = directory / (source[:-2] + ".o")
-        subprocess.run(["cc", "-std=c99", "-O0", "-c", "-I", LIB_DIR, "-I", str(gen),
+        subprocess.run([*C_COMPILER, "-std=c99", "-O0", "-c", "-I", LIB_DIR, "-I", str(gen),
                         os.path.join(LIB_DIR, source), "-o", str(obj)], check=True)
         listed = subprocess.run(["nm", str(obj)], capture_output=True, text=True,
                                 check=True)
@@ -1792,7 +1818,7 @@ def resolve_every_code_point(tmp_path, header_text, lib_dir=LIB_DIR):
 
     Returns ({(field, value): verdict}, {(field, value): revoke bit}).
     """
-    require_tools("cc")
+    require_tools(C_COMPILER[0])
     gen = tmp_path / "gen"
     gen.mkdir(exist_ok=True)
     (gen / "oca_config.h").write_text(header_text)
@@ -1802,7 +1828,7 @@ def resolve_every_code_point(tmp_path, header_text, lib_dir=LIB_DIR):
     sources = [os.path.join(lib_dir, name) for name in sorted(os.listdir(lib_dir))
                if name.endswith(".c") and name != "signature_posture.c"]
     built = subprocess.run(
-        ["cc", "-std=c99", "-Wall", "-Werror", "-pedantic", "-I", str(lib_dir),
+        [*C_COMPILER, "-std=c99", "-Wall", "-Werror", "-pedantic", "-I", str(lib_dir),
          "-I", str(gen), f"-DBYTE_FIELD_PROBE_END={BYTE_FIELD_PROBE_END:#x}u",
          f"-DKEY_SOURCE_PROBE_END={KEY_SOURCE_PROBE_END:#x}u",
          str(probe), *sources, "-o", str(binary)],

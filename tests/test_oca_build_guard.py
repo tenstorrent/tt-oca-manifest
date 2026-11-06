@@ -26,6 +26,7 @@ import pytest
 
 from oca_fixtures import build_config
 from oca_fixtures.build_config import config_text
+from oca_fixtures.toolchain import C_COMPILER, CXX_COMPILER
 
 LIB_DIR = os.path.join(build_config.VALIDATOR_DIR, "lib")
 BUILD_CONFIG_DIR = os.path.join(build_config.VALIDATOR_DIR, "test", "build_configs")
@@ -63,8 +64,8 @@ int main(void)
 }
 """
 
-LANGUAGES = {"c": ("cc", "app.c", ["-std=c99"]),
-             "c++": ("c++", "app.cpp", ["-std=c++17"])}
+LANGUAGES = {"c": (C_COMPILER, "app.c", ["-std=c99"]),
+             "c++": (CXX_COMPILER, "app.cpp", ["-std=c++17"])}
 
 
 
@@ -162,20 +163,20 @@ def include_dir(directory, header_text) -> str:
 
 def compile_source(compiler, flags, source, obj, header_dir, check=True):
     """Compile one file against the library headers and header_dir."""
-    return subprocess.run([compiler, *flags, *WARNINGS, *SECTIONS, "-Os", "-I", LIB_DIR,
+    return subprocess.run([*compiler, *flags, *WARNINGS, *SECTIONS, "-Os", "-I", LIB_DIR,
                            "-I", header_dir, "-c", str(source), "-o", str(obj)],
                           capture_output=True, text=True, check=check)
 
 
 def library_archive(directory, header_text) -> str:
     """The library compiled against header_text, archived as firmware links it."""
-    require_tools("cc", "ar")
+    require_tools(C_COMPILER[0], "ar")
     header_dir = include_dir(directory / "gen", header_text)
     objects = []
     for source in sorted(os.listdir(LIB_DIR)):
         if source.endswith(".c"):
             obj = directory / (source[:-2] + ".o")
-            compile_source("cc", ["-std=c99", "-ffreestanding", "-fno-builtin"],
+            compile_source(C_COMPILER, ["-std=c99", "-ffreestanding", "-fno-builtin"],
                            os.path.join(LIB_DIR, source), obj, header_dir)
             objects.append(str(obj))
     archive = directory / "liboca_validator.a"
@@ -187,7 +188,7 @@ def application_object(directory, header_text, language="c", text=APPLICATION,
                        name="app", extra_flags=()) -> str:
     """One application file compiled against header_text."""
     compiler, source_name, flags = LANGUAGES[language]
-    require_tools(compiler)
+    require_tools(compiler[0])
     directory.mkdir(parents=True, exist_ok=True)
     source = directory / f"{name}{os.path.splitext(source_name)[1]}"
     source.write_text(text)
@@ -202,7 +203,7 @@ def link(directory, objects, archive=None, language="c") -> subprocess.Completed
     collecting unused sections."""
     compiler = LANGUAGES[language][0]
     libraries = [archive] if archive else []
-    return subprocess.run([compiler, *objects, *libraries, *COLLECT_UNUSED,
+    return subprocess.run([*compiler, *objects, *libraries, *COLLECT_UNUSED,
                            "-o", str(directory / "program")],
                           capture_output=True, text=True)
 
@@ -297,14 +298,14 @@ def test_a_compiler_without_retain_compiles_without_the_guard(tmp_path):
     the reference out rather than make one the link may discard. Such a
     compiler gets no guard and builds as before. Undefining the builtin warns,
     so this compile does not treat warnings as errors."""
-    require_tools("cc")
+    require_tools(C_COMPILER[0])
     header_dir = include_dir(tmp_path / "gen", stale_header(tmp_path))
     source = tmp_path / "app.c"
     source.write_text(APPLICATION)
     obj = tmp_path / "app.o"
-    subprocess.run(["cc", "-std=c99", "-U__has_attribute", "-I", LIB_DIR, "-I", header_dir,
-                    "-c", str(source), "-o", str(obj)], capture_output=True, text=True,
-                   check=True)
+    subprocess.run([*C_COMPILER, "-std=c99", "-U__has_attribute", "-I", LIB_DIR,
+                    "-I", header_dir, "-c", str(source), "-o", str(obj)],
+                   capture_output=True, text=True, check=True)
     assert not guard_refs(obj)
     archive = library_archive(tmp_path / "lib", header_of(tmp_path, config_text()))
     result = link(tmp_path, [str(obj)], archive)
@@ -327,10 +328,10 @@ def test_only_a_file_that_omits_the_guard_links_without_the_library(tmp_path, om
 @pytest.mark.parametrize("language", sorted(LANGUAGES))
 def test_a_missing_configuration_header_names_the_generator(tmp_path, language):
     compiler, source_name, flags = LANGUAGES[language]
-    require_tools(compiler)
+    require_tools(compiler[0])
     source = tmp_path / source_name
     source.write_text(APPLICATION)
-    result = subprocess.run([compiler, *flags, *WARNINGS, "-I", LIB_DIR, "-c", str(source),
+    result = subprocess.run([*compiler, *flags, *WARNINGS, "-I", LIB_DIR, "-c", str(source),
                              "-o", str(tmp_path / "app.o")], capture_output=True, text=True)
     assert result.returncode != 0
     assert "gen_config.py" in result.stderr, result.stderr

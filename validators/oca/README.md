@@ -54,6 +54,19 @@ make clean
 The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic -Wundef
 -ffreestanding -nostdlib`. The host CLI links OpenSSL 3.5 or later (`-lcrypto`).
 
+`make lib` can also build the library for a target. Name the cross compiler with
+`CC`, its archiver with `AR`, and the target's flags with `EXTRA_CFLAGS`. CI
+builds every configuration this way for rv32, with enums as small as their
+values allow:
+
+```
+make lib CC=riscv64-unknown-elf-gcc AR=riscv64-unknown-elf-ar \
+    EXTRA_CFLAGS="-march=rv32imac -mabi=ilp32 -fshort-enums"
+```
+
+Only `lib` builds for a target. The CLI and the unit tests run on the host, so
+they need a host compiler.
+
 ### Build configuration
 
 Every compile-time setting of the library lives in one TOML file. The build

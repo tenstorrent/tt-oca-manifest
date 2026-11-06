@@ -26,6 +26,7 @@ import sys
 import pytest
 
 from oca_fixtures import build_config
+from oca_fixtures.toolchain import C_COMPILER
 
 REQUIRE_VALIDATOR_ENV = "TT_BOOT_MANIFEST_REQUIRE_VALIDATOR"
 SITE_TEST = "test_every_digest_site_holds_the_hash_row_to_its_type"
@@ -67,7 +68,7 @@ def site_test_verdict(validator_dir) -> str:
 
 @pytest.mark.parametrize("size", [0, 1, 31])
 def test_every_digest_site_refuses_a_hash_row_of_the_wrong_size(tmp_path, size):
-    require_tools("make", "cc", "pkg-config")
+    require_tools("make", C_COMPILER[0], "pkg-config")
     assert site_test_verdict(validator_with_sha2_256_size(tmp_path, size)) \
         == f"PASS: {SITE_TEST}"
 
