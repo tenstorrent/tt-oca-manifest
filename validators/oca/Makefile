@@ -117,15 +117,24 @@ TEST_LIBS    := $(OPENSSL_LIBS)
 # Flag-change detection.
 #
 # make decides what to rebuild from file timestamps, never from the command line
-# it last used. So changing EXTRA_CFLAGS silently reuses objects compiled with
-# the PREVIOUS flags, yielding a binary that does not match the ones you asked
-# for. That has produced wrong test verdicts.
+# it last used. So changing EXTRA_CFLAGS, or the compiler, silently reuses
+# objects compiled with the PREVIOUS ones, yielding a binary that does not match
+# what you asked for. That has produced wrong test verdicts, and has put a host
+# object into a cross-compiled archive.
 #
-# Record the flags in a stamp file and make every object depend on it. The stamp
-# is rewritten ONLY when the flags actually differ, so an unchanged build stays
-# fully incremental. The generated configuration header works the same way: it
-# is regenerated on every build but rewritten only when its content changes, so
-# switching CONFIG, or editing the file it names, rebuilds exactly when it must.
+# Record the compiler and the flags in a stamp file and make every object depend
+# on it. The compiler is recorded as its command, the target it builds for and
+# its version line, so CC=cc still rebuilds when cc names another compiler. The
+# stamp is rewritten ONLY when this record actually differs, so an unchanged
+# build stays fully incremental. The generated configuration header works the
+# same way: it is regenerated on every build but rewritten only when its content
+# changes, so switching CONFIG, or editing the file it names, rebuilds exactly
+# when it must. The stamp recipes quote their text with single quotes, so any in
+# the version line are dropped.
+CC_IDENTITY  := $(CC) | $(shell $(CC) -dumpmachine 2>/dev/null) \
+                | $(shell $(CC) --version 2>/dev/null | head -n 1 | tr -d "'")
+LIB_STAMP_TEXT  := $(CC_IDENTITY) | $(LIB_CFLAGS)
+TEST_STAMP_TEXT := $(CC_IDENTITY) | $(TEST_CFLAGS)
 LIB_STAMP    := $(LIB_BUILD)/.cflags
 TEST_STAMP   := $(TEST_BUILD)/.cflags
 
@@ -199,14 +208,14 @@ $(CONFIG_HEADER): FORCE | $(GEN_BUILD)
 	@$(CONFIG_PYTHON) -I lib/scripts/gen_config.py --config $(CONFIG) --out $@
 
 $(LIB_STAMP): FORCE | $(LIB_BUILD)
-	@printf '%s' '$(LIB_CFLAGS)' | cmp -s - $@ 2>/dev/null \
-		|| { printf '%s' '$(LIB_CFLAGS)' > $@; \
-		     echo "flags changed -> rebuilding lib objects"; }
+	@printf '%s' '$(LIB_STAMP_TEXT)' | cmp -s - $@ 2>/dev/null \
+		|| { printf '%s' '$(LIB_STAMP_TEXT)' > $@; \
+		     echo "compiler or flags changed -> rebuilding lib objects"; }
 
 $(TEST_STAMP): FORCE | $(TEST_BUILD)
-	@printf '%s' '$(TEST_CFLAGS)' | cmp -s - $@ 2>/dev/null \
-		|| { printf '%s' '$(TEST_CFLAGS)' > $@; \
-		     echo "flags changed -> rebuilding test objects"; }
+	@printf '%s' '$(TEST_STAMP_TEXT)' | cmp -s - $@ 2>/dev/null \
+		|| { printf '%s' '$(TEST_STAMP_TEXT)' > $@; \
+		     echo "compiler or flags changed -> rebuilding test objects"; }
 
 $(LIB_BUILD)/%.o: lib/%.c $(LIB_STAMP) $(CONFIG_HEADER) | $(LIB_BUILD)
 	$(CC) $(LIB_CFLAGS) -c $< -o $@

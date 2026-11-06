@@ -121,13 +121,17 @@ the header but never links the library defines `OCA_BUILD_GUARD_OMIT` before
 including it. A missing header stops the compile with a message naming the
 generator.
 
-Changing `EXTRA_CFLAGS` forces a rebuild too. `make` decides what to recompile
-from file timestamps and never from the command line it last used, so the build
-records the flags in a stamp file (`build/*/.cflags`) that every object depends
-on. Without that, changing a flag and rebuilding into the same directory silently
-reused objects compiled with the previous value — a binary that did not match the
-flags you asked for, which has produced wrong test verdicts. The stamp is
-rewritten only when the flags actually differ, so an unchanged rebuild stays
+Changing `EXTRA_CFLAGS` or the compiler forces a rebuild too. `make` decides
+what to recompile from file timestamps and never from the command line it last
+used, so the build records the compiler and the flags in a stamp file
+(`build/*/.cflags`) that every object depends on. The compiler is recorded as
+its command, the target it reports with `-dumpmachine`, and the first line of
+its `--version`, so `CC=cc` still rebuilds when `cc` has come to name a
+different compiler. Without the stamp, rebuilding into the same directory
+silently reused objects built by the previous compiler or with the previous
+flags — a binary that did not match what you asked for. That has produced wrong
+test verdicts, and a host object in a cross-compiled archive. The stamp is
+rewritten only when its contents actually differ, so an unchanged rebuild stays
 incremental. This is independent of your make version: **no** make tracks the
 command line it last used, so the stamp is required regardless.
 

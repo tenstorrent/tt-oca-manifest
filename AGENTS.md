@@ -303,11 +303,13 @@ configuration, `test/build_configs/hash_only.toml`, and must keep building too. 
 integration tests run every fixture through its CLI, so a new fixture is held to what that
 build accepts and refuses without further work.
 
-`EXTRA_CFLAGS` remains for compiler flags only. Changing it, or the configuration, forces a
-rebuild. Make decides what to recompile from timestamps, never from the last command line, so
-the Makefile records the flags in a stamp file (`build/lib/.cflags`) that every object depends
-on, and regenerates `oca_config.h` on every build but rewrites it only when its content
-changes. Both stay untouched when nothing changed, so unchanged builds stay incremental.
+`EXTRA_CFLAGS` remains for compiler flags only. Changing it, the compiler, or the configuration
+forces a rebuild. Make decides what to recompile from timestamps, never from the last command
+line, so the Makefile records the compiler and the flags in a stamp file (`build/lib/.cflags`)
+that every object depends on, and regenerates `oca_config.h` on every build but rewrites it
+only when its content changes. Both stay untouched when nothing changed, so unchanged builds
+stay incremental. The compiler is recorded by its command, its `-dumpmachine` target and its
+`--version` line, so `CC=cc` still rebuilds when `cc` names a different compiler.
 Without them, a changed setting silently reuses objects compiled with the previous value —
 which has produced wrong test verdicts before.
 
@@ -576,10 +578,10 @@ the `aws-sso` console script.
 
 1. **Mass failures are environmental.** If tests your change never touched are failing,
    suspect the toolchain and the state of your tree before the code.
-2. **A stale-object failure looks like a logic bug.** After changing `EXTRA_CFLAGS` or the
-   configuration, confirm the flag stamp at `validators/oca/build/lib/.cflags` and the
-   generated `validators/oca/build/gen/oca_config.h` hold what you expect. When in doubt,
-   `make -C validators/oca clean`.
+2. **A stale-object failure looks like a logic bug.** After changing `EXTRA_CFLAGS`, the
+   compiler or the configuration, confirm the flag stamp at `validators/oca/build/lib/.cflags`
+   and the generated `validators/oca/build/gen/oca_config.h` hold what you expect. When in
+   doubt, `make -C validators/oca clean`.
 3. **Read the gate's own message.** The drift, completeness, doc-comment and retval checkers
    all report the exact symbol or line at fault, and `sync_layout.py` emits a fixup suggestion.
    Fix what it names rather than re-deriving the problem.

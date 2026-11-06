@@ -1469,6 +1469,71 @@ def test_a_changed_configuration_rebuilds_and_an_unchanged_one_does_not(tmp_path
     assert "#define OCA_CFG_VARIANT_PQC 0" in (build / "gen" / "oca_config.h").read_text()
 
 
+def write_compiler(path, version, machine):
+    """Write a compiler that compiles with the host's cc but reports the given
+    --version line and -dumpmachine target. Returns the path."""
+    path.write_text("#!/bin/sh\n"
+                    "case \"$1\" in\n"
+                    f"  --version) echo \"{version}\"; exit 0 ;;\n"
+                    f"  -dumpmachine) echo \"{machine}\"; exit 0 ;;\n"
+                    "esac\n"
+                    f"exec {shutil.which('cc')} \"$@\"\n")
+    path.chmod(0o755)
+    return str(path)
+
+
+# One object from each stamp: the library's, and the test driver's.
+STAMPED_OBJECTS = [os.path.join("lib", "oca_variant.o"), os.path.join("test", "unit_test.o")]
+
+
+def object_built_by(tmp_path, compiler, stamped_object):
+    """Build one object with the given compiler and return its mtime."""
+    build = tmp_path / "build"
+    result = run_make(build, f"CC={compiler}", str(build / stamped_object))
+    assert result.returncode == 0, result.stdout + result.stderr
+    return (build / stamped_object).stat().st_mtime_ns
+
+
+@pytest.mark.parametrize("stamped_object", STAMPED_OBJECTS)
+def test_the_same_compiler_does_not_rebuild(tmp_path, stamped_object):
+    compiler = write_compiler(tmp_path / "cc-a", "cc-a 1.0", "host")
+    first = object_built_by(tmp_path, compiler, stamped_object)
+    time.sleep(1.1)
+    assert object_built_by(tmp_path, compiler, stamped_object) == first
+
+
+@pytest.mark.parametrize("stamped_object", STAMPED_OBJECTS)
+def test_another_compiler_command_rebuilds(tmp_path, stamped_object):
+    first = object_built_by(tmp_path, write_compiler(tmp_path / "cc-a", "cc 1.0", "host"),
+                            stamped_object)
+    # make 3.81 compares timestamps to the whole second, so a stamp rewritten
+    # in the same second as the objects would not look newer than them.
+    time.sleep(1.1)
+    second = object_built_by(tmp_path, write_compiler(tmp_path / "cc-b", "cc 1.0", "host"),
+                             stamped_object)
+    assert second != first
+
+
+@pytest.mark.parametrize("stamped_object", STAMPED_OBJECTS)
+@pytest.mark.parametrize("version,machine", [("cc 2.0", "host"), ("cc 1.0", "riscv64-elf")],
+                         ids=["version", "target"])
+def test_the_same_command_naming_another_compiler_rebuilds(tmp_path, stamped_object,
+                                                           version, machine):
+    """CC=cc can name a different compiler after a PATH or toolchain change.
+    A new version, or a new target, must rebuild even though CC reads the same."""
+    compiler = write_compiler(tmp_path / "cc", "cc 1.0", "host")
+    first = object_built_by(tmp_path, compiler, stamped_object)
+    time.sleep(1.1)
+    write_compiler(tmp_path / "cc", version, machine)
+    assert object_built_by(tmp_path, compiler, stamped_object) != first
+
+
+def test_a_quote_in_the_compiler_version_does_not_break_the_build(tmp_path):
+    compiler = write_compiler(tmp_path / "cc", "vendor's cc 1.0", "host")
+    object_built_by(tmp_path, compiler, STAMPED_OBJECTS[0])
+    assert "vendors cc 1.0" in (tmp_path / "build" / "lib" / ".cflags").read_text()
+
+
 @pytest.mark.parametrize("target", ["lib", "unit_test"])
 def test_a_setting_read_by_a_name_nothing_defines_stops_the_build(tmp_path, target):
     """An undefined macro in #if reads as 0. Without -Wundef, a misspelled
