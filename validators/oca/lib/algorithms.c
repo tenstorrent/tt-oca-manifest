@@ -247,3 +247,10 @@ oca_result_t oca_key_source_status(oca_key_source_t source)
     return (source == 0x1u || source == 0x2u) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
                                               : OCA_FAIL_ALGORITHM_RESERVED;
 }
+
+oca_result_t oca_secret_select_status(uint16_t secret_select)
+{
+    return (secret_select >= OCA_ENCRYPTION_SHARED_SECRET_SELECT_FIRST
+            && secret_select <= OCA_ENCRYPTION_SHARED_SECRET_SELECT_LAST)
+        ? OCA_OK : OCA_FAIL_ALGORITHM_RESERVED;
+}

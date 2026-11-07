@@ -1707,6 +1707,7 @@ static void build_encrypted_bundle_len(uint8_t *buf, size_t ct_len,
     build_minimal_manifest(buf);
     buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;  /* encrypted_payload */
     buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;  /* supported cipher */
+    buf[OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT] = 0x01u;            /* the first slot */
     toc_put_u64(buf + OCA_OFF_PAYLOAD_HASHED_LENGTH, ct_len);
     toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, ct_len);
     memcpy(buf + OCA_OFF_PAYLOAD_HASH, payload_hash, 32);
@@ -1998,11 +1999,15 @@ static const payload_algorithm_rewrite_t g_payload_algorithm_rewrites[] = {
     { OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL,
       { (uint8_t)OCA_ENCRYPTION_ENCRYPTED_PAYLOAD_BIT, 0x00u }, 1u,
       OCA_FAIL_ALGORITHM_RESERVED },
+    /* A secret slot past the eight the format names. */
+    { OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT, { 0x09u, 0x00u }, 2u,
+      OCA_FAIL_ALGORITHM_RESERVED },
 };
 
 /* Every algorithm the decryption input names is resolved against the build
  * where the input is built, not only before the payload is hashed, so the
- * callback is never handed a cipher, KDF or key source it has no case for. */
+ * callback is never handed a cipher, KDF, key source or secret slot it has no
+ * case for. */
 TEST(test_decrypt_input_holds_only_algorithms_the_build_enables)
 {
     for (size_t i = 0u; i < sizeof g_payload_algorithm_rewrites
@@ -2591,12 +2596,14 @@ static void assert_refused_before_hashing(uint8_t *buf, size_t len, oca_result_t
 }
 
 /* An encrypted payload's cipher, key derivation and input-key source must each
- * be one this build enables, and its payload_hash_type SHA2-256. A value the
- * format defines but the build does not enable, and one the format reserves,
- * are each refused before the ciphertext is hashed or decrypted. The enabled
- * combination reaches the payload hash, which is the control. */
+ * be one this build enables, its secret slot one of the eight the format names,
+ * and its payload_hash_type SHA2-256. A value the format defines but the build
+ * does not enable, and one the format reserves, are each refused before the
+ * ciphertext is hashed or decrypted. The enabled combination reaches the
+ * payload hash, with every slot, which is the control. */
 TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
 {
+    static const uint16_t selects_reserved[] = { 0x0000u, 0x0009u, 0x0100u, 0xFFFFu };
     static const uint8_t ciphers_not_enabled[] = { 0x03u, 0x05u, 0x06u, 0x11u, 0x12u, 0xF0u };
     static const uint8_t ciphers_reserved[] = { 0x00u, 0x07u, 0x10u, 0x13u, 0xEFu };
     static const uint16_t kdfs_not_enabled[] = { 0x0000u, 0x0002u, 0x0008u, 0xFF00u, 0xFFFFu };
@@ -2641,6 +2648,17 @@ TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
         set_key_source(buf, sources_reserved[i]);
         assert_refused_before_hashing(buf, sizeof buf, OCA_FAIL_ALGORITHM_RESERVED);
     }
+    for (uint16_t slot = 1u; slot <= 8u; ++slot) {
+        build_encrypted_bundle(buf, ph, chain);
+        toc_put_u16(buf + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT, slot);
+        ASSERT_EQ_INT(check_encrypted_algorithms(buf, sizeof buf), OCA_FAIL_PAYLOAD_HASH);
+        ASSERT_EQ_INT(g_hash_calls, 1);
+    }
+    for (size_t i = 0u; i < sizeof selects_reserved / sizeof selects_reserved[0]; ++i) {
+        build_encrypted_bundle(buf, ph, chain);
+        toc_put_u16(buf + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT, selects_reserved[i]);
+        assert_refused_before_hashing(buf, sizeof buf, OCA_FAIL_ALGORITHM_RESERVED);
+    }
     for (size_t i = 0u; i < UNSUPPORTED_HASH_TYPE_COUNT; ++i) {
         build_encrypted_bundle(buf, ph, chain);
         buf[OCA_OFF_PAYLOAD_HASH_TYPE] = UNSUPPORTED_HASH_TYPES[i].type;
@@ -2650,9 +2668,9 @@ TEST(test_encrypted_payload_refuses_unsupported_algorithms_before_hashing)
     }
 }
 
-/* Every encryption_type, KDF and key source resolves to exactly one outcome,
- * checked against the format's values written out one by one and the
- * algorithms this build enables. The sweeps cover every value the types can
+/* Every encryption_type, KDF, key source and secret slot resolves to exactly
+ * one outcome, checked against the format's values written out one by one and
+ * the algorithms this build enables. The sweeps cover every value the types can
  * hold, so a value wider than its field is reserved. */
 TEST(test_every_payload_algorithm_resolves_against_the_format_and_the_build)
 {
@@ -2691,6 +2709,11 @@ TEST(test_every_payload_algorithm_resolves_against_the_format_and_the_build)
     };
     for (size_t i = 0u; i < sizeof reserved_sources / sizeof reserved_sources[0]; ++i) {
         ASSERT_EQ_INT(oca_key_source_status(reserved_sources[i]), OCA_FAIL_ALGORITHM_RESERVED);
+    }
+    for (unsigned select = 0u; select <= 0xFFFFu; ++select) {
+        ASSERT_EQ_INT(oca_secret_select_status((uint16_t)select),
+                      (select >= 1u && select <= 8u) ? OCA_OK
+                                                     : OCA_FAIL_ALGORITHM_RESERVED);
     }
 }
 
@@ -3472,6 +3495,7 @@ static void build_inplace_bundle(uint8_t *buf, const uint8_t payload_hash[32])
     build_minimal_manifest(buf);
     buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;  /* encrypted */
     buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;
+    buf[OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT] = 0x01u;
     toc_put_u64(buf + OCA_OFF_PAYLOAD_HASHED_LENGTH, INPLACE_CT_LEN);
     toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, INPLACE_CT_LEN);
     memcpy(buf + OCA_OFF_PAYLOAD_HASH, payload_hash, 32);
@@ -7861,6 +7885,7 @@ TEST(test_a_reporter_that_changes_its_answer_is_caught_at_each_consumer)
         buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
         buf[OCA_OFF_ENCRYPTION_TYPE] = CFG_AES_128 ? OCA_ENCRYPTION_TYPE_AES_128_CBC
                                                    : OCA_ENCRYPTION_TYPE_AES_256_CBC;
+        buf[OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT] = 0x01u;
         test_fixture_reset();
 
         oca_callbacks_t cb;
@@ -7963,6 +7988,7 @@ TEST(test_the_determination_costs_one_consultation_per_consumer)
     buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     buf[OCA_OFF_ENCRYPTION_TYPE] = CFG_AES_128 ? OCA_ENCRYPTION_TYPE_AES_128_CBC
                                                : OCA_ENCRYPTION_TYPE_AES_256_CBC;
+    buf[OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT] = 0x01u;
     test_fixture_reset();
     build_devstate_cb(&cb, buf);
     cb.is_secure_boot_disabled = sb_disabled_false_cb;
@@ -8902,8 +8928,8 @@ TEST(test_validation_applies_the_posture_before_any_key_is_used)
 
 /* Payload algorithms are checked from the manifest alone. The hash type is
  * checked whenever a payload is declared, and an encrypted payload's cipher,
- * KDF and key source are checked too. A manifest with no payload is not
- * checked, and a cleartext payload's key fields are ignored. */
+ * KDF, key source and secret slot are checked too. A manifest with no payload
+ * is not checked, and a cleartext payload's key fields are ignored. */
 TEST(test_payload_algorithms_are_judged_from_the_manifest_alone)
 {
     uint8_t buf[OCA_CLASSIC_BODY_SIZE];
@@ -8928,6 +8954,7 @@ TEST(test_payload_algorithms_are_judged_from_the_manifest_alone)
     build_minimal_manifest(buf);
     toc_put_u64(buf + OCA_OFF_PAYLOAD_LENGTH, 1u);
     toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, 0x0009u);
+    toc_put_u16(buf + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT, 0x0009u);
     buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] =
         (uint8_t)(0x3u << OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT);
     ASSERT_EQ_INT(oca_check_payload_algorithms(buf), OCA_OK);
@@ -8937,12 +8964,18 @@ TEST(test_payload_algorithms_are_judged_from_the_manifest_alone)
     build_minimal_manifest(buf);
     buf[OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL] = ENCRYPTED_PRESHARED;
     buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;
+    buf[OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT] = 0x01u;
     ASSERT_EQ_INT(oca_check_payload_algorithms(buf),
                   CFG_AES_128 ? OCA_OK : OCA_FAIL_ALGORITHM_NOT_ENABLED);
     buf[OCA_OFF_ENCRYPTION_TYPE] = 0x00u;
     ASSERT_EQ_INT(oca_check_payload_algorithms(buf), OCA_FAIL_ALGORITHM_RESERVED);
     if (CFG_AES_128) {
         buf[OCA_OFF_ENCRYPTION_TYPE] = OCA_ENCRYPTION_TYPE_AES_128_CBC;
+        toc_put_u16(buf + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT, 0x0008u);
+        ASSERT_EQ_INT(oca_check_payload_algorithms(buf), OCA_OK);
+        toc_put_u16(buf + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT, 0x0000u);
+        ASSERT_EQ_INT(oca_check_payload_algorithms(buf), OCA_FAIL_ALGORITHM_RESERVED);
+        toc_put_u16(buf + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT, 0x0001u);
         toc_put_u16(buf + OCA_OFF_ENCRYPTION_KDF, 0x0009u);
         ASSERT_EQ_INT(oca_check_payload_algorithms(buf), OCA_FAIL_ALGORITHM_RESERVED);
         build_minimal_manifest(buf);

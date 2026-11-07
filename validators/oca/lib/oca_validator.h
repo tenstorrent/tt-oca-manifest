@@ -367,7 +367,9 @@ enum oca_result {
      *  enforced class, a manifest_hash_type or payload_hash_type, or for an
      *  encrypted payload an encryption_type, encryption_key_derivation_function
      *  or input_key_source, that the format assigns to nothing and does not
-     *  leave to integrators. No Consumer can accept it, so unlike
+     *  leave to integrators. An encryption_shared_secret_select outside the
+     *  eight slots the format names is refused with it too. No Consumer can
+     *  accept it, so unlike
      *  OCA_FAIL_ALGORITHM_NOT_ENABLED it says the manifest is malformed rather
      *  than outside this build's portfolio. */
     OCA_FAIL_ALGORITHM_RESERVED         = 40
@@ -1043,7 +1045,9 @@ typedef struct oca_decrypt_input {
     /** Where the manifest says the input key comes from. Only a source the
      *  build enables reaches here. */
     oca_key_source_t       key_source;
-    /** Which provisioned secret the manifest selects, 1-based.
+    /** Which provisioned secret the manifest selects, 1 to 8. The library
+     *  refuses every other value, which the format reserves, before invoking
+     *  the callback.
      *
      *  An INDEX, never a secret. Resolving it against the part's key store is
      *  the callback's job, which is precisely why no key material crosses this
@@ -2506,7 +2510,8 @@ oca_result_t oca_check_payload_encryption_precondition(
  *        enable.
  *
  * Checks payload_hash_type and, for an encrypted payload, encryption_type,
- * input_key_source and encryption_kdf. These are manifest fields, so the check
+ * input_key_source, encryption_kdf, and for the pre-shared source
+ * encryption_shared_secret_select. These are manifest fields, so the check
  * needs only the manifest: no callbacks and no payload. oca_validate_manifest()
  * runs it before any device read or signature check. A manifest whose payload
  * can never be checked is therefore rejected cheaply, and before the caller
@@ -2662,8 +2667,10 @@ typedef struct oca_payload_encryption {
      *  gets there — deciding it here would duplicate that check in a second
      *  place. */
     oca_encryption_type_t type;
-    /** Provisioned-secret index, 1-based. Zero unless @c encrypted. Resolving
-     *  this to an actual secret is the ingestor's job, done before validation. */
+    /** Provisioned-secret index, 1-based. Zero unless @c encrypted. Reported
+     *  verbatim, like @c type: a value outside 1 to 8 is refused by
+     *  oca_check_payload_algorithms(). Resolving this to an actual secret is
+     *  the ingestor's job, done before validation. */
     uint16_t              secret_select;
 } oca_payload_encryption_t;
 

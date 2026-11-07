@@ -245,10 +245,21 @@ def test_reject_bad_kdf_input_size(tmp_path):
     assert _pack_expect_error(cfg, tmp_path).field_name == "encryption_kdf_input"
 
 
-def test_reject_shared_secret_select_zero(tmp_path):
+@pytest.mark.parametrize("slot", [0, 9, 0xFFFF])
+def test_reject_a_reserved_shared_secret_select(tmp_path, slot):
+    """The format names secret slots 1 to 8 and reserves every other value."""
     cfg = _enc_config(tmp_path)
-    cfg["encryption_shared_secret_select"] = 0  # indices start at 1
+    cfg["encryption_shared_secret_select"] = slot
     assert _pack_expect_error(cfg, tmp_path).field_name == "encryption_shared_secret_select"
+
+
+@pytest.mark.parametrize("slot", [1, 8])
+def test_shared_secret_select_records_the_slot(tmp_path, slot):
+    cfg = _enc_config(tmp_path)
+    cfg["encryption_shared_secret_select"] = slot
+    bundle = pack_oca_bundle(cfg)
+    offset = oca_consts.OFF_ENCRYPTION_SHARED_SECRET_SELECT
+    assert int.from_bytes(bundle[offset:offset + 2], "little") == slot
 
 
 # ---------------------------------------------------------------------------

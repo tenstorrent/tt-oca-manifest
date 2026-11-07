@@ -3233,6 +3233,8 @@ def _encrypted_with(field: str, value: int) -> bytearray:
         _set_le(data, oca_constants.OFF_ENCRYPTION_KDF, 2, value)
     elif field == "cipher":
         data[oca_constants.OFF_ENCRYPTION_TYPE] = value
+    elif field == "secret_select":
+        _set_le(data, oca_constants.OFF_ENCRYPTION_SHARED_SECRET_SELECT, 2, value)
     else:
         control = struct.unpack_from("<H", data,
                                      oca_constants.OFF_PAYLOAD_ENCRYPTION_CONTROL)[0]
@@ -3273,6 +3275,28 @@ def test_cli_refuses_an_encrypted_payload_algorithm_the_build_does_not_enable(
     result = _run_bundle(tmp_path, data, f"encrypted_{field}_{value:#x}",
                          flags=_read_flags("encrypted_aes"))
     _assert_refused(result, code)
+
+
+def _secret_at(slot: int) -> list[str]:
+    """CLI flags that hold the fixture's secret in one slot only."""
+    return ["--trust-any-root-key", "--payload-secret", f"{slot}:{_PAYLOAD_SECRET}"]
+
+
+def test_cli_decrypts_with_the_last_secret_slot(tmp_path):
+    """Slot 8 is the last the format names. With the secret held there and
+    nowhere else, the bundle decrypts."""
+    data = _encrypted_with("secret_select", 8)
+    _assert_passed(_run_bundle(tmp_path, data, "encrypted_slot_8", flags=_secret_at(8)))
+
+
+@pytest.mark.parametrize("slot", [0, 9, 0xFFFF])
+def test_cli_refuses_a_reserved_secret_slot_even_with_a_secret_held_there(tmp_path, slot):
+    """The format names secret slots 1 to 8 and reserves every other value. A
+    manifest selecting one is refused before decryption, even on a part that
+    holds a secret under that number."""
+    data = _encrypted_with("secret_select", slot)
+    result = _run_bundle(tmp_path, data, f"encrypted_slot_{slot}", flags=_secret_at(slot))
+    _assert_refused(result, "ALGORITHM_RESERVED")
 
 
 def _unreachable_openssl_minimum() -> str:

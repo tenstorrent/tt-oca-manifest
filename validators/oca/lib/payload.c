@@ -543,6 +543,33 @@ static oca_key_source_t input_key_source(const uint8_t *body)
                               >> OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT);
 }
 
+/**
+ * @brief Resolve where the payload's input key comes from.
+ *
+ * The source must be one this build enables. For the pre-shared source,
+ * encryption_shared_secret_select must also name a slot the format defines.
+ * Other sources do not read that field.
+ *
+ * @param[in] body  Manifest body.
+ * @retval OCA_OK                          The source is enabled, and any slot
+ *                                         it selects is defined.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  The format defines the source; this
+ *                                         build does not enable it.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     The source or the slot holds a value
+ *                                         the format reserves.
+ * @return One of the codes above.
+ */
+static oca_result_t input_key_status(const uint8_t *body)
+{
+    const oca_key_source_t source = input_key_source(body);
+    const oca_result_t status = oca_key_source_status(source);
+    if (status == OCA_OK && source == OCA_KEY_SOURCE_PRESHARED) {
+        return oca_secret_select_status(
+            oca_le_u16(body + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT));
+    }
+    return status;
+}
+
 #if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief Validate an encrypted payload: authenticate, decrypt, then validate.
@@ -576,7 +603,8 @@ static oca_key_source_t input_key_source(const uint8_t *body)
  *                                         input key source or the KDF names an
  *                                         algorithm this build does not
  *                                         enable.
- * @retval OCA_FAIL_ALGORITHM_RESERVED     One of them holds a reserved value.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     One of them, or the pre-shared
+ *                                         secret slot, holds a reserved value.
  * @retval OCA_FAIL_DECRYPT                Derivation, cipher, or padding failure.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   A required callback is unavailable.
  * @return Otherwise the result of the shared plaintext checks.
@@ -636,8 +664,7 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
     if (cipher == 0) {
         return r;
     }
-    const oca_key_source_t key_source = input_key_source(body);
-    r = oca_key_source_status(key_source);
+    r = input_key_status(body);
     if (r != OCA_OK) {
         return r;
     }
@@ -667,7 +694,7 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
     in.kdf_input      = body + OCA_OFF_ENCRYPTION_KDF_INPUT;
     in.cipher         = enc_type;
     in.kdf            = kdf;
-    in.key_source     = key_source;
+    in.key_source     = input_key_source(body);
     in.secret_select  = oca_le_u16(body + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT);
     r = cb->decrypt_payload(&in, &plaintext, &plaintext_len);
     /* Codes that name a specific cause pass through by name; everything else
@@ -725,16 +752,18 @@ static void read_payload_shape(const uint8_t *body, bool *out_encrypted,
  * payload_hash_type selects the digest of payload_hash, of the chain and of
  * every entry hash. An encrypted payload also names its cipher, where its input key comes from and
  * how the payload key is derived from it; each is resolved against the build
- * configuration. Refused before any digest or decryption, so a payload that is
- * sound for another Consumer is not reported as corrupt.
+ * configuration, and a pre-shared secret slot against the eight the format
+ * names. Refused before any digest or decryption, so a payload that is sound
+ * for another Consumer is not reported as corrupt.
  *
  * @param[in] body       Manifest body.
  * @param[in] encrypted  Whether the payload is encrypted.
  * @retval OCA_OK                          Every declared algorithm is enabled.
  * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  One is defined but not enabled.
- * @retval OCA_FAIL_ALGORITHM_RESERVED     One holds a value the format reserves.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     One, or the secret slot, holds a
+ *                                         value the format reserves.
  * @return The first refusal among the payload hash type, the cipher, the key
- *         source and the KDF, always one of the codes above.
+ *         source and its slot, and the KDF, always one of the codes above.
  */
 static oca_result_t check_payload_algorithms(const uint8_t *body, bool encrypted)
 {
@@ -748,7 +777,7 @@ static oca_result_t check_payload_algorithms(const uint8_t *body, bool encrypted
     if (oca_cipher_algorithm(body[OCA_OFF_ENCRYPTION_TYPE], &status) == 0) {
         return status;
     }
-    status = oca_key_source_status(input_key_source(body));
+    status = input_key_status(body);
     if (status != OCA_OK) {
         return status;
     }

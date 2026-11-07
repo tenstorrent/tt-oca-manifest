@@ -407,6 +407,7 @@ upon on the current boot path is rejected too.
 | `encryption_type` | AES-128-CBC (`0x01`) or AES-256-CBC (`0x02`) + PKCS#7 | payload decryption is delegated to the host `decrypt_payload` callback; the key length follows the type. Any other cipher, KDF or key source is refused by `oca_validate_manifest()` before the signature, and again before the ciphertext is hashed: `OCA_FAIL_ALGORITHM_NOT_ENABLED` for one the format defines, `OCA_FAIL_ALGORITHM_RESERVED` otherwise |
 | `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below). Any other value on an encrypted payload is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, or `OCA_FAIL_ALGORITHM_RESERVED` for one the format reserves |
 | `input_key_source` | pre-shared secret (b001) | the KEM-unwrapped DEK (b010) is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`; every other pattern, including none and two sources at once, with `OCA_FAIL_ALGORITHM_RESERVED` |
+| `encryption_shared_secret_select` | slots 1 to 8 | the host `decrypt_payload` callback resolves the slot, and reports one the part holds no secret for with `OCA_FAIL_NO_PROVISIONED_SECRET`; every other value is reserved and refused with `OCA_FAIL_ALGORITHM_RESERVED` before the callback is invoked |
 | payload `image_count` | 1 .. `toc_max_images` (default **256**) | a consumer resource limit, not a format limit — see below |
 
 **Payload TOC size limit.** The format sets no upper bound on `image_count`, so

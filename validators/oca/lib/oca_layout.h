@@ -232,6 +232,10 @@
 #define OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT     3u
 #define OCA_OFF_ENCRYPTION_KDF             203u  /* u16 LE; encryption_key_derivation_function */
 #define OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT 205u  /* u16 LE; which provisioned secret */
+/* The slots encryption_shared_secret_select can name. The format reserves
+ * every other value. */
+#define OCA_ENCRYPTION_SHARED_SECRET_SELECT_FIRST 0x0001u
+#define OCA_ENCRYPTION_SHARED_SECRET_SELECT_LAST  0x0008u
 #define OCA_OFF_ENCRYPTION_IV              235u  /* 32-byte field; AES-CBC uses the low 16 */
 #define OCA_LEN_ENCRYPTION_IV               16u
 #define OCA_OFF_ENCRYPTION_KDF_INPUT       275u  /* 64-byte field; full field = KDF context */

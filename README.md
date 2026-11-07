@@ -317,7 +317,7 @@ secure_boot: 1
 encrypted_payload: 1
 encryption_type: 0x02                      # 0x02 = AES-256-CBC (default), 0x01 = AES-128-CBC
 encryption_key_derivation_function: 0x0001 # SP 800-108r1 CTR HMAC-SHA-256
-encryption_shared_secret_select: 1         # which provisioned secret (indices start at 1)
+encryption_shared_secret_select: 1         # which provisioned secret, 1 to 8
 encryption_secret: "<64 hex chars>"        # 32-byte secret; OR encryption_secret_file: <path>
 encryption_iv: "<32 hex chars>"            # 16-byte IV — optional, generated if omitted
 encryption_kdf_input: "<128 hex chars>"    # 64-byte KDF context — optional, generated if omitted

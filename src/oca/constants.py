@@ -155,6 +155,11 @@ ENCRYPTION_CONTROL_ENCRYPTED_PAYLOAD_BIT = 0x0001
 ENCRYPTION_INPUT_KEY_SOURCE_SHIFT = 3
 ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED = 0b001
 
+# encryption_shared_secret_select names one of eight pre-shared secret slots;
+# the format reserves every other value.
+ENCRYPTION_SHARED_SECRET_SELECT_FIRST = 1
+ENCRYPTION_SHARED_SECRET_SELECT_LAST = 8
+
 
 # ---------------------------------------------------------------------------
 # Field offsets within the OCA-classic manifest body (in field-table order)

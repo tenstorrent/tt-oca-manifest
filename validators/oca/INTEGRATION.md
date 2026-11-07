@@ -770,7 +770,7 @@ static oca_result_t my_decrypt_payload(
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
 
-    /* The selector is a 1-based INDEX into your provisioned secrets, never a
+    /* The selector is an INDEX into your provisioned secrets, 1 to 8, never a
      * secret. Resolving it is this callback's job, which is what keeps key
      * material out of the library entirely. */
     const uint8_t *secret = my_key_store_slot(in->secret_select);
@@ -1357,6 +1357,12 @@ Changes an existing integration should check. Most show only at run time.
 - **The decryption input names the derivation.** `oca_decrypt_input_t` gains
   `kdf` and `key_source` (new types `oca_kdf_t`, `oca_key_source_t`), so a
   backend dispatches on what the manifest declares instead of assuming it.
+- **Only slots 1 to 8 reach the decryption callback.** The format names eight
+  pre-shared secret slots. An `encryption_shared_secret_select` of 0 or above 8
+  is refused with `OCA_FAIL_ALGORITHM_RESERVED` before the callback runs, where
+  it used to reach the callback and usually fail `NO_PROVISIONED_SECRET`. A key
+  store that numbers its slots past 8 must renumber them. The packer refuses
+  such values too.
 - **The value types are fixed-width integers.** `oca_result_t` is a
   `uint32_t`, and every other type that names a value from a list —
   `oca_id_kind_t`, `oca_lifecycle_level_t`, `oca_version_level_t`,

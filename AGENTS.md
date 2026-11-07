@@ -331,8 +331,9 @@ because they are easy to get backwards:
   the cipher operation. It does not resolve selectors and does not police invariants.
 - **The library enforces the common invariants** — AES block alignment, block modes only — so
   every consumer gets them without reimplementing them.
-- **The ingesting application resolves index selectors.** `shared_secret_select` (which starts
-  at 1) is resolved to a concrete secret by the integrator before crypto is invoked.
+- **The ingesting application resolves index selectors.** `shared_secret_select` (1 to 8; the
+  library refuses every other value as reserved) is resolved to a concrete secret by the
+  integrator before crypto is invoked.
 
 ## House rules
 

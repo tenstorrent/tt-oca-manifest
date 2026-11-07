@@ -223,4 +223,19 @@ oca_result_t oca_kdf_status(oca_kdf_t kdf);
  */
 oca_result_t oca_key_source_status(oca_key_source_t source);
 
+/**
+ * @brief Resolve an encryption_shared_secret_select value.
+ *
+ * The format names eight pre-shared secret slots, 1 to 8, and reserves every
+ * other value. A part need not hold a secret in every slot; the decryption
+ * callback reports an empty one with OCA_FAIL_NO_PROVISIONED_SECRET.
+ *
+ * @param[in] secret_select  The encryption_shared_secret_select value.
+ * @retval OCA_OK                       A slot the format names.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED  The format reserves the value.
+ * @return One of the codes above, by whether the format names
+ *         @p secret_select.
+ */
+oca_result_t oca_secret_select_status(uint16_t secret_select);
+
 #endif /* OCA_ALGORITHMS_H */
