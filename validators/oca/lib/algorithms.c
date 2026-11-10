@@ -11,7 +11,12 @@
 #include "oca_layout_pqc.h"
 
 /* Each table ends in a row whose type is 0x00, a value every class reserves,
- * so a build that enables nothing in a class still has a well-formed table. */
+ * so a build that enables nothing in a class still has a well-formed table.
+ * A walk also stops at the table's size, so it never reads past the table even
+ * if a fault makes that row's type read as non-zero. */
+
+/** @brief The rows of a table before its end row. */
+#define ROWS_BEFORE_END(table) (sizeof(table) / sizeof((table)[0]) - 1u)
 
 #if !OCA_CFG_SECURE_BOOT_DISABLED
 /** @brief Whether an RSA row accepts a DER (PKCS#1) public key in this build. */
@@ -82,12 +87,14 @@ const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t fam
                                                          oca_result_t *status)
 {
     const int pqc = family == OCA_KEY_ALGO_PQC;
-    const oca_signature_algorithm_t *row = pqc ? PQC_SIGNATURES : CLASSICAL_SIGNATURES;
+    const oca_signature_algorithm_t *table = pqc ? PQC_SIGNATURES : CLASSICAL_SIGNATURES;
+    const size_t rows = pqc ? ROWS_BEFORE_END(PQC_SIGNATURES)
+                            : ROWS_BEFORE_END(CLASSICAL_SIGNATURES);
     if (type != 0x00u) {
-        for (; row->type != 0x00u; ++row) {
-            if (row->type == type) {
+        for (size_t i = 0u; i < rows && table[i].type != 0x00u; ++i) {
+            if (table[i].type == type) {
                 *status = OCA_OK;
-                return row;
+                return &table[i];
             }
         }
     }
@@ -128,11 +135,12 @@ static const oca_hash_algorithm_t HASHES[] = {
 
 const oca_hash_algorithm_t *oca_hash_algorithm(oca_hash_type_t type, oca_result_t *status)
 {
+    const size_t rows = ROWS_BEFORE_END(HASHES);
     if (type != 0x00u) {
-        for (const oca_hash_algorithm_t *row = HASHES; row->type != 0x00u; ++row) {
-            if (row->type == type) {
+        for (size_t i = 0u; i < rows && HASHES[i].type != 0x00u; ++i) {
+            if (HASHES[i].type == type) {
                 *status = OCA_OK;
-                return row;
+                return &HASHES[i];
             }
         }
     }
@@ -210,11 +218,12 @@ static int cipher_defined(oca_encryption_type_t type)
 const oca_cipher_algorithm_t *oca_cipher_algorithm(oca_encryption_type_t type,
                                                    oca_result_t *status)
 {
+    const size_t rows = ROWS_BEFORE_END(CIPHERS);
     if (type != 0x00u) {
-        for (const oca_cipher_algorithm_t *row = CIPHERS; row->type != 0x00u; ++row) {
-            if (row->type == type) {
+        for (size_t i = 0u; i < rows && CIPHERS[i].type != 0x00u; ++i) {
+            if (CIPHERS[i].type == type) {
                 *status = OCA_OK;
-                return row;
+                return &CIPHERS[i];
             }
         }
     }

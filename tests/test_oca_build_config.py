@@ -1941,3 +1941,36 @@ def test_a_code_point_the_library_resolves_differently_is_reported(
     verdicts, revoke_bits = resolve_every_code_point(tmp_path, default_header(),
                                                      lib_dir=lib)
     assert code_point_disagreements(verdicts, revoke_bits, values) == [disagreement]
+
+
+# Each table's end row, with the rows before it so the text is unique, and the
+# same row given a type the format defines.
+END_ROW_TYPES = [
+    pytest.param("ECDSA_SIGNATURE_DER, 72u },\n#endif\n    { 0x00u,", "0x06u",
+                 id="classical-signatures"),
+    pytest.param("OCA_DER_UNDEFINED, 0u },\n#endif\n    { 0x00u,", "0x31u",
+                 id="pqc-signatures"),
+    pytest.param("HASH_DIGEST_SIZE(32u) },\n#endif\n    { 0x00u,", "0x02u",
+                 id="hashes"),
+    pytest.param("{ 0x02u, OCA_AES_BLOCK_SIZE },\n#endif\n    { 0x00u,", "0x03u",
+                 id="ciphers"),
+]
+
+
+@pytest.mark.parametrize("end_row, planted_type", END_ROW_TYPES)
+def test_a_lookup_never_reads_a_tables_end_row(tmp_path, end_row, planted_type):
+    """A lookup stops at the table's size as well as at its end row, so a fault
+    that makes the end row's type read as non-zero cannot make the walk run
+    past the table. Before the size bound, the planted type was found as an
+    enabled algorithm, and every other value walked off the end."""
+    lib = tmp_path / "lib"
+    shutil.copytree(LIB_DIR, lib, ignore=shutil.ignore_patterns("scripts"))
+    path = lib / "algorithms.c"
+    text = path.read_text()
+    assert text.count(end_row) == 1
+    path.write_text(text.replace(end_row, end_row.replace("0x00u", planted_type)))
+    document = gen_config.load_config(DEFAULT_CONFIG)
+    values = gen_config.resolve_settings(document)
+    verdicts, revoke_bits = resolve_every_code_point(tmp_path, default_header(),
+                                                     lib_dir=lib)
+    assert code_point_disagreements(verdicts, revoke_bits, values) == []
