@@ -28,7 +28,10 @@ env:
   # file that imports oca_fixtures.toolchain belongs on this list;
   # tests/test_oca_fixtures_toolchain.py fails until it is.
   COMPILER_TESTS: >-
-    tests/test_oca_build_config.py
+    tests/test_oca_build_config_check_header.py
+    tests/test_oca_build_config_code_points.py
+    tests/test_oca_build_config_makefile.py
+    tests/test_oca_build_config_matrix.py
     tests/test_oca_build_guard.py
     tests/test_oca_callback_layout.py
     tests/test_oca_hash_row_size.py

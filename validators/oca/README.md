@@ -206,8 +206,8 @@ unit test and every fixture round-trip passes.)
 `make check` runs the unit tests under the build configuration it is given.
 pytest runs them again under configurations that, between them, turn off each
 variant, each signature algorithm, each DER encoding, each cipher and payload
-encryption as a whole (`tests/test_oca_build_config.py`). A test whose fixtures
-need something a configuration can turn off registers with
+encryption as a whole (`tests/test_oca_build_config_matrix.py`). A test whose
+fixtures need something a configuration can turn off registers with
 `RUN_TEST_IF(needs, test)`, `needs` being an expression over the settings. In a
 build without it, the driver prints `NOT RUN: <test> (needs ...)` and counts it
 apart from the `N/N passed` summary. Tests of each setting's off branch run in
@@ -292,7 +292,8 @@ fail until it is done.
 1. **A signature algorithm starts in the packer.** The validator's signature
    rows must be exactly the types the packer writes, and the default
    configuration must enable every algorithm the packer writes
-   (`tests/test_oca_primitive_enum_sync.py`, `tests/test_oca_build_config.py`).
+   (`tests/test_oca_primitive_enum_sync.py`,
+   `tests/test_oca_build_config_generator.py`).
    The packer and the validator therefore gain it in one change, on by default.
    The packer accepts only what the boot ROM does, so this also needs the
    amendment to the cryptographic rules that `AGENTS.md` describes.
@@ -330,9 +331,9 @@ fail until it is done.
 9. **Test it.** Implement it in the CLI's `test/openssl_crypto.c`, add a fixture
    under `test/fixtures/configs/`, register any unit test that needs it with
    `RUN_TEST_IF`, and add a configuration that turns it off to
-   `UNIT_TEST_CONFIGURATIONS` in `tests/test_oca_build_config.py`. The
-   code-point probe there then holds its row to the generator's list, and its
-   revocation bit to its definition.
+   `UNIT_TEST_CONFIGURATIONS` in `tests/oca_fixtures/generator.py`. The
+   code-point probe in `tests/test_oca_build_config_code_points.py` then holds
+   its row to the generator's list, and its revocation bit to its definition.
 
 ### Prerequisites
 

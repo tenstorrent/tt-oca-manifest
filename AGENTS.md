@@ -250,12 +250,13 @@ an algorithm is off when left out, unknown keys are errors, and the settings' fo
 replaced each. To add a setting, add it to `SETTINGS` in `gen_config.py`, to every file that
 states settings (`lib/oca_config.toml` and `test/build_configs/*.toml`), a missing-setting
 guard for its macro to `oca_config_check.h` (and, for a switch, its line in that header's
-0-or-1 check), and its row to the README's Settings table; `tests/test_oca_build_config.py`
-fails until all four agree and a library source reads it. The setting also joins the build
-guard's name in `oca_config_check.h`, `OCA_BUILD_GUARD_NAME()` and `OCA_BUILD_GUARD_PASTE()`,
-in the generator's order, and `tests/test_oca_build_guard.py` fails until it does; so does
-every build, because the seal is pasted from the same name. Adding a setting does not change
-`CONFIG_FORMAT`; the comment above it in `gen_config.py` says what does. That guard
+0-or-1 check), and its row to the README's Settings table; the build-configuration tests,
+`tests/test_oca_build_config_*.py`, fail until all four agree and a library source reads it.
+The setting also joins the build guard's name in `oca_config_check.h`, `OCA_BUILD_GUARD_NAME()`
+and `OCA_BUILD_GUARD_PASTE()`, in the generator's order, and `tests/test_oca_build_guard.py`
+fails until it does; so does every build, because the seal is pasted from the same name.
+Adding a setting does not change `CONFIG_FORMAT`; the comment above it in `gen_config.py` says
+what does. That guard
 is a symbol the library defines, named for every setting of its header; each file including
 `oca_validator.h` refers to the one its own header names, so code compiled against another
 header does not link. The tests write their
@@ -276,20 +277,21 @@ The generator lists every algorithm the format defines, but only those with a ro
 an algorithm the build leaves off is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`; one naming
 a value the format reserves with `OCA_FAIL_ALGORITHM_RESERVED`. Implementing an algorithm
 touches the packer, the public header, the tables, the generator and the check header;
-`validators/oca/README.md`, "Implementing an algorithm", lists every step. The lock-step tests
-in `tests/test_oca_build_config.py` hold the table rows, the generator and the packer's signing
-tables together. They also compile the library and resolve every value of every algorithm
-field, holding each to the generator's lists and the format's integrator ranges, every
-signature and public-key encoding to the packer's, and each signature type to a revocation bit,
-so a code point changed in one place fails until every copy agrees. An integrator-defined
+`validators/oca/README.md`, "Implementing an algorithm", lists every step. The
+build-configuration tests hold the table rows, the generator and the packer's signing tables
+together. They also compile the library and resolve every value of every algorithm field,
+holding each to the generator's lists and the format's integrator ranges, every signature and
+public-key encoding to the packer's, and each signature type to a revocation bit, so a code
+point changed in one place fails until every copy agrees. An integrator-defined
 encoding is refused as not enabled and a reserved one as reserved, as for an algorithm.
 
 The C unit tests must pass under any configuration, not only the default. A test whose fixture
 needs something a configuration can turn off registers with `RUN_TEST_IF(needs, test)` instead
 of `RUN_TEST`. A build without it then lists the test as `NOT RUN` rather than failing it, and
 the tests of each setting's off branch check what that build refuses instead.
-`tests/test_oca_build_config.py` runs the suite under configurations that turn each variant,
-algorithm, DER encoding and cipher off, and under the default, where every test must run.
+`tests/test_oca_build_config_matrix.py` runs the suite under configurations that turn each
+variant, algorithm, DER encoding and cipher off, and under the default, where every test must
+run.
 
 The least a build can be is one variant and one hash, for a part without secure boot. A
 configuration that enables no signature algorithm must declare `[secure_boot] disabled = true`,
@@ -298,7 +300,7 @@ algorithm or payload encryption, which is decrypted only once a signature verifi
 header holds a hand-written header to the same three rules. The declaration compiles out every
 check that needs secure boot; each public entry point stays, as a stub that confirms the
 determination and refuses secure boot in force with `OCA_FAIL_ALGORITHM_NOT_ENABLED`.
-`tests/test_oca_build_config.py` reads the compiled symbols to hold the code out, and
+`tests/test_oca_build_config_matrix.py` reads the compiled symbols to hold the code out, and
 `SECURE_BOOT_ONLY` there lists what must go.
 
 A consumer that must **never** accept a variant turns the other off in `[variants]`.
