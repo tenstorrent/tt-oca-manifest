@@ -178,7 +178,7 @@ Expected `make check` output (tail) — every unit test + every fixture
 round-trip passes:
 
 ```
-315/315 passed
+351/351 passed
 PASS: all_constraints
 PASS: basic
 PASS: control_plane

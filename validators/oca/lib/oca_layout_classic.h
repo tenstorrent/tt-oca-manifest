@@ -38,13 +38,11 @@
 #define OCA_CLASSIC_OFF_SIGNATURE         3172u   /* signature_classic, OCA_LEN_SIGNATURE */
 #define OCA_CLASSIC_OFF_MANIFEST_HASH     3684u   /* OCA_LEN_HASH_FIELD */
 
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-_Static_assert(
-    OCA_CLASSIC_OFF_TRAILER + OCA_CLASSIC_TRAILER_LEN == OCA_CLASSIC_SIGNED_REGION_END,
-    "classic trailer must end exactly at the signed-region boundary");
-_Static_assert(
-    OCA_CLASSIC_OFF_SIGNATURE == OCA_CLASSIC_SIGNED_REGION_END,
-    "signature_classic must begin at the signed-region boundary");
+#if !(OCA_CLASSIC_OFF_TRAILER + OCA_CLASSIC_TRAILER_LEN == OCA_CLASSIC_SIGNED_REGION_END)
+#error "classic trailer must end exactly at the signed-region boundary"
+#endif
+#if !(OCA_CLASSIC_OFF_SIGNATURE == OCA_CLASSIC_SIGNED_REGION_END)
+#error "signature_classic must begin at the signed-region boundary"
 #endif
 
 #endif /* OCA_LAYOUT_CLASSIC_H */

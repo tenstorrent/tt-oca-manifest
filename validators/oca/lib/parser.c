@@ -71,17 +71,19 @@ oca_result_t oca_check_format_version(const uint8_t *body)
 }
 
 /* Pin the peek window and the public identifier width to the layout, so a moved
- * field fails the build rather than reading past the advertised window. C11 guard
- * matches oca_layout_pqc.h — the library builds -std=c99 -pedantic -Werror. */
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-_Static_assert(OCA_MANIFEST_PEEK_MIN == OCA_OFF_MANIFEST_LENGTH + 4u,
-               "peek window must end at manifest_length");
-_Static_assert(OCA_OFF_MAGIC == 0u, "peek assumes the magic leads the body");
-_Static_assert(OCA_MANIFEST_IDENTIFIER_LEN == OCA_LEN_MANIFEST_IDENTIFIER,
-               "public identifier width must match the layout");
-_Static_assert(OCA_OFF_MANIFEST_IDENTIFIER + OCA_LEN_MANIFEST_IDENTIFIER
-                   <= OCA_MANIFEST_PEEK_MIN,
-               "manifest_identifier must lie inside the peek window");
+ * field fails the build rather than reading past the advertised window. */
+#if !(OCA_MANIFEST_PEEK_MIN == OCA_OFF_MANIFEST_LENGTH + 4u)
+#error "peek window must end at manifest_length"
+#endif
+#if !(OCA_OFF_MAGIC == 0u)
+#error "peek assumes the magic leads the body"
+#endif
+#if !(OCA_MANIFEST_IDENTIFIER_LEN == OCA_LEN_MANIFEST_IDENTIFIER)
+#error "public identifier width must match the layout"
+#endif
+#if !(OCA_OFF_MANIFEST_IDENTIFIER + OCA_LEN_MANIFEST_IDENTIFIER \
+      <= OCA_MANIFEST_PEEK_MIN)
+#error "manifest_identifier must lie inside the peek window"
 #endif
 
 oca_result_t oca_peek_manifest(const uint8_t *head, size_t head_len,

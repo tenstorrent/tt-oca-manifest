@@ -159,27 +159,43 @@ typedef uint32_t oca_result_t;
 
 /** @brief The values of oca_result_t. */
 enum oca_result {
-    OCA_OK                              = 0,  /**< Every check in this step passed. */
-    OCA_FAIL_TRUNCATED                  = 1,  /**< Buffer is shorter than the structure being read. */
-    OCA_FAIL_MAGIC                      = 2,  /**< Magic bytes match no known OCA variant. */
-    OCA_FAIL_TRAILER                    = 3,  /**< Trailer closing the signed region is wrong. */
-    OCA_FAIL_FORMAT_VERSION_MISMATCH    = 4,  /**< Manifest major version exceeds this build's. */
-    OCA_FAIL_RESERVED_BITS              = 5,  /**< A reserved bit is set; the manifest uses a feature this build cannot honour. */
+    /** Every check in this step passed. */
+    OCA_OK                              = 0,
+    /** Buffer is shorter than the structure being read. */
+    OCA_FAIL_TRUNCATED                  = 1,
+    /** Magic bytes match no known OCA variant. */
+    OCA_FAIL_MAGIC                      = 2,
+    /** Trailer closing the signed region is wrong. */
+    OCA_FAIL_TRAILER                    = 3,
+    /** Manifest major version exceeds this build's. */
+    OCA_FAIL_FORMAT_VERSION_MISMATCH    = 4,
+    /** A reserved bit is set; the manifest uses a feature this build cannot honour. */
+    OCA_FAIL_RESERVED_BITS              = 5,
     /** Signing fields left non-zero on a manifest declaring secure_boot = 0.
      *  Not returned by this library, which ignores those fields while secure
      *  boot is disabled; available to a Consumer that enforces a stricter
      *  policy. */
     OCA_FAIL_SECURE_BOOT_INVARIANT      = 6,
-    OCA_FAIL_CHIPLET_ID                 = 7,  /**< Hardware chiplet ID does not satisfy the manifest constraint. */
-    OCA_FAIL_PACKAGE_ID                 = 8,  /**< Hardware package ID does not satisfy the manifest constraint. */
-    OCA_FAIL_SYSTEM_ID                  = 9,  /**< Hardware system ID does not satisfy the manifest constraint. */
-    OCA_FAIL_LIFECYCLE                  = 10, /**< Device lifecycle state is not permitted by the manifest. */
-    OCA_FAIL_VERSION_RANGE              = 11, /**< Hardware version falls outside the manifest's permitted range. */
-    OCA_FAIL_DEMOTION_CONTROL           = 12, /**< Demotion control field is malformed or disallowed. */
-    OCA_FAIL_MANIFEST_HASH              = 13, /**< Recomputed manifest hash does not match the stored digest. */
-    OCA_FAIL_SIGNATURE                  = 14, /**< Signature verification over the signed region failed. */
-    OCA_FAIL_CALLBACK_UNAVAILABLE       = 15, /**< A callback required by this check is NULL or reported unavailable. */
-    OCA_FAIL_INVALID_ARG                = 16, /**< A NULL pointer or otherwise unusable argument was passed. */
+    /** Hardware chiplet ID does not satisfy the manifest constraint. */
+    OCA_FAIL_CHIPLET_ID                 = 7,
+    /** Hardware package ID does not satisfy the manifest constraint. */
+    OCA_FAIL_PACKAGE_ID                 = 8,
+    /** Hardware system ID does not satisfy the manifest constraint. */
+    OCA_FAIL_SYSTEM_ID                  = 9,
+    /** Device lifecycle state is not permitted by the manifest. */
+    OCA_FAIL_LIFECYCLE                  = 10,
+    /** Hardware version falls outside the manifest's permitted range. */
+    OCA_FAIL_VERSION_RANGE              = 11,
+    /** Demotion control field is malformed or disallowed. */
+    OCA_FAIL_DEMOTION_CONTROL           = 12,
+    /** Recomputed manifest hash does not match the stored digest. */
+    OCA_FAIL_MANIFEST_HASH              = 13,
+    /** Signature verification over the signed region failed. */
+    OCA_FAIL_SIGNATURE                  = 14,
+    /** A callback required by this check is NULL or reported unavailable. */
+    OCA_FAIL_CALLBACK_UNAVAILABLE       = 15,
+    /** A NULL pointer or otherwise unusable argument was passed. */
+    OCA_FAIL_INVALID_ARG                = 16,
     /** The manifest's magic names a format variant this build was not compiled
      *  to support (see `[variants]` in the build configuration). Distinct from
      *  OCA_FAIL_MAGIC, which means the magic matches no known variant. */
@@ -653,7 +669,8 @@ void oca_validation_context_init(oca_validation_context_t *ctx);
  * @brief Head bytes oca_manifest_peek() requires.
  *
  * Covers magic(0..4), identifier(4..12), version(12..16), and
- * manifest_length(16..20). Pinned to the layout by _Static_assert in parser.c.
+ * manifest_length(16..20). Pinned to the layout by a compile-time check in
+ * parser.c.
  */
 #define OCA_MANIFEST_PEEK_MIN  20u
 
@@ -885,10 +902,11 @@ enum oca_encoding {
  *
  * As with oca_encoding_t, the enumerator values are the on-disk byte values and
  * a manifest byte reaches oca_crypto_blob_t::primitive_type untranslated. The
- * numbering is the format's, which is why it is not contiguous. The classical values (0x01, 0x05) and the
- * PQC values (0x31+) come from two different manifest fields with two different
- * value spaces; the blob's key_algorithm says which space a value is from,
- * which matters because both spaces reserve 0xF0+ for integrators.
+ * numbering is the format's, which is why it is not contiguous. The classical
+ * values (0x01, 0x05) and the PQC values (0x31+) come from two different
+ * manifest fields with two different value spaces; the blob's key_algorithm
+ * says which space a value is from, which matters because both spaces reserve
+ * 0xF0+ for integrators.
  */
 typedef uint16_t oca_primitive_type_t;
 
@@ -1002,7 +1020,8 @@ typedef uint16_t oca_key_source_t;
 
 /** @brief The values of oca_key_source_t. */
 enum oca_key_source {
-    OCA_KEY_SOURCE_PRESHARED = 0x1  /**< A provisioned secret, chosen by encryption_shared_secret_select. */
+    /** A provisioned secret, chosen by encryption_shared_secret_select. */
+    OCA_KEY_SOURCE_PRESHARED = 0x1
 };
 
 /**

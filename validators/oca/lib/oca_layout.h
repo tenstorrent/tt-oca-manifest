@@ -95,22 +95,24 @@
 
 #define OCA_OFF_SECURE_BOOT_CONTROL        182u  /* u8 */
 #define OCA_SECURE_BOOT_ENFORCED_BIT      0x01u  /* bit0: secure_boot_enforced */
-#define OCA_SECURE_BOOT_CLASSIC_BIT       0x02u  /* bit1: secure_boot_classic — classical signature class */
-#define OCA_SECURE_BOOT_PQC_BIT           0x04u  /* bit2: secure_boot_pqc — PQC signature class */
+#define OCA_SECURE_BOOT_CLASSIC_BIT       0x02u  /* bit1: secure_boot_classic */
+#define OCA_SECURE_BOOT_PQC_BIT           0x04u  /* bit2: secure_boot_pqc */
 #define OCA_OFF_MANIFEST_SECURITY_CONTROL  191u  /* u16 LE — device-state update-disable bits */
 #define OCA_LEN_MANIFEST_SECURITY_CONTROL    2u
 /* manifest_security_control bits (only respected when secure boot is enabled).
- * Bits 2 and 3 are defined by the format but NOT honoured here: both govern
+ * A set bit stops this manifest from ORing one field into device state: bit 0
+ * the security version, bit 1 ROOT-key revocation, bit 4 cohort enforcement,
+ * bit 5 class revocation. Bits 2 and 3 are defined by the format but NOT honoured here: both govern
  * verifier-key device state, and verifier-entry verification is not implemented
  * (see README "Not supported"). They are named so the gap reads as known rather
  * than missed. Bits [15:6] are reserved and, per the reserved-bit policy in
  * parser.c, are ignored rather than rejected. */
-#define OCA_SECURITY_CONTROL_MSV_UPDATE_DISABLE_BIT       0x0001u /* bit0: suppress security-version OR-in */
-#define OCA_SECURITY_CONTROL_REVOKE_KEYS_DISABLE_BIT      0x0002u /* bit1: suppress ROOT-key revocation OR-in */
-#define OCA_SECURITY_CONTROL_VERIFIER_SECVER_DISABLE_BIT  0x0004u /* bit2: not honoured — verifier deferred */
-#define OCA_SECURITY_CONTROL_VERIFIER_REVOKE_DISABLE_BIT  0x0008u /* bit3: not honoured — verifier deferred */
-#define OCA_SECURITY_CONTROL_COHORT_ENFORCE_DISABLE_BIT   0x0010u /* bit4: suppress cohort-enforce OR-in */
-#define OCA_SECURITY_CONTROL_CLASS_REVOKE_DISABLE_BIT     0x0020u /* bit5: suppress class-revoke OR-in */
+#define OCA_SECURITY_CONTROL_MSV_UPDATE_DISABLE_BIT       0x0001u /* bit0 */
+#define OCA_SECURITY_CONTROL_REVOKE_KEYS_DISABLE_BIT      0x0002u /* bit1 */
+#define OCA_SECURITY_CONTROL_VERIFIER_SECVER_DISABLE_BIT  0x0004u /* bit2: not honoured */
+#define OCA_SECURITY_CONTROL_VERIFIER_REVOKE_DISABLE_BIT  0x0008u /* bit3: not honoured */
+#define OCA_SECURITY_CONTROL_COHORT_ENFORCE_DISABLE_BIT   0x0010u /* bit4 */
+#define OCA_SECURITY_CONTROL_CLASS_REVOKE_DISABLE_BIT     0x0020u /* bit5 */
 #define OCA_OFF_SIGNATURE_TYPE             2092u /* u8 — classic-crypto signature type */
 #define OCA_OFF_SIGNATURE_ENCODING         2093u /* u8 */
 #define OCA_OFF_SIGNATURE_SIZE             2094u /* u16 LE — valid bytes in signature_classic */
@@ -151,9 +153,9 @@
 /* monotonic — restrictions only ever accumulate.                      */
 /* ------------------------------------------------------------------ */
 
-#define OCA_OFF_SIGNATURE_COHORT_ENFORCE   2076u /* 8 bytes — 4-bit cohort nibble per signed entity */
+#define OCA_OFF_SIGNATURE_COHORT_ENFORCE   2076u /* 8 bytes; a 4-bit cohort per signed entity */
 #define OCA_LEN_SIGNATURE_COHORT_ENFORCE      8u
-#define OCA_OFF_SIGNATURE_CLASS_REVOKE     2084u /* 8 bytes — per-class bits + two group-code bytes */
+#define OCA_OFF_SIGNATURE_CLASS_REVOKE     2084u /* 8 bytes; per-class bits and two group codes */
 #define OCA_LEN_SIGNATURE_CLASS_REVOKE        8u
 
 /* signature_class_revoke group codes. A group code is a single constant, not a
@@ -215,8 +217,10 @@
 /* ------------------------------------------------------------------ */
 
 #define OCA_LEN_SIGNATURE                  512u  /* classic signature_classic */
-#define OCA_LEN_HASH_FIELD                  64u  /* every hash field (manifest, payload, chain, TOC entry): digest + zero pad */
-#define OCA_OFF_MANIFEST_HASH_TYPE        2067u  /* u8; the algorithm manifest_hash is computed with */
+/* Every hash field (manifest, payload, chain, TOC entry) holds a digest, then
+ * zero padding. */
+#define OCA_LEN_HASH_FIELD                  64u
+#define OCA_OFF_MANIFEST_HASH_TYPE        2067u  /* u8; manifest_hash's algorithm */
 
 /* ------------------------------------------------------------------ */
 /* Payload encryption + payload-hash fields (shared offsets)          */
@@ -245,9 +249,13 @@
                                                   * oca_validator.h */
 #define OCA_AES_BLOCK_SIZE                  16u  /* AES-CBC ciphertext is block-aligned */
 #define OCA_OFF_PAYLOAD_HASH              2775u  /* 64-byte field; digest over the stored payload */
-#define OCA_OFF_PAYLOAD_HASH_CHAIN        2847u  /* 64-byte field; chained digest over the plaintext */
-#define OCA_OFF_PAYLOAD_HASHED_LENGTH     2911u  /* u64 LE; ciphertext length when encrypted, TOC byte count otherwise */
-#define OCA_OFF_PAYLOAD_HASH_TYPE         2919u  /* u8; the algorithm of payload_hash, the chain, and every entry hash */
+#define OCA_OFF_PAYLOAD_HASH_CHAIN        2847u  /* 64-byte field; chained plaintext digest */
+/* payload_hashed_length is the ciphertext's length when the payload is
+ * encrypted, and the TOC's byte count otherwise. */
+#define OCA_OFF_PAYLOAD_HASHED_LENGTH     2911u  /* u64 LE */
+/* payload_hash_type is the algorithm of payload_hash, the chain, and every TOC
+ * entry's hash. */
+#define OCA_OFF_PAYLOAD_HASH_TYPE         2919u  /* u8 */
 #define OCA_OFF_PAYLOAD_LENGTH            2960u  /* u64 LE; total stored payload length */
 
 /* ------------------------------------------------------------------ */
@@ -296,45 +304,56 @@
 /* regions are deliberately not given macros here.                      */
 /* ------------------------------------------------------------------ */
 
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-_Static_assert(OCA_OFF_SIGNATURE_COHORT_ENFORCE + OCA_LEN_SIGNATURE_COHORT_ENFORCE
-               == OCA_OFF_SIGNATURE_CLASS_REVOKE,
-               "signature_class_revoke must follow signature_cohort_enforce");
-_Static_assert(OCA_OFF_SIGNATURE_CLASS_REVOKE + OCA_LEN_SIGNATURE_CLASS_REVOKE
-               == OCA_OFF_SIGNATURE_TYPE,
-               "signature_type_classic must follow signature_class_revoke");
-_Static_assert(OCA_OFF_SIGNATURE_TYPE + 1u == OCA_OFF_SIGNATURE_ENCODING,
-               "signature_encoding_classic must follow signature_type_classic");
-_Static_assert(OCA_OFF_SIGNATURE_ENCODING + 1u == OCA_OFF_SIGNATURE_SIZE,
-               "signature_size_classic must follow signature_encoding_classic");
-_Static_assert(OCA_OFF_PUBLIC_KEY_SELECT + OCA_LEN_PUBLIC_KEY_SELECT == OCA_OFF_PUBLIC_KEY,
-               "public_key_classic must follow public_key_select_classic");
-_Static_assert(OCA_OFF_PUBLIC_KEY + OCA_LEN_PUBLIC_KEY == OCA_OFF_PUBLIC_KEY_ENCODING,
-               "public_key_encoding_classic must follow public_key_classic");
-_Static_assert(OCA_OFF_PUBLIC_KEY_ENCODING + 1u == OCA_OFF_PUBLIC_KEY_SIZE,
-               "public_key_size_classic must follow public_key_encoding_classic");
-_Static_assert(OCA_OFF_PUBLIC_KEY_SIZE + 2u == OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE,
-               "public_key_classic_revoke must follow public_key_size_classic");
-_Static_assert(OCA_OFF_MANIFEST_CONTENT_VERSION + 8u == OCA_OFF_MANIFEST_DESCRIPTION,
-               "manifest_description must follow manifest_content_version");
-_Static_assert(OCA_TOC_ENTRY_OFF_OFFSET + 8u == OCA_TOC_ENTRY_OFF_LENGTH
-               && OCA_TOC_ENTRY_OFF_LENGTH + 8u == OCA_TOC_ENTRY_OFF_VERSION
-               && OCA_TOC_ENTRY_OFF_VERSION + 8u == OCA_TOC_ENTRY_OFF_SECURITY_VERSION
-               && OCA_TOC_ENTRY_OFF_SECURITY_VERSION + 8u == OCA_TOC_ENTRY_OFF_LOAD_ADDR
-               && OCA_TOC_ENTRY_OFF_LOAD_ADDR + 8u == OCA_TOC_ENTRY_OFF_ENTRY_POINT
-               && OCA_TOC_ENTRY_OFF_ENTRY_POINT + 8u == OCA_TOC_ENTRY_OFF_TARGET_CHIPLET_ID
-               && OCA_TOC_ENTRY_OFF_TARGET_CHIPLET_ID + 8u == OCA_TOC_ENTRY_OFF_HASH,
-               "TOC entry u64 fields must run back-to-back from offset to hash");
-_Static_assert(OCA_TOC_ENTRY_OFF_HASH + OCA_LEN_HASH_FIELD == OCA_TOC_ENTRY_OFF_DESCRIPTION,
-               "TOC entry description must follow hash");
+#if !(OCA_OFF_SIGNATURE_COHORT_ENFORCE + OCA_LEN_SIGNATURE_COHORT_ENFORCE \
+      == OCA_OFF_SIGNATURE_CLASS_REVOKE)
+#error "signature_class_revoke must follow signature_cohort_enforce"
+#endif
+#if !(OCA_OFF_SIGNATURE_CLASS_REVOKE + OCA_LEN_SIGNATURE_CLASS_REVOKE \
+      == OCA_OFF_SIGNATURE_TYPE)
+#error "signature_type_classic must follow signature_class_revoke"
+#endif
+#if !(OCA_OFF_SIGNATURE_TYPE + 1u == OCA_OFF_SIGNATURE_ENCODING)
+#error "signature_encoding_classic must follow signature_type_classic"
+#endif
+#if !(OCA_OFF_SIGNATURE_ENCODING + 1u == OCA_OFF_SIGNATURE_SIZE)
+#error "signature_size_classic must follow signature_encoding_classic"
+#endif
+#if !(OCA_OFF_PUBLIC_KEY_SELECT + OCA_LEN_PUBLIC_KEY_SELECT == OCA_OFF_PUBLIC_KEY)
+#error "public_key_classic must follow public_key_select_classic"
+#endif
+#if !(OCA_OFF_PUBLIC_KEY + OCA_LEN_PUBLIC_KEY == OCA_OFF_PUBLIC_KEY_ENCODING)
+#error "public_key_encoding_classic must follow public_key_classic"
+#endif
+#if !(OCA_OFF_PUBLIC_KEY_ENCODING + 1u == OCA_OFF_PUBLIC_KEY_SIZE)
+#error "public_key_size_classic must follow public_key_encoding_classic"
+#endif
+#if !(OCA_OFF_PUBLIC_KEY_SIZE + 2u == OCA_OFF_PUBLIC_KEY_CLASSIC_REVOKE)
+#error "public_key_classic_revoke must follow public_key_size_classic"
+#endif
+#if !(OCA_OFF_MANIFEST_CONTENT_VERSION + 8u == OCA_OFF_MANIFEST_DESCRIPTION)
+#error "manifest_description must follow manifest_content_version"
+#endif
+#if !(OCA_TOC_ENTRY_OFF_OFFSET + 8u == OCA_TOC_ENTRY_OFF_LENGTH \
+      && OCA_TOC_ENTRY_OFF_LENGTH + 8u == OCA_TOC_ENTRY_OFF_VERSION \
+      && OCA_TOC_ENTRY_OFF_VERSION + 8u == OCA_TOC_ENTRY_OFF_SECURITY_VERSION \
+      && OCA_TOC_ENTRY_OFF_SECURITY_VERSION + 8u == OCA_TOC_ENTRY_OFF_LOAD_ADDR \
+      && OCA_TOC_ENTRY_OFF_LOAD_ADDR + 8u == OCA_TOC_ENTRY_OFF_ENTRY_POINT \
+      && OCA_TOC_ENTRY_OFF_ENTRY_POINT + 8u == OCA_TOC_ENTRY_OFF_TARGET_CHIPLET_ID \
+      && OCA_TOC_ENTRY_OFF_TARGET_CHIPLET_ID + 8u == OCA_TOC_ENTRY_OFF_HASH)
+#error "TOC entry u64 fields must run back-to-back from offset to hash"
+#endif
+#if !(OCA_TOC_ENTRY_OFF_HASH + OCA_LEN_HASH_FIELD == OCA_TOC_ENTRY_OFF_DESCRIPTION)
+#error "TOC entry description must follow hash"
+#endif
 /* The spec requires 8-byte alignment of every u64 entry field and of every
  * entry start, which holds only while the entry size is a multiple of 8. */
-_Static_assert(OCA_TOC_ENTRY_OFF_OFFSET % 8u == 0u && OCA_TOC_HEADER_SIZE % 8u == 0u
-               && OCA_TOC_ENTRY_SIZE % 8u == 0u,
-               "TOC entries and their u64 fields must be 8-byte aligned");
+#if !(OCA_TOC_ENTRY_OFF_OFFSET % 8u == 0u && OCA_TOC_HEADER_SIZE % 8u == 0u \
+      && OCA_TOC_ENTRY_SIZE % 8u == 0u)
+#error "TOC entries and their u64 fields must be 8-byte aligned"
+#endif
 /* Both group-code bytes must land inside the field they index into. */
-_Static_assert(OCA_CLASS_REVOKE_OFF_PQC_GROUP_CODE < OCA_LEN_SIGNATURE_CLASS_REVOKE,
-               "PQC group code byte must lie within signature_class_revoke");
+#if !(OCA_CLASS_REVOKE_OFF_PQC_GROUP_CODE < OCA_LEN_SIGNATURE_CLASS_REVOKE)
+#error "PQC group code byte must lie within signature_class_revoke"
 #endif
 
 #endif /* OCA_LAYOUT_H */

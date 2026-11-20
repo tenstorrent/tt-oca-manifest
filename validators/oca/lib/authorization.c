@@ -4,10 +4,10 @@
  * @file
  * @brief Secure-boot ROOT-key authorization check.
  *
- * The secure boot trust anchor reference. A manifest carries the public key its 
- * own signature is checked against, so verifying that signature establishes only 
- * that the holder of some private key produced this manifest: not that the 
- * Consumer trusts that key. Without this check, a key that signs its own manifest 
+ * The secure boot trust anchor reference. A manifest carries the public key its
+ * own signature is checked against, so verifying that signature establishes only
+ * that the holder of some private key produced this manifest: not that the
+ * Consumer trusts that key. Without this check, a key that signs its own manifest
  * verifies, and secure boot decides nothing.
  *
  * Runs first of the key checks, before revocation and before any public-key

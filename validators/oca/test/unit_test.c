@@ -4659,7 +4659,7 @@ TEST(test_the_major_version_is_checked_before_manifest_length)
 static oca_result_t counting_decrypt_cb(const oca_decrypt_input_t *in,
                                         const uint8_t **out_pt, size_t *out_pt_len)
 {
-    
+
     g_fx.decrypt_calls++;
     *out_pt = in->ciphertext;
     *out_pt_len = in->ciphertext_len;
@@ -7633,7 +7633,7 @@ TEST(test_device_disable_reaches_every_gated_check)
 }
 
 /* Encryption declared with the secure boot control bit CLEAR: ingesting a a manifest
- * in this invalid state is the whole test. 
+ * in this invalid state is the whole test.
  * build_encrypted_bundle() builds on build_minimal_manifest(), so the bit
  * is clear, and that is the only shape this refusal applies to.
  *

@@ -212,12 +212,12 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
                                    const oca_callbacks_t *cb,
                                    oca_validation_context_t *ctx)
 {
-    /* The secure boot determination has to land somewhere every check below can 
+    /* The secure boot determination has to land somewhere every check below can
      * read it, whether or not the caller wanted the record. A caller passing NULL
      * is declining the REPORT, not the determination, so the composition owns a
      * context for that case and every check downstream is reached identically on
      * both paths. One composition, not one for callers who supply a context and
-     * another for callers who do not: two would be free to drift */
+     * another for callers who do not: two would be free to drift. */
     oca_validation_context_t owned;
     oca_validation_context_t *vctx = (ctx != 0) ? ctx : &owned;
 
@@ -291,26 +291,26 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
     if (r != OCA_OK) return r;
     r = oca_check_signature_class_variant(body);
     if (r != OCA_OK) return r;
-    /* Confirm the consistency of the signature revocation group codes; if these
-    values are mal-formed then the manifest is suspect. We don't care what
-    algorithms are actually revoked here. That check can only be done against the 
-    on device fuse values */
+    /* Confirm the signature revocation group codes are consistent; a manifest
+     * with malformed ones is suspect. Which algorithms are revoked does not
+     * matter here: that can only be checked against the device's fuse values. */
     r = oca_check_signature_class_group_codes(body);
     if (r != OCA_OK) return r;
 
     /* Secure boot determination
      *
-     * Every check below that gates on secure boot re-derives the same values as this 
-     * and requires the answer to still match what was recorded 
-     * (see oca_secure_boot_confirm()).
-     * So this establishes a REFERENCE, not a verdict they inherit.
+     * Every check below that gates on secure boot re-derives the same values as
+     * this and requires the answer to still match what was recorded (see
+     * oca_secure_boot_confirm()). So this establishes a REFERENCE, not a verdict
+     * they inherit.
      *
-     * That combination is the point. Deriving independently at each check, let a 
-     * single glitched reporter read at the signature site skip signature 
-     * verification alone, with revocation and anti-rollback none the wiser and nothing comparing the two. Recording once and having
-     * everyone simply READ it would be worse: one glitched determination would
-     * disarm all of them at once. Doing both costs an attacker a consistent fault
-     * at the determination AND at every confirm.
+     * That combination is the point. Deriving independently at each check would
+     * let a single glitched reporter read at the signature site skip signature
+     * verification alone, with revocation and anti-rollback none the wiser and
+     * nothing comparing the two. Recording once and having everyone simply READ
+     * it would be worse: one glitched determination would disarm all of them at
+     * once. Doing both costs an attacker a consistent fault at the determination
+     * AND at every confirm.
      *
      * Placed after framing, integrity, and the structural checks, because the
      * determination's highest-priority input is a manifest bit and settling the
@@ -389,7 +389,7 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
     r = oca_check_demotion_control(body);
     if (r != OCA_OK) return r;
 
-    /* Authenticity check based on cryptographic signatures 
+    /* Authenticity check based on cryptographic signatures.
      * Integrity was settled earlier, by oca_check_manifest_hash.
      *
      * ROOT-key authorization runs first, so a key the device does not trust is

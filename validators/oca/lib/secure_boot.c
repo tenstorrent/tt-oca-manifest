@@ -176,9 +176,9 @@ oca_result_t oca_determine_secure_boot(const uint8_t *body,
      * Normalized through the ternaries so only intact patterns are stored. */
     uint8_t control = body[OCA_OFF_SECURE_BOOT_CONTROL];
 
-    /* The manifest variant flags are decided ONCE and recorded as a 
+    /* The manifest variant flags are decided ONCE and recorded as a
      * complementary pair. Exactly one of the two is TRUE in any settled context,
-     * and they are always opposite patterns of each other. The secure-bool 
+     * and they are always opposite patterns of each other. The secure-bool
      * values are bitwise complements, so an intact pair XORs to all-ones and no
      * single corrupted word forges a coherent one. oca_secure_boot_confirm()
      * re-derives the class and refuses a record that drifts, so every

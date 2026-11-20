@@ -33,6 +33,7 @@ env:
     tests/test_oca_callback_layout.py
     tests/test_oca_hash_row_size.py
     tests/test_oca_integration_build_snippets.py
+    tests/test_oca_layout_self_check.py
     tests/test_oca_result_names.py
 
 jobs:

@@ -15,10 +15,10 @@
  *
  * Both paths converge on check_plaintext_payload() which performs:
  *     - TOC structural validation
- *     - a pass over all images that recomputes and checks each TOC 
+ *     - a pass over all images that recomputes and checks each TOC
  *       entry's stored `hash` against the image bytes it describes, hashing
- *       every image exactly once and iteratively computing chain of payload 
- *       hashes 
+ *       every image exactly once and iteratively computing the chain of
+ *       payload hashes
  *     - final confirmation of the payload_hash_chain integrity once
  *       all images have been hashed and verified
  */
@@ -893,8 +893,8 @@ oca_result_t oca_check_payload(const uint8_t *body, size_t body_length,
         return OCA_FAIL_TRUNCATED;
     }
 
-    /* The manifest states where its payload lives, and if that is not directly after 
-     * the body then this entry point cannot be correct for this manifest. 
+    /* The manifest states where its payload lives, and if that is not directly after
+     * the body then this entry point cannot be correct for this manifest.
      *
      * A caller whose payload genuinely lives elsewhere resolves it with
      * oca_locate_payload() (which needs storage bounds this entry point does not
