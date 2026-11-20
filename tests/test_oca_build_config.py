@@ -1308,6 +1308,19 @@ def test_a_header_missing_a_setting_is_refused(tmp_path, setting):
     assert f"oca_config.h is missing {setting.macro}" in result.stderr
 
 
+REQUIRING = [setting for setting in IMPLEMENTED if setting.requires]
+
+
+@pytest.mark.parametrize("setting", REQUIRING, ids=[s.name for s in REQUIRING])
+def test_a_header_enabling_a_setting_without_what_it_needs_is_refused(tmp_path, setting):
+    """The cases come from the generator's rules, so a setting added there with
+    a requirement fails here until the check header refuses it too."""
+    needed = {s.macro: "0" for s in IMPLEMENTED if s.name in setting.requires}
+    result = compile_probe(tmp_path, edit_header(default_header(), values=needed))
+    assert result.returncode != 0
+    assert f"enables [{setting.section}] {setting.key} without" in result.stderr
+
+
 @pytest.mark.parametrize("define, key", [
     ("-DOCA_SUPPORT_CLASSIC=0", "[variants] classic / pqc"),
     ("-DOCA_SUPPORT_PQC=0", "[variants] classic / pqc"),

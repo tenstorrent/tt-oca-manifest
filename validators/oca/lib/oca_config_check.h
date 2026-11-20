@@ -176,6 +176,15 @@
 #error "oca_config.h enables a PQC signature algorithm without [variants] pqc"
 #endif
 
+/* A DER encoding belongs to one family of algorithms, and is refused without
+ * one of them. */
+#if OCA_CFG_DER_RSA_PUBLIC_KEY && !OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256
+#error "oca_config.h enables [der] rsa_public_key without an RSA signature algorithm"
+#endif
+#if OCA_CFG_DER_ECDSA_SIGNATURE && !OCA_CFG_SIG_ECDSA_P256_SHA256
+#error "oca_config.h enables [der] ecdsa_signature without an ECDSA signature algorithm"
+#endif
+
 #if OCA_CFG_TOC_MAX_IMAGES < 1
 #error "oca_config.h sets toc_max_images below 1; regenerate it"
 #endif
