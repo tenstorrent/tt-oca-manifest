@@ -315,9 +315,9 @@ done
 ```
 
 `lib/oca_config_check.h` repeats the guards the library depends on. A header
-that was not generated, comes from another library version, is missing a
-setting, holds a switch other than 0 or 1, or combines settings no build can use
-fails the compile with an `#error` naming the problem. It also refuses the
+that was not generated, is in another header format, is missing a setting,
+holds a switch other than 0 or 1, or combines settings no build can use fails
+the compile with an `#error` naming the problem. It also refuses the
 settings' former `-D` forms, such as `-DOCA_TOC_MAX_IMAGES=32`, so a stale
 override fails instead of being ignored. A header edited by hand, such as one
 with an algorithm turned off, fails too: its settings no longer match the seal

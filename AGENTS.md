@@ -238,8 +238,8 @@ make -C validators/oca CONFIG=path/to/board.toml test
 ```
 
 `lib/scripts/gen_config.py` generates `build/gen/oca_config.h` from it before anything
-compiles, and `lib/oca_config_check.h` refuses a header that is missing, malformed or from
-another library version, naming any setting it lacks. The generator also seals the header
+compiles, and `lib/oca_config_check.h` refuses a header that is missing, malformed or in
+another header format, naming any setting it lacks. The generator also seals the header
 with a macro named for the portfolio digest and every setting's value, which the check header
 rebuilds from what it finds, so a hand edit to a setting, the digest or the portfolio ID fails
 the compile. It does not tie a header to its configuration file, so one left behind when the
@@ -254,7 +254,8 @@ guard for its macro to `oca_config_check.h` (and, for a switch, its line in that
 fails until all four agree and a library source reads it. The setting also joins the build
 guard's name in `oca_config_check.h`, `OCA_BUILD_GUARD_NAME()` and `OCA_BUILD_GUARD_PASTE()`,
 in the generator's order, and `tests/test_oca_build_guard.py` fails until it does; so does
-every build, because the seal is pasted from the same name. That guard
+every build, because the seal is pasted from the same name. Adding a setting does not change
+`CONFIG_FORMAT`; the comment above it in `gen_config.py` says what does. That guard
 is a symbol the library defines, named for every setting of its header; each file including
 `oca_validator.h` refers to the one its own header names, so code compiled against another
 header does not link. The tests write their
