@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -162,10 +163,14 @@ def include_dir(directory, header_text) -> str:
 
 
 def compile_source(compiler, flags, source, obj, header_dir, check=True):
-    """Compile one file against the library headers and header_dir."""
-    return subprocess.run([*compiler, *flags, *WARNINGS, *SECTIONS, "-Os", "-I", LIB_DIR,
-                           "-I", header_dir, "-c", str(source), "-o", str(obj)],
-                          capture_output=True, text=True, check=check)
+    """Compile one file against the library headers and header_dir. With
+    check, a failed compile fails the test with the compiler's message."""
+    result = subprocess.run([*compiler, *flags, *WARNINGS, *SECTIONS, "-Os", "-I", LIB_DIR,
+                             "-I", header_dir, "-c", str(source), "-o", str(obj)],
+                            capture_output=True, text=True)
+    if check and result.returncode != 0:
+        pytest.fail(f"{shlex.join(result.args)} failed:\n{result.stderr}")
+    return result
 
 
 def library_archive(directory, header_text) -> str:

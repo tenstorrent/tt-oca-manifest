@@ -333,7 +333,14 @@ extern const char OCA_BUILD_GUARD;
  * cannot share it.
  */
 extern const char *const OCA_BUILD_GUARD_REF;
+/* In C++ a const variable is local to its file unless its definition says
+ * extern, and g++ refuses a weak definition that does not, despite the
+ * declaration above. In C, extern on a definition draws a warning. */
+#ifdef __cplusplus
+__attribute__((weak, used, retain)) extern const char *const OCA_BUILD_GUARD_REF = &OCA_BUILD_GUARD;
+#else
 __attribute__((weak, used, retain)) const char *const OCA_BUILD_GUARD_REF = &OCA_BUILD_GUARD;
+#endif
 #endif
 
 #ifdef __cplusplus
