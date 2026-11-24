@@ -1,0 +1,680 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+"""Generate the validator library's build configuration header.
+
+    python3 -I lib/scripts/gen_config.py --config board.toml --out <dir>/oca_config.h
+    python3 -I lib/scripts/gen_config.py --config board.toml --out <dir>/oca_config.h --check
+    python3 -I lib/scripts/gen_config.py --config board.toml --print signature_pqc.ml_dsa_87
+    python3 -I lib/scripts/gen_config.py --config board.toml --print-all
+
+A TOML configuration file is the single source of truth for every compile-time
+setting of the library. This script turns one into `oca_config.h`, which the
+library reaches through the include path; `lib/oca_config_check.h` then refuses
+a header that is missing, malformed, or generated in another header format.
+Only `--check` compares a header with its configuration file.
+
+A configuration REPLACES the shipped default (`lib/oca_config.toml`); it is
+never layered on top of it. A required setting must therefore be stated, so a
+library upgrade that adds one fails the build until the adopter decides its
+value, rather than inheriting a default nobody reviewed. A switch, such as an
+algorithm, is off unless the configuration turns it on, so an upgrade that adds
+one leaves every existing build accepting what it did.
+
+The header is written only when its content changes, so a build that depends on
+it stays incremental. `--check` writes nothing and reports whether the header at
+`--out` is current, for a project that commits its generated header.
+
+The header names the build's portfolio: OCA_CFG_PORTFOLIO_TEXT states every
+setting that is not zero, one `name=value` line each in name order,
+OCA_CFG_PORTFOLIO_DIGEST is its SHA-256 as the bytes of an initializer, and
+OCA_CFG_PORTFOLIO_ID is the first 32 bits of that. The identifier depends on the settings alone, not on the file's
+name, comments or order, so two files that build the same library share it, and
+a library upgrade that adds a switch left off changes no existing identifier.
+
+The header also carries a seal: a macro named for the digest's bytes and every
+setting's value as the header spells it, which `oca_config_check.h` rebuilds
+from the macros it finds. A header edited by hand, so that its settings or
+digest no longer agree with each other, then fails the compile rather than
+reporting a portfolio it does not build.
+
+`--print NAME` writes one setting's resolved value, and `--print-all` every
+setting's as `name=value` lines, for a build system that chooses what else to
+compile from the configuration without parsing TOML.
+
+Python tooling can import this module rather than run it: `generate()` writes
+a header, `header_for_config()` returns one, and the steps they compose —
+`load_config()`, `resolve_settings()`, `render_header()`, `write_if_changed()`
+— are callable on their own. Each raises ConfigError naming every problem.
+
+Needs Python 3.11 or later and nothing outside the standard library.
+
+Exit codes: 0 the header is current, or the value was printed; 1 `--check` found
+the header missing or stale; 2 the configuration is unreadable or invalid, the
+header cannot be read or written, or `--print` names no setting.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+import sys
+from dataclasses import dataclass
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    sys.exit("gen_config.py needs Python 3.11 or later (tomllib); "
+             f"this is {sys.version.split()[0]}")
+
+
+# The format of the generated header. lib/oca_config_check.h refuses any other
+# value. Bump both together when a header the previous version wrote would mean
+# something different now: a macro keeps its name but changes meaning, a setting
+# is removed, or the portfolio digest, ID or seal is computed another way.
+# Adding a setting needs no bump, because the check header already refuses a
+# header that lacks one, and names it.
+CONFIG_FORMAT = 1
+
+
+@dataclass(frozen=True)
+class Setting:
+    """One configuration key and the macro it generates.
+
+    A required setting must be stated in every configuration. An optional one
+    is a switch that is off unless the configuration turns it on, which is how
+    every algorithm is listed: a build accepts only what it names.
+
+    A setting may be optional only when leaving it out keeps what every
+    existing configuration builds: an algorithm or encoding, which a
+    configuration that does not name it never accepted, or a declaration that
+    only admits configurations otherwise refused, such as
+    [secure_boot] disabled. A setting that turns existing behaviour off, or
+    sets a value, must be required, so the upgrade that adds it stops each
+    adopter's build until they choose.
+
+    A switch the library has no rules for is not implemented. It generates no
+    macro, and turning it on is an error rather than a request the library
+    would silently ignore.
+    """
+
+    section: str
+    key: str
+    macro: str             # "" for a switch that is not implemented
+    kind: str              # "bool" or "count"
+    description: str
+    minimum: int = 0
+    maximum: int = 0
+    required: bool = True
+    code: int | None = None        # the format's value for an algorithm
+    requires: tuple[str, ...] = ()  # turning this on needs one of these on
+
+    @property
+    def name(self) -> str:
+        return f"{self.section}.{self.key}"
+
+    @property
+    def implemented(self) -> bool:
+        return bool(self.macro)
+
+
+def _algorithm(section: str, key: str, code: int, description: str,
+               macro: str = "") -> Setting:
+    """An algorithm switch: off unless named, implemented when it has a macro."""
+    return Setting(section, key, macro, "bool", description, required=False,
+                   code=code)
+
+
+def _encoding(key: str, macro: str, description: str,
+              requires: tuple[str, ...]) -> Setting:
+    """A switch for an encoding the format defines for one family of algorithms."""
+    return Setting("der", key, macro, "bool", description, required=False,
+                   requires=requires)
+
+
+# The format's algorithms, every one of them, in each class. Those with a
+# macro are the ones the library has rules for; the rest are listed so a
+# configuration can name them, and turning one on says it is not implemented.
+CLASSICAL_SIGNATURES = (
+    _algorithm("signature_classic", "rsa_3072_pkcs1v15_sha256", 0x01,
+               "RSA-3072, RSASSA-PKCS1-v1_5, SHA-256",
+               "OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256"),
+    _algorithm("signature_classic", "rsa_3072_pss_sha256", 0x02,
+               "RSA-3072, RSASSA-PSS, SHA-256"),
+    _algorithm("signature_classic", "rsa_4096_pkcs1v15_sha512", 0x03,
+               "RSA-4096, RSASSA-PKCS1-v1_5, SHA-512"),
+    _algorithm("signature_classic", "rsa_4096_pss_sha512", 0x04,
+               "RSA-4096, RSASSA-PSS, SHA-512"),
+    _algorithm("signature_classic", "ecdsa_p256_sha256", 0x05,
+               "ECDSA P-256, SHA-256", "OCA_CFG_SIG_ECDSA_P256_SHA256"),
+    _algorithm("signature_classic", "ecdsa_p384_sha384", 0x06,
+               "ECDSA P-384, SHA-384"),
+    _algorithm("signature_classic", "ecdsa_p521_sha512", 0x07,
+               "ECDSA P-521, SHA-512"),
+    _algorithm("signature_classic", "ed25519", 0x0A, "Ed25519"),
+    _algorithm("signature_classic", "ed448", 0x0B, "Ed448"),
+)
+
+PQC_SIGNATURES = (
+    _algorithm("signature_pqc", "ml_dsa_44", 0x31, "FIPS 204 ML-DSA-44"),
+    _algorithm("signature_pqc", "ml_dsa_65", 0x32, "FIPS 204 ML-DSA-65"),
+    _algorithm("signature_pqc", "ml_dsa_87", 0x33, "FIPS 204 ML-DSA-87",
+               "OCA_CFG_SIG_ML_DSA_87"),
+    _algorithm("signature_pqc", "slh_dsa_sha2_128s", 0x51,
+               "FIPS 205 SLH-DSA-SHA2-128s"),
+    _algorithm("signature_pqc", "slh_dsa_sha2_192s", 0x52,
+               "FIPS 205 SLH-DSA-SHA2-192s"),
+    _algorithm("signature_pqc", "slh_dsa_sha2_256s", 0x53,
+               "FIPS 205 SLH-DSA-SHA2-256s"),
+    _algorithm("signature_pqc", "slh_dsa_shake_128s", 0x54,
+               "FIPS 205 SLH-DSA-SHAKE-128s"),
+    _algorithm("signature_pqc", "slh_dsa_shake_192s", 0x55,
+               "FIPS 205 SLH-DSA-SHAKE-192s"),
+    _algorithm("signature_pqc", "slh_dsa_shake_256s", 0x56,
+               "FIPS 205 SLH-DSA-SHAKE-256s"),
+)
+
+# manifest_hash_type and payload_hash_type draw on one list, governed together.
+HASHES = (
+    _algorithm("hash", "sha2_256", 0x01, "SHA2-256", "OCA_CFG_HASH_SHA2_256"),
+    _algorithm("hash", "sha2_384", 0x02, "SHA2-384"),
+    _algorithm("hash", "sha2_512", 0x03, "SHA2-512"),
+    _algorithm("hash", "sha3_256", 0x04, "SHA3-256"),
+    _algorithm("hash", "sha3_384", 0x05, "SHA3-384"),
+    _algorithm("hash", "sha3_512", 0x06, "SHA3-512"),
+    _algorithm("hash", "shake256_256", 0x07, "SHAKE256-256"),
+    _algorithm("hash", "shake256_512", 0x08, "SHAKE256-512"),
+)
+
+CIPHERS = (
+    _algorithm("encryption_cipher", "aes_128_cbc", 0x01, "AES-128-CBC",
+               "OCA_CFG_CIPHER_AES_128_CBC"),
+    _algorithm("encryption_cipher", "aes_256_cbc", 0x02, "AES-256-CBC",
+               "OCA_CFG_CIPHER_AES_256_CBC"),
+    _algorithm("encryption_cipher", "aes_128_cbc_hmac_sha256", 0x03,
+               "AES-128-CBC-HMAC-SHA256"),
+    _algorithm("encryption_cipher", "aes_256_cbc_hmac_sha256", 0x04,
+               "AES-256-CBC-HMAC-SHA256"),
+    _algorithm("encryption_cipher", "aes_128_gcm_siv", 0x05, "AES-128-GCM-SIV"),
+    _algorithm("encryption_cipher", "aes_256_gcm_siv", 0x06, "AES-256-GCM-SIV"),
+    _algorithm("encryption_cipher", "sm4_128_cbc", 0x11, "SM4-128-CBC"),
+    _algorithm("encryption_cipher", "sm4_128_cbc_hmac_sha256", 0x12,
+               "SM4-128-CBC-HMAC-SHA256"),
+)
+
+KDFS = (
+    _algorithm("encryption_kdf", "none", 0x0000,
+               "no KDF: the input key is the payload key"),
+    _algorithm("encryption_kdf", "sp800_108_hmac_sha256", 0x0001,
+               "NIST SP 800-108r1 counter mode, HMAC-SHA-256",
+               "OCA_CFG_KDF_SP800_108_HMAC_SHA256"),
+    _algorithm("encryption_kdf", "sp800_108_hmac_sha512", 0x0002,
+               "NIST SP 800-108r1 counter mode, HMAC-SHA-512"),
+    _algorithm("encryption_kdf", "sp800_108_hmac_sha3_256", 0x0003,
+               "NIST SP 800-108r1 counter mode, HMAC-SHA3-256"),
+    _algorithm("encryption_kdf", "sp800_108_hmac_sha3_512", 0x0004,
+               "NIST SP 800-108r1 counter mode, HMAC-SHA3-512"),
+    _algorithm("encryption_kdf", "sp800_108_cmac_aes_128", 0x0005,
+               "NIST SP 800-108r1 counter mode, CMAC-AES-128"),
+    _algorithm("encryption_kdf", "sp800_108_cmac_aes_256", 0x0006,
+               "NIST SP 800-108r1 counter mode, CMAC-AES-256"),
+    _algorithm("encryption_kdf", "sp800_108_kmac_256", 0x0007,
+               "NIST SP 800-108r1 KMAC mode, KMAC-256"),
+    _algorithm("encryption_kdf", "hkdf_sha256", 0x0008, "RFC 5869 HKDF, SHA-256"),
+)
+
+KEY_SOURCES = (
+    _algorithm("encryption_key_source", "preshared", 0x1,
+               "a provisioned secret, chosen by encryption_shared_secret_select",
+               "OCA_CFG_KEY_SOURCE_PRESHARED"),
+    _algorithm("encryption_key_source", "kem", 0x2,
+               "a DEK unwrapped from encryption_kem_dek"),
+)
+
+# Used only by the KEM key source, which is not implemented, so none of these
+# can be turned on yet.
+KEMS = (
+    _algorithm("encryption_kem", "ecdhe_p256_aes_kw_256", 0x0001,
+               "ECDHE-P256+AES-KW-256"),
+    _algorithm("encryption_kem", "ecdhe_p384_aes_kw_256", 0x0002,
+               "ECDHE-P384+AES-KW-256"),
+    _algorithm("encryption_kem", "ecdhe_x25519_aes_kw_256", 0x0003,
+               "ECDHE-X25519+AES-KW-256"),
+    _algorithm("encryption_kem", "rsa_oaep_3072", 0x0004, "RSA-OAEP, RSA-3072"),
+    _algorithm("encryption_kem", "rsa_oaep_4096", 0x0005, "RSA-OAEP, RSA-4096"),
+    _algorithm("encryption_kem", "ml_kem_768", 0x0101, "ML-KEM-768"),
+    _algorithm("encryption_kem", "ml_kem_1024", 0x0102, "ML-KEM-1024"),
+)
+
+ENCODINGS = (
+    _encoding("rsa_public_key", "OCA_CFG_DER_RSA_PUBLIC_KEY",
+              "Accept DER (PKCS#1 RSAPublicKey) RSA public keys",
+              tuple(s.name for s in CLASSICAL_SIGNATURES
+                    if s.key.startswith("rsa_"))),
+    _encoding("ecdsa_signature", "OCA_CFG_DER_ECDSA_SIGNATURE",
+              "Accept DER (RFC 3279 ECDSA-Sig-Value) ECDSA signatures",
+              tuple(s.name for s in CLASSICAL_SIGNATURES
+                    if s.key.startswith("ecdsa_"))),
+)
+
+SETTINGS = (
+    Setting("variants", "classic", "OCA_CFG_VARIANT_CLASSIC", "bool",
+            "Honor OCA-Classic (OCAC) manifests"),
+    Setting("variants", "pqc", "OCA_CFG_VARIANT_PQC", "bool",
+            "Honor OCA-PQC (OCAP) manifests"),
+    Setting("limits", "toc_max_images", "OCA_CFG_TOC_MAX_IMAGES", "count",
+            "Most payload TOC entries this build processes",
+            minimum=1, maximum=0xFFFFFFFF),
+    Setting("hardening", "recheck_security_version",
+            "OCA_CFG_RECHECK_SECURITY_VERSION", "bool",
+            "Evaluate anti-rollback again after the signature verifies"),
+    # Off unless stated, so leaving it out keeps a build that can verify. A build
+    # that enables no signature algorithm must state it, which makes giving up
+    # authentication a decision rather than an omission.
+    Setting("secure_boot", "disabled", "OCA_CFG_SECURE_BOOT_DISABLED", "bool",
+            "Declare a build that verifies no signature and decrypts no payload, "
+            "and compile out the code that would",
+            required=False),
+    *HASHES,
+    *CLASSICAL_SIGNATURES,
+    *PQC_SIGNATURES,
+    *ENCODINGS,
+    *CIPHERS,
+    *KDFS,
+    *KEY_SOURCES,
+    *KEMS,
+)
+
+
+class ConfigError(Exception):
+    """A configuration that cannot be turned into a header. Carries every problem."""
+
+    def __init__(self, problems: list[str]):
+        super().__init__("\n".join(problems))
+        self.problems = problems
+
+
+def load_config(path: str) -> dict:
+    """Read and parse a configuration file."""
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as exc:
+        where = "" if os.path.isabs(path) else f" (looked for {os.path.abspath(path)})"
+        raise ConfigError([f"cannot read {path}{where}: {exc.strerror}"]) from exc
+    try:
+        document = tomllib.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ConfigError([f"{path} is not UTF-8 text"]) from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError([f"{path} is not valid TOML: {exc}"]) from exc
+    return document
+
+
+def _check_value(setting: Setting, value) -> str | None:
+    """Why a value is wrong for its setting, or None when it is acceptable."""
+    if setting.kind == "bool":
+        if not isinstance(value, bool):
+            return f"{setting.name} must be true or false, not {value!r}"
+        return None
+    # bool is an int subclass in Python, so it is refused by name here.
+    if isinstance(value, bool) or not isinstance(value, int):
+        return f"{setting.name} must be an integer, not {value!r}"
+    if not setting.minimum <= value <= setting.maximum:
+        return (f"{setting.name} must be between {setting.minimum} and "
+                f"{setting.maximum}, not {value}")
+    return None
+
+
+def resolve_settings(document: dict) -> dict[str, int]:
+    """Validate a parsed configuration and return each macro's value.
+
+    Raises ConfigError naming every problem found, not just the first, so an
+    adopter fixes a file in one pass.
+    """
+    problems: list[str] = []
+    sections = {setting.section for setting in SETTINGS}
+    for section, table in document.items():
+        if section not in sections:
+            problems.append(f"unknown section [{section}]")
+        elif not isinstance(table, dict):
+            problems.append(f"[{section}] must be a table")
+    for section, table in document.items():
+        if section in sections and isinstance(table, dict):
+            known = {s.key for s in SETTINGS if s.section == section}
+            for key in table:
+                if key not in known:
+                    problems.append(f"unknown key {section}.{key}")
+
+    values: dict[str, int] = {}
+    enabled: set[str] = set()
+    for setting in SETTINGS:
+        table = document.get(setting.section)
+        if not isinstance(table, dict) or setting.key not in table:
+            if setting.required:
+                problems.append(
+                    f"{setting.name} is required: a configuration replaces the "
+                    f"default, so it must state every required setting")
+            elif setting.implemented:
+                values[setting.macro] = 0
+            continue
+        value = table[setting.key]
+        problem = _check_value(setting, value)
+        if problem is not None:
+            problems.append(problem)
+            continue
+        if value is True and not setting.implemented:
+            problems.append(
+                f"{setting.name} ({setting.description}) is not implemented in "
+                f"this library; implement its rules before enabling it")
+            continue
+        if value is True:
+            enabled.add(setting.name)
+        if setting.implemented:
+            values[setting.macro] = int(value)
+
+    problems.extend(_cross_setting_problems(values, enabled))
+    if problems:
+        raise ConfigError(problems)
+    return values
+
+
+def _cross_setting_problems(values: dict[str, int], enabled: set[str]) -> list[str]:
+    """Combinations of individually valid settings that no build can use."""
+    problems = []
+    if (values.get("OCA_CFG_VARIANT_CLASSIC") == 0
+            and values.get("OCA_CFG_VARIANT_PQC") == 0):
+        problems.append("[variants] must enable at least one of classic and pqc")
+    if not any(s.name in enabled for s in HASHES):
+        problems.append("no hash is enabled: [hash] must enable at least one, "
+                        "since every manifest carries a manifest_hash")
+    signatures = [s.name for s in (*CLASSICAL_SIGNATURES, *PQC_SIGNATURES)
+                  if s.name in enabled]
+    secure_boot_disabled = values.get("OCA_CFG_SECURE_BOOT_DISABLED") == 1
+    if not signatures and not secure_boot_disabled:
+        problems.append("no signature algorithm is enabled: enable one in "
+                        "[signature_classic] or [signature_pqc], or declare a build "
+                        "without secure boot with [secure_boot] disabled = true")
+    if signatures and secure_boot_disabled:
+        which = ("enables one; turn it" if len(signatures) == 1
+                 else "enable them; turn them")
+        problems.append(f"[secure_boot] disabled = true declares a build that "
+                        f"verifies no signature, but {', '.join(signatures)} "
+                        f"{which} off or remove the declaration")
+    if values.get("OCA_CFG_VARIANT_PQC") == 0:
+        for setting in PQC_SIGNATURES:
+            if setting.name in enabled:
+                problems.append(f"{setting.name} needs [variants] pqc, the only "
+                                f"variant that carries a PQC signature")
+    # A cipher is usable only with a key to decrypt under, so the three are
+    # enabled together or not at all; a build that enables none refuses every
+    # encrypted payload.
+    encryption = {
+        "[encryption_cipher]": [s for s in CIPHERS if s.name in enabled],
+        "[encryption_kdf]": [s for s in KDFS if s.name in enabled],
+        "[encryption_key_source]": [s for s in KEY_SOURCES if s.name in enabled],
+    }
+    if secure_boot_disabled and any(encryption.values()):
+        named = [s.name for chosen in encryption.values() for s in chosen]
+        problems.append(f"[secure_boot] disabled = true refuses every encrypted "
+                        f"payload, which is decrypted only once its manifest's "
+                        f"signature verifies, but {', '.join(named)} enable payload "
+                        f"encryption; turn them off")
+    if any(encryption.values()):
+        for section, chosen in encryption.items():
+            if not chosen:
+                problems.append(
+                    f"{section} enables nothing, but "
+                    f"{', '.join(k for k, v in encryption.items() if v)} "
+                    f"enables payload encryption; enable a cipher, a KDF and a "
+                    f"key source together, or none of them")
+    implemented = {setting.name for setting in SETTINGS if setting.implemented}
+    for setting in SETTINGS:
+        if setting.requires and setting.name in enabled \
+                and not enabled.intersection(setting.requires):
+            # Only what a configuration can turn on is worth suggesting.
+            options = [name for name in setting.requires if name in implemented]
+            problems.append(f"{setting.name} needs "
+                            f"{'one of ' if len(options) > 1 else ''}"
+                            f"{', '.join(options)} enabled")
+    return problems
+
+
+def setting_value(values: dict[str, int], setting: Setting) -> int:
+    """A setting's resolved value; a switch that is not implemented is off."""
+    return values[setting.macro] if setting.implemented else 0
+
+
+def portfolio_text(values: dict[str, int]) -> str:
+    """The canonical statement of a resolved configuration.
+
+    One `name=value` line for every setting that is not zero, in name order. A
+    setting at zero contributes nothing, so a switch a later library adds, left
+    off, does not change it.
+    """
+    lines = sorted(f"{setting.name}={setting_value(values, setting)}"
+                   for setting in SETTINGS if setting_value(values, setting))
+    return "".join(f"{line}\n" for line in lines)
+
+
+def portfolio_digest(values: dict[str, int]) -> bytes:
+    """The SHA-256 of portfolio_text()."""
+    return hashlib.sha256(portfolio_text(values).encode("ascii")).digest()
+
+
+def portfolio_id(values: dict[str, int]) -> int:
+    """The first 32 bits of portfolio_digest(), big-endian: the short label a
+    build reports."""
+    return int.from_bytes(portfolio_digest(values)[:4], "big")
+
+
+def spelled_value(setting: Setting, value: int) -> str:
+    """A setting's value as the header spells it: a count unsigned."""
+    return f"{value}u" if setting.kind == "count" else str(value)
+
+
+def portfolio_seal(values: dict[str, int], digest: bytes) -> str:
+    """The name of the macro that seals a header.
+
+    The digest's bytes as the header spells them, then each implemented
+    setting's macro without OCA_CFG_, lowercased, and its value, in the order of
+    SETTINGS: the name `oca_config_check.h` pastes from the macros it finds.
+    """
+    parts = ["OCA_CFG_PORTFOLIO_SEAL_" + "".join(f"0x{byte:02x}" for byte in digest)]
+    for setting in SETTINGS:
+        if setting.implemented:
+            parts.append(f"{setting.macro.removeprefix('OCA_CFG_').lower()}_"
+                         f"{spelled_value(setting, values[setting.macro])}")
+    return "_".join(parts)
+
+
+def render_header(values: dict[str, int], source_name: str) -> str:
+    """The text of oca_config.h. Deterministic for a given configuration."""
+    text_lines = [f'    "{line}\\n"' for line in portfolio_text(values).splitlines()]
+    digest = portfolio_digest(values)
+    digest_lines = ["    " + ", ".join(f"0x{byte:02x}" for byte in digest[start:start + 8])
+                    for start in range(0, len(digest), 8)]
+    lines = [
+        "/*",
+        f" * oca_config.h, generated by gen_config.py from {source_name}.",
+        " *",
+        " * Do not edit. Change the configuration file and regenerate.",
+        " */",
+        "#ifndef OCA_CONFIG_H",
+        "#define OCA_CONFIG_H",
+        "",
+        f"#define OCA_CFG_FORMAT {CONFIG_FORMAT}",
+        "",
+        "/* The portfolio: every setting below that is not zero, one name=value",
+        " * line each in name order; its SHA-256, as the bytes of an initializer;",
+        " * and the first 32 bits of that, big-endian. */",
+        "#define OCA_CFG_PORTFOLIO_TEXT \\",
+        " \\\n".join(text_lines),
+        "#define OCA_CFG_PORTFOLIO_DIGEST \\",
+        ", \\\n".join(digest_lines),
+        f"#define OCA_CFG_PORTFOLIO_ID 0x{portfolio_id(values):08x}u",
+        "",
+        "/* The seal: named for the digest and every setting below, so a header",
+        " * whose settings no longer match its digest does not compile. */",
+        f"#define {portfolio_seal(values, digest)} 1",
+    ]
+    for setting in SETTINGS:
+        if not setting.implemented:
+            continue
+        lines += ["", f"/* {setting.name}: {setting.description}. */",
+                  f"#define {setting.macro} "
+                  f"{spelled_value(setting, values[setting.macro])}"]
+    lines += ["", "#endif", ""]
+    return "\n".join(lines)
+
+
+def header_for_config(config_path: str) -> str:
+    """The oca_config.h a configuration file generates. Raises ConfigError."""
+    document = load_config(config_path)
+    values = resolve_settings(document)
+    return render_header(values, os.path.basename(config_path))
+
+
+def settings_for_config(config_path: str) -> dict[str, int]:
+    """Every setting's resolved value, by name. Raises ConfigError."""
+    document = load_config(config_path)
+    values = resolve_settings(document)
+    return {setting.name: setting_value(values, setting) for setting in SETTINGS}
+
+
+def generate(config_path: str, out_path: str) -> bool:
+    """Generate oca_config.h at out_path from a configuration file.
+
+    Returns whether the header was written; an unchanged one is left alone.
+    Raises ConfigError, before writing anything, when the configuration is
+    unreadable or invalid.
+    """
+    return write_if_changed(out_path, header_for_config(config_path))
+
+
+def write_if_changed(path: str, text: str) -> bool:
+    """Write text to path unless it already holds exactly that. Returns whether it wrote.
+
+    Leaving an unchanged file alone keeps its timestamp, which is what lets
+    every object that depends on the header skip recompiling. Lines end in LF
+    on every host, so a committed header is the same file wherever it was
+    generated. The new text is
+    written to a temporary file and moved into place, so a failed write leaves
+    the previous header, and no temporary file, behind. The temporary file gets
+    the mode any new file gets under the process umask, so the header does too.
+
+    Raises OSError when the header cannot be read or written.
+    """
+    if header_is_current(path, text):
+        return False
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temporary = create_temporary(directory, os.path.basename(path))
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(text.encode("utf-8"))
+        os.replace(temporary, path)
+    except BaseException:
+        os.unlink(temporary)
+        raise
+    return True
+
+
+def create_temporary(directory: str, name: str) -> tuple[int, str]:
+    """Create a new, empty file in directory to become name. Returns its
+    descriptor, open for writing, and its path.
+
+    Created with mode 0o666, which the kernel reduces by the process umask, so
+    the file gets the same mode as any other new file. Python can read the
+    umask only by changing it, and while it is changed another thread could
+    create a file with the wrong mode, so this never touches it.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    while True:
+        temporary = os.path.join(directory, f".{name}.{os.urandom(6).hex()}.tmp")
+        try:
+            return os.open(temporary, flags, 0o666), temporary
+        except FileExistsError:
+            continue
+
+
+def header_is_current(path: str, text: str) -> bool:
+    """Whether path already holds exactly text, line endings included.
+
+    Compares bytes, so a header that is not UTF-8 is simply not current. A
+    missing header is not current either. Raises OSError when the header exists
+    but cannot be read.
+    """
+    try:
+        with open(path, "rb") as handle:
+            return handle.read() == text.encode("utf-8")
+    except FileNotFoundError:
+        return False
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Generate oca_config.h from a build configuration file.")
+    parser.add_argument("--config", required=True,
+                        help="the TOML build configuration")
+    parser.add_argument("--out", help="where to write oca_config.h")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--check", action="store_true",
+                        help="write nothing; exit 1 unless --out is current")
+    action.add_argument("--print", metavar="NAME", dest="print_name",
+                        help="print one setting's resolved value, such as "
+                             "signature_pqc.ml_dsa_87, and write nothing")
+    action.add_argument("--print-all", action="store_true",
+                        help="print every setting as name=value and write nothing")
+    args = parser.parse_args(argv)
+    printing = args.print_name is not None or args.print_all
+    if args.out is None and not printing:
+        parser.error("--out is required unless --print or --print-all is given")
+
+    if printing:
+        return print_settings(args.config, args.print_name)
+
+    try:
+        text = header_for_config(args.config)
+    except ConfigError as exc:
+        for problem in exc.problems:
+            print(f"gen_config: {args.config}: {problem}", file=sys.stderr)
+        return 2
+
+    try:
+        if args.check:
+            if header_is_current(args.out, text):
+                return 0
+            print(f"gen_config: {args.out} is missing or stale for {args.config}; "
+                  f"regenerate it", file=sys.stderr)
+            return 1
+        if write_if_changed(args.out, text):
+            print(f"gen_config: wrote {args.out} from {args.config}")
+    except OSError as exc:
+        print(f"gen_config: {args.out}: {exc.strerror or exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def print_settings(config_path: str, name: str | None) -> int:
+    """Print one setting's resolved value, or every setting's. Returns the exit code."""
+    try:
+        settings = settings_for_config(config_path)
+    except ConfigError as exc:
+        for problem in exc.problems:
+            print(f"gen_config: {config_path}: {problem}", file=sys.stderr)
+        return 2
+    if name is None:
+        for setting_name, value in settings.items():
+            print(f"{setting_name}={value}")
+        return 0
+    if name not in settings:
+        print(f"gen_config: no setting is named {name}; settings are named "
+              f"section.key, such as {SETTINGS[0].name}", file=sys.stderr)
+        return 2
+    print(settings[name])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

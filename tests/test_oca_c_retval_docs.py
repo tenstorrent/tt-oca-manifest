@@ -178,3 +178,34 @@ oca_result_t fixture_check(const uint8_t *body)
 }
 """
     assert rules_for(write_source(tmp_path, "f.c", source)) == set()
+
+
+def test_the_library_s_value_types_are_found():
+    """The rules above resolve codes against these sets, so an empty one would
+    make every check of the real library pass without checking anything."""
+    members = checker.enum_members_by_type()
+    assert {"OCA_OK", "OCA_FAIL_INVALID_ARG"} <= members["oca_result_t"]
+    assert {"OCA_HW_OK", "OCA_HW_UNAVAILABLE"} <= members["oca_hw_result_t"]
+
+
+def test_both_value_type_shapes_are_read(tmp_path):
+    (tmp_path / "fixture.h").write_text("""\
+typedef enum fixture_enum {
+    OCA_FIXTURE_A = 1
+} fixture_enum_t;
+
+typedef uint16_t fixture_fixed_t;
+
+enum fixture_fixed {
+    OCA_FIXTURE_B = 2
+};
+""")
+    assert checker.enum_members_by_type(str(tmp_path)) == {
+        "fixture_enum_t": {"OCA_FIXTURE_A"}, "fixture_fixed_t": {"OCA_FIXTURE_B"}}
+
+
+def test_a_library_with_no_result_codes_is_refused(tmp_path, monkeypatch, capsys):
+    (tmp_path / "fixture.h").write_text("typedef uint32_t oca_result_t;\n")
+    monkeypatch.setattr(checker, "LIB_DIR", str(tmp_path))
+    assert checker.main([]) == 2
+    assert "no enumerators list the oca_result_t values" in capsys.readouterr().err

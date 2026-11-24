@@ -15,16 +15,17 @@
  *
  * Both paths converge on check_plaintext_payload() which performs:
  *     - TOC structural validation
- *     - a pass over all images that recomputes and checks each TOC 
+ *     - a pass over all images that recomputes and checks each TOC
  *       entry's stored `hash` against the image bytes it describes, hashing
- *       every image exactly once and iteratively computing chain of payload 
- *       hashes 
+ *       every image exactly once and iteratively computing the chain of
+ *       payload hashes
  *     - final confirmation of the payload_hash_chain integrity once
  *       all images have been hashed and verified
  */
 
 #include "oca_validator.h"
 
+#include "algorithms.h"
 #include "oca_compare.h"
 #include "oca_layout.h"
 #include "oca_variant.h"
@@ -188,15 +189,20 @@ static oca_result_t validate_toc_structure(
 }
 
 /**
- * @brief Compare a recomputed digest against a stored 64-byte hash field.
+ * @brief Compare a recomputed digest against a stored hash field.
  *
  * Runs in time independent of the contents, via the primitives in
- * oca_compare.h. The trailing bytes of the field are padding whose width
- * depends on the configured digest type; only the leading digest bytes are
- * compared, and the remainder is not interpreted.
+ * oca_compare.h. Only the leading digest bytes are compared. A TOC entry's
+ * hash field is compared this way alone, its remainder not interpreted; the
+ * manifest's payload fields go through compare_padded_digest(), which holds
+ * the remainder to zero.
  *
- * @param[in] field        The stored 64-byte hash field.
+ * @param[in] field        The stored hash field, OCA_LEN_HASH_FIELD bytes.
  * @param[in] digest       The recomputed digest.
+ * @param[in] digest_size  Its length, the leading part of @p field compared,
+ *                         from oca_hash_digest_size(). A size of zero, or one
+ *                         wider than the digest buffers, compares as a
+ *                         mismatch rather than as nothing.
  * @param[in] on_mismatch  Result code to return when they differ, so one
  *                         comparison serves the manifest, payload, chain, and
  *                         per-entry checks while each still reports its own
@@ -204,12 +210,81 @@ static oca_result_t validate_toc_structure(
  * @retval OCA_OK  Digest matches.
  * @return @p on_mismatch when it does not.
  */
-static oca_result_t compare_digest(const uint8_t *field,
-                                   const uint8_t digest[OCA_MANIFEST_HASH_DIGEST_SIZE],
-                                   oca_result_t on_mismatch)
+static oca_result_t compare_digest(const uint8_t *field, const uint8_t *digest,
+                                   size_t digest_size, oca_result_t on_mismatch)
 {
-    return oca_ct_diff(field, digest, OCA_MANIFEST_HASH_DIGEST_SIZE) != 0
+    if (digest_size == 0u || digest_size > OCA_HASH_MAX_DIGEST_SIZE) {
+        return on_mismatch;
+    }
+    return oca_ct_diff(field, digest, digest_size) != 0 ? on_mismatch : OCA_OK;
+}
+
+/**
+ * @brief Compare a digest against a manifest field that is zero past it.
+ *
+ * payload_hash and payload_hash_chain hold their digest at the start of the
+ * field and zeros after it (spec: payload_hash, "The unused bits in this field
+ * are 0x0"; payload_hash_chain, "all remaining bytes populated as 0x00"), as
+ * manifest_hash does. Holding the rest of the field to zero means a digest
+ * size read short fails here, on the digest bytes it left out, rather than
+ * comparing only part of the digest.
+ *
+ * @param[in] field        The stored hash field, OCA_LEN_HASH_FIELD bytes.
+ * @param[in] digest       The recomputed digest.
+ * @param[in] digest_size  Its length, from oca_hash_digest_size().
+ * @param[in] on_mismatch  Result code to return when they differ.
+ * @retval OCA_OK  The digest matches and the rest of the field is zero.
+ * @return @p on_mismatch otherwise.
+ */
+static oca_result_t compare_padded_digest(const uint8_t *field, const uint8_t *digest,
+                                          size_t digest_size, oca_result_t on_mismatch)
+{
+    oca_result_t r = compare_digest(field, digest, digest_size, on_mismatch);
+    if (r != OCA_OK) {
+        return r;
+    }
+    return oca_ct_any_nonzero(field + digest_size, OCA_LEN_HASH_FIELD - digest_size) != 0
         ? on_mismatch : OCA_OK;
+}
+
+/**
+ * @brief Digest a message with the payload's hash algorithm.
+ *
+ * Every payload digest — payload_hash, the chain and each entry hash — uses
+ * payload_hash_type, so one helper keeps the type and the digest size from
+ * ever disagreeing between them.
+ *
+ * @param[in]  cb      Callback table. cb->hash is checked before every
+ *                     digest, not only by the callers: the table can change
+ *                     between digests, and an unwired callback then fails
+ *                     closed instead of being called through NULL.
+ * @param[in]  hash    The payload's resolved hash algorithm.
+ * @param[in]  size    Its digest size, from oca_hash_digest_size(): read once
+ *                     by the caller, so the size written is the size the
+ *                     caller compares.
+ * @param[in]  msg     Bytes to digest.
+ * @param[in]  len     Length of @p msg.
+ * @param[out] digest  Receives @p size bytes.
+ * @retval OCA_OK                         Digest written.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE  The callback is unwired or could not
+ *                                        compute the digest, or @p size does
+ *                                        not fit @p digest.
+ * @return One of the two codes above; any failure the callback reports is
+ *         collapsed to OCA_FAIL_CALLBACK_UNAVAILABLE.
+ */
+static oca_result_t payload_digest(const oca_callbacks_t *cb,
+                                   const oca_hash_algorithm_t *hash, size_t size,
+                                   const uint8_t *msg, size_t len,
+                                   uint8_t digest[OCA_HASH_MAX_DIGEST_SIZE])
+{
+    if (size == 0u || size > OCA_HASH_MAX_DIGEST_SIZE) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    if (cb == 0 || cb->hash == 0) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    return cb->hash(hash->type, msg, len, digest, size) == OCA_OK
+        ? OCA_OK : OCA_FAIL_CALLBACK_UNAVAILABLE;
 }
 
 /**
@@ -239,16 +314,16 @@ static oca_result_t compare_digest(const uint8_t *field,
  * failure is only ever reported against payload bytes already tied to the
  * signed manifest.
  *
- * The digest occupies the leading OCA_MANIFEST_HASH_DIGEST_SIZE bytes of the
- * 64-byte entry hash field; the remainder is padding the library does not
- * interpret. The TOC is structurally validated before this runs, so the
- * offset and length reads are already known to be in bounds.
+ * The digest occupies the leading bytes of the 64-byte entry hash field, as
+ * many as payload_hash_type's digest size; the remainder is padding the
+ * library does not interpret. The TOC is structurally validated before this
+ * runs, so the offset and length reads are already known to be in bounds.
  *
  * @param[in] pt           Plaintext payload region.
  * @param[in] image_count  Validated entry count.
  * @param[in] toc_bytes    Validated TOC span in bytes.
  * @param[in] body         Manifest body holding the expected chain value.
- * @param[in] cb           Callback table. cb->sha256 is checked here as well
+ * @param[in] cb           Callback table. cb->hash is checked here as well
  *                         as at the public entry point, so a path that skipped
  *                         that check fails closed instead of calling through
  *                         NULL — on a part with code mapped at address zero, a
@@ -258,7 +333,10 @@ static oca_result_t compare_digest(const uint8_t *field,
  * @retval OCA_FAIL_PAYLOAD_ENTRY_HASH     The chain matches, but an entry's
  *                                         hash does not describe its image
  *                                         bytes.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   cb->sha256 failed or is unavailable.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   cb->hash failed or is unavailable.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  payload_hash_type names a digest this
+ *                                         build does not enable.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     payload_hash_type is reserved.
  * @return Otherwise the digest-comparison result for the chain or the first
  *         failing entry.
  */
@@ -266,11 +344,21 @@ static oca_result_t check_payload_hash_chain_and_entries(
     const uint8_t *pt, uint64_t image_count, size_t toc_bytes,
     const uint8_t *body, const oca_callbacks_t *cb)
 {
-    if (cb == 0 || cb->sha256 == 0) {
+    if (cb == 0 || cb->hash == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    uint8_t chain[OCA_MANIFEST_HASH_DIGEST_SIZE];
-    if (cb->sha256(pt, toc_bytes, chain) != OCA_OK) {
+    oca_result_t status;
+    const oca_hash_algorithm_t *hash =
+        oca_hash_algorithm(body[OCA_OFF_PAYLOAD_HASH_TYPE], &status);
+    if (hash == 0) {
+        return status;
+    }
+    const size_t size = oca_hash_digest_size(hash);
+    if (size == 0u) {
+        return OCA_FAIL_PAYLOAD_HASH_CHAIN;
+    }
+    uint8_t chain[OCA_HASH_MAX_DIGEST_SIZE];
+    if (payload_digest(cb, hash, size, pt, toc_bytes, chain) != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     oca_result_t entry_verdict = OCA_OK;
@@ -278,27 +366,28 @@ static oca_result_t check_payload_hash_chain_and_entries(
         const uint8_t *entry = pt + OCA_TOC_HEADER_SIZE + (size_t)i * OCA_TOC_ENTRY_SIZE;
         uint64_t off = oca_le_u64(entry + OCA_TOC_ENTRY_OFF_OFFSET);
         uint64_t len = oca_le_u64(entry + OCA_TOC_ENTRY_OFF_LENGTH);
-        uint8_t img_hash[OCA_MANIFEST_HASH_DIGEST_SIZE];
-        if (cb->sha256(pt + off, (size_t)len, img_hash) != OCA_OK) {
+        uint8_t img_hash[OCA_HASH_MAX_DIGEST_SIZE];
+        if (payload_digest(cb, hash, size, pt + off, (size_t)len, img_hash)
+            != OCA_OK) {
             return OCA_FAIL_CALLBACK_UNAVAILABLE;
         }
         if (entry_verdict == OCA_OK) {
             entry_verdict = compare_digest(entry + OCA_TOC_ENTRY_OFF_HASH,
-                                           img_hash,
+                                           img_hash, size,
                                            OCA_FAIL_PAYLOAD_ENTRY_HASH);
         }
-        uint8_t buf[2 * OCA_MANIFEST_HASH_DIGEST_SIZE];
-        for (unsigned k = 0u; k < OCA_MANIFEST_HASH_DIGEST_SIZE; ++k) {
+        uint8_t buf[2 * OCA_HASH_MAX_DIGEST_SIZE];
+        for (size_t k = 0u; k < size; ++k) {
             buf[k] = chain[k];
-            buf[OCA_MANIFEST_HASH_DIGEST_SIZE + k] = img_hash[k];
+            buf[size + k] = img_hash[k];
         }
-        if (cb->sha256(buf, sizeof buf, chain) != OCA_OK) {
+        if (payload_digest(cb, hash, size, buf, 2u * size, chain) != OCA_OK) {
             return OCA_FAIL_CALLBACK_UNAVAILABLE;
         }
     }
 
-    oca_result_t r = compare_digest(body + OCA_OFF_PAYLOAD_HASH_CHAIN, chain,
-                                    OCA_FAIL_PAYLOAD_HASH_CHAIN);
+    oca_result_t r = compare_padded_digest(body + OCA_OFF_PAYLOAD_HASH_CHAIN, chain, size,
+                                           OCA_FAIL_PAYLOAD_HASH_CHAIN);
     return r != OCA_OK ? r : entry_verdict;
 }
 
@@ -318,17 +407,19 @@ static oca_result_t check_payload_hash_chain_and_entries(
  * @param[in] cipher_len  Ciphertext length the plaintext was decrypted from,
  *                        bounding the TOC's payload_length; 0 for cleartext,
  *                        whose caller checks that field itself.
+ * @param[in] block_size  The cipher's block size, which bounds its padding;
+ *                        unread for cleartext.
  * @param[in] body        Manifest body holding the expected digests.
- * @param[in] cb          Callback table; cb->sha256 is required.
+ * @param[in] cb          Callback table; cb->hash is required.
  * @retval OCA_OK                Every plaintext check passed.
  * @retval OCA_FAIL_PAYLOAD_TOC  @p cipher_len does not exceed the TOC's
- *                               payload_length by 1..OCA_AES_BLOCK_SIZE.
+ *                               payload_length by 1..@p block_size.
  * @return Otherwise the first failing check's result — the structural,
  *         chain, and per-entry codes documented on the two functions it
  *         composes.
  */
 static oca_result_t check_plaintext_payload(
-    const uint8_t *pt, size_t pt_len, uint64_t cipher_len,
+    const uint8_t *pt, size_t pt_len, uint64_t cipher_len, size_t block_size,
     const uint8_t *body, const oca_callbacks_t *cb)
 {
     uint64_t image_count = 0u;
@@ -342,7 +433,7 @@ static oca_result_t check_plaintext_payload(
     if (cipher_len != 0u) {
         uint64_t toc_payload_len = oca_le_u64(pt + OCA_TOC_OFF_PAYLOAD_LENGTH);
         if (toc_payload_len >= cipher_len
-            || cipher_len - toc_payload_len > OCA_AES_BLOCK_SIZE) {
+            || cipher_len - toc_payload_len > block_size) {
             return OCA_FAIL_PAYLOAD_TOC;
         }
     }
@@ -361,7 +452,7 @@ static oca_result_t check_plaintext_payload(
  * @param[in] payload      Stored payload region, which is already plaintext.
  * @param[in] payload_len  Length of @p payload.
  * @param[in] body         Manifest body holding the expected digests.
- * @param[in] cb           Callback table. cb->sha256 is checked here as well
+ * @param[in] cb           Callback table. cb->hash is checked here as well
  *                         as at the public entry point, so a path that skipped
  *                         that check fails closed instead of calling through
  *                         NULL.
@@ -372,14 +463,17 @@ static oca_result_t check_plaintext_payload(
  *                                         exceeds the payload, or does not
  *                                         describe exactly the TOC region.
  * @retval OCA_FAIL_PAYLOAD_HASH           payload_hash mismatch over the TOC region.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   cb->sha256 failed or is unavailable.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   cb->hash failed or is unavailable.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  payload_hash_type names a digest this
+ *                                         build does not enable.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     payload_hash_type is reserved.
  * @return Otherwise the result of the shared plaintext checks.
  */
 static oca_result_t check_cleartext_payload(const uint8_t *payload, size_t payload_len,
                                             const uint8_t *body, const oca_callbacks_t *cb,
                                             oca_payload_plaintext_t *out_plaintext)
 {
-    if (cb == 0 || cb->sha256 == 0) {
+    if (cb == 0 || cb->hash == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     uint64_t hashed_len = oca_le_u64(body + OCA_OFF_PAYLOAD_HASHED_LENGTH);
@@ -387,12 +481,23 @@ static oca_result_t check_cleartext_payload(const uint8_t *payload, size_t paylo
         return OCA_FAIL_PAYLOAD_TOC;
     }
 
-    uint8_t digest[OCA_MANIFEST_HASH_DIGEST_SIZE];
-    if (cb->sha256(payload, (size_t)hashed_len, digest) != OCA_OK) {
+    oca_result_t r;
+    const oca_hash_algorithm_t *hash =
+        oca_hash_algorithm(body[OCA_OFF_PAYLOAD_HASH_TYPE], &r);
+    if (hash == 0) {
+        return r;
+    }
+    const size_t size = oca_hash_digest_size(hash);
+    if (size == 0u) {
+        return OCA_FAIL_PAYLOAD_HASH;
+    }
+    uint8_t digest[OCA_HASH_MAX_DIGEST_SIZE];
+    if (payload_digest(cb, hash, size, payload, (size_t)hashed_len, digest)
+        != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    oca_result_t r = compare_digest(body + OCA_OFF_PAYLOAD_HASH, digest,
-                                    OCA_FAIL_PAYLOAD_HASH);
+    r = compare_padded_digest(body + OCA_OFF_PAYLOAD_HASH, digest, size,
+                              OCA_FAIL_PAYLOAD_HASH);
     if (r != OCA_OK) {
         return r;
     }
@@ -415,13 +520,57 @@ static oca_result_t check_cleartext_payload(const uint8_t *payload, size_t paylo
         return OCA_FAIL_PAYLOAD_TOC;
     }
 
-    oca_result_t final = check_plaintext_payload(payload, payload_len, 0u, body, cb);
+    oca_result_t final = check_plaintext_payload(payload, payload_len, 0u, 0u, body, cb);
     if (final == OCA_OK) {
         report_plaintext(out_plaintext, payload, payload_len);
     }
     return final;
 }
 
+/**
+ * @brief The input_key_source field of payload_encryption_control.
+ *
+ * Read in one place, so the algorithm check and the decryption input cannot
+ * disagree about which source the manifest names.
+ *
+ * @param[in] body  Manifest body.
+ * @return The three-bit source, shifted down to its value.
+ */
+static oca_key_source_t input_key_source(const uint8_t *body)
+{
+    uint16_t control = oca_le_u16(body + OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL);
+    return (oca_key_source_t)((control & OCA_ENCRYPTION_INPUT_KEY_SOURCE_MASK)
+                              >> OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT);
+}
+
+/**
+ * @brief Resolve where the payload's input key comes from.
+ *
+ * The source must be one this build enables. For the pre-shared source,
+ * encryption_shared_secret_select must also name a slot the format defines.
+ * Other sources do not read that field.
+ *
+ * @param[in] body  Manifest body.
+ * @retval OCA_OK                          The source is enabled, and any slot
+ *                                         it selects is defined.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  The format defines the source; this
+ *                                         build does not enable it.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     The source or the slot holds a value
+ *                                         the format reserves.
+ * @return One of the codes above.
+ */
+static oca_result_t input_key_status(const uint8_t *body)
+{
+    const oca_key_source_t source = input_key_source(body);
+    const oca_result_t status = oca_key_source_status(source);
+    if (status == OCA_OK && source == OCA_KEY_SOURCE_PRESHARED) {
+        return oca_secret_select_status(
+            oca_le_u16(body + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT));
+    }
+    return status;
+}
+
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief Validate an encrypted payload: authenticate, decrypt, then validate.
  *
@@ -436,7 +585,7 @@ static oca_result_t check_cleartext_payload(const uint8_t *payload, size_t paylo
  * @param[in] ciphertext  Stored ciphertext region.
  * @param[in] available   Bytes readable at @p ciphertext.
  * @param[in] body        Manifest body holding the digests, IV, and KDF input.
- * @param[in] cb          Callback table. cb->sha256 and cb->decrypt_payload are
+ * @param[in] cb          Callback table. cb->hash and cb->decrypt_payload are
  *                        both checked here, so a path that skipped the public
  *                        entry point's check fails closed instead of calling
  *                        through NULL.
@@ -450,6 +599,12 @@ static oca_result_t check_cleartext_payload(const uint8_t *payload, size_t paylo
  * @retval OCA_FAIL_PAYLOAD_TOC            payload_hashed_length is unusable.
  * @retval OCA_FAIL_PAYLOAD_HASH           Ciphertext hash mismatch, detected
  *                                         BEFORE any decryption.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  payload_hash_type, the cipher, the
+ *                                         input key source or the KDF names an
+ *                                         algorithm this build does not
+ *                                         enable.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     One of them, or the pre-shared
+ *                                         secret slot, holds a reserved value.
  * @retval OCA_FAIL_DECRYPT                Derivation, cipher, or padding failure.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   A required callback is unavailable.
  * @return Otherwise the result of the shared plaintext checks.
@@ -458,7 +613,7 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
                                             const uint8_t *body, const oca_callbacks_t *cb,
                                             oca_payload_plaintext_t *out_plaintext)
 {
-    if (cb == 0 || cb->sha256 == 0) {
+    if (cb == 0 || cb->hash == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     uint64_t cipher_len = oca_le_u64(body + OCA_OFF_PAYLOAD_HASHED_LENGTH);
@@ -479,32 +634,51 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
     }
 
     /* 1. Verify payload_hash over the ciphertext BEFORE any decryption. */
-    uint8_t digest[OCA_MANIFEST_HASH_DIGEST_SIZE];
-    if (cb->sha256(ciphertext, (size_t)cipher_len, digest) != OCA_OK) {
+    oca_result_t r;
+    const oca_hash_algorithm_t *hash =
+        oca_hash_algorithm(body[OCA_OFF_PAYLOAD_HASH_TYPE], &r);
+    if (hash == 0) {
+        return r;
+    }
+    const size_t size = oca_hash_digest_size(hash);
+    if (size == 0u) {
+        return OCA_FAIL_PAYLOAD_HASH;
+    }
+    uint8_t digest[OCA_HASH_MAX_DIGEST_SIZE];
+    if (payload_digest(cb, hash, size, ciphertext, (size_t)cipher_len, digest)
+        != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    oca_result_t r = compare_digest(body + OCA_OFF_PAYLOAD_HASH, digest,
-                                    OCA_FAIL_PAYLOAD_HASH);
+    r = compare_padded_digest(body + OCA_OFF_PAYLOAD_HASH, digest, size,
+                              OCA_FAIL_PAYLOAD_HASH);
     if (r != OCA_OK) {
         return r;
     }
 
-    /* Only plain AES-CBC ciphers (AES-128-CBC / AES-256-CBC) are implemented;
-     * reject any other encryption_type (CBC-HMAC composite, AEAD, unknown)
-     * before touching the ciphertext. */
-    uint8_t enc_type = body[OCA_OFF_ENCRYPTION_TYPE];
-    if (enc_type != OCA_ENCRYPTION_TYPE_AES_128_CBC &&
-        enc_type != OCA_ENCRYPTION_TYPE_AES_256_CBC) {
-        return OCA_FAIL_DECRYPT;
+    /* The payload's algorithms were resolved before anything was hashed; each
+     * is resolved again at the point of use, from the value the decryption
+     * input will carry, so the callback cannot be handed one this build does
+     * not enable. */
+    const oca_encryption_type_t enc_type = body[OCA_OFF_ENCRYPTION_TYPE];
+    const oca_cipher_algorithm_t *cipher = oca_cipher_algorithm(enc_type, &r);
+    if (cipher == 0) {
+        return r;
+    }
+    r = input_key_status(body);
+    if (r != OCA_OK) {
+        return r;
+    }
+    const oca_kdf_t kdf = oca_le_u16(body + OCA_OFF_ENCRYPTION_KDF);
+    r = oca_kdf_status(kdf);
+    if (r != OCA_OK) {
+        return r;
     }
 
     /* 2. Derive + decrypt via the host callback — only now, on authenticated
-     * ciphertext. AES block-cipher modes such as CBC require the ciphertext to
-     * be a whole number of 16-byte blocks; enforce that here (a shared
-     * invariant for block-based modes) rather than in any one crypto backend.
-     * Stream modes (CTR / GCM / GCM-SIV) operate on arbitrary lengths and would
-     * not gate on this — a future mode would apply it per encryption_type. */
-    if ((cipher_len % OCA_AES_BLOCK_SIZE) != 0u) {
+     * ciphertext. A block mode needs the ciphertext to be a whole number of
+     * blocks; that shared invariant is enforced here, from the cipher's row,
+     * rather than in any one crypto backend. */
+    if ((cipher_len % cipher->block_size) != 0u) {
         return OCA_FAIL_DECRYPT;
     }
     if (cb->decrypt_payload == 0) {
@@ -512,16 +686,15 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
     }
     const uint8_t *plaintext = 0;
     size_t plaintext_len = 0u;
-    /* Every value the callback reads, gathered from fields this function has
-     * already decoded. enc_type is known good here — the check above rejected
-     * anything outside the implemented ciphers, so the callback cannot be handed
-     * a cipher it has no case for. */
+    /* Every algorithm the callback reads is the value resolved above. */
     oca_decrypt_input_t in;
     in.ciphertext     = ciphertext;
     in.ciphertext_len = (size_t)cipher_len;
     in.iv             = body + OCA_OFF_ENCRYPTION_IV;
     in.kdf_input      = body + OCA_OFF_ENCRYPTION_KDF_INPUT;
-    in.cipher         = (oca_encryption_type_t)enc_type;
+    in.cipher         = enc_type;
+    in.kdf            = kdf;
+    in.key_source     = input_key_source(body);
     in.secret_select  = oca_le_u16(body + OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT);
     r = cb->decrypt_payload(&in, &plaintext, &plaintext_len);
     /* Codes that name a specific cause pass through by name; everything else
@@ -540,12 +713,14 @@ static oca_result_t check_encrypted_payload(const uint8_t *ciphertext, size_t av
     /* 3. Validate the recovered plaintext, and report where it is only if every
      * check over it passed. The plaintext address is the callback's choice and is
      * not re-computable afterwards, so this is the one place it can be captured. */
-    r = check_plaintext_payload(plaintext, plaintext_len, cipher_len, body, cb);
+    r = check_plaintext_payload(plaintext, plaintext_len, cipher_len,
+                                cipher->block_size, body, cb);
     if (r == OCA_OK) {
         report_plaintext(out_plaintext, plaintext, plaintext_len);
     }
     return r;
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 /**
  * @brief Read whether the payload is encrypted, and how long the stored bytes are.
@@ -572,37 +747,59 @@ static void read_payload_shape(const uint8_t *body, bool *out_encrypted,
 }
 
 /**
- * @brief Refuse a payload whose declared algorithms this library cannot compute.
+ * @brief Refuse a payload whose declared algorithms this build does not enable.
  *
  * payload_hash_type selects the digest of payload_hash, of the chain and of
- * every entry hash, and only SHA2-256 is computed here. An encrypted payload
- * also names where its key comes from and how it is derived, and the decrypt
- * contract defines one of each: the pre-shared secret, through SP 800-108r1
- * counter mode with HMAC-SHA-256. Refused before any digest or decryption, so a
- * payload that is sound for another Consumer is not reported as corrupt.
+ * every entry hash. An encrypted payload also names its cipher, where its input key comes from and
+ * how the payload key is derived from it; each is resolved against the build
+ * configuration, and a pre-shared secret slot against the eight the format
+ * names. Refused before any digest or decryption, so a payload that is sound
+ * for another Consumer is not reported as corrupt.
  *
  * @param[in] body       Manifest body.
  * @param[in] encrypted  Whether the payload is encrypted.
- * @retval OCA_OK                          Every declared algorithm is supported.
- * @retval OCA_FAIL_UNSUPPORTED_ALGORITHM  One is not.
+ * @retval OCA_OK                          Every declared algorithm is enabled.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  One is defined but not enabled.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     One, or the secret slot, holds a
+ *                                         value the format reserves.
+ * @return The first refusal among the payload hash type, the cipher, the key
+ *         source and its slot, and the KDF, always one of the codes above.
  */
 static oca_result_t check_payload_algorithms(const uint8_t *body, bool encrypted)
 {
-    if (body[OCA_OFF_PAYLOAD_HASH_TYPE] != OCA_HASH_TYPE_SHA2_256) {
-        return OCA_FAIL_UNSUPPORTED_ALGORITHM;
+    oca_result_t status;
+    if (oca_hash_algorithm(body[OCA_OFF_PAYLOAD_HASH_TYPE], &status) == 0) {
+        return status;
     }
     if (!encrypted) {
         return OCA_OK;
     }
-    uint16_t control = oca_le_u16(body + OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL);
-    unsigned key_source = (control & OCA_ENCRYPTION_INPUT_KEY_SOURCE_MASK)
-                          >> OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT;
-    if (key_source != OCA_ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED
-        || oca_le_u16(body + OCA_OFF_ENCRYPTION_KDF)
-               != OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256) {
-        return OCA_FAIL_UNSUPPORTED_ALGORITHM;
+    if (oca_cipher_algorithm(body[OCA_OFF_ENCRYPTION_TYPE], &status) == 0) {
+        return status;
     }
-    return OCA_OK;
+    status = input_key_status(body);
+    if (status != OCA_OK) {
+        return status;
+    }
+    return oca_kdf_status(oca_le_u16(body + OCA_OFF_ENCRYPTION_KDF));
+}
+
+oca_result_t oca_check_payload_algorithms(const uint8_t *body)
+{
+    if (body == 0) {
+        return OCA_FAIL_INVALID_ARG;
+    }
+    oca_result_t status;
+    if (oca_variant_for_body(body, &status) == 0) {
+        return status;
+    }
+    bool encrypted;
+    uint64_t declared_span;
+    read_payload_shape(body, &encrypted, &declared_span);
+    if (!encrypted && declared_span == 0u) {
+        return OCA_OK;
+    }
+    return check_payload_algorithms(body, encrypted);
 }
 
 oca_result_t oca_check_payload_at(const uint8_t *body,
@@ -646,7 +843,7 @@ oca_result_t oca_check_payload_at(const uint8_t *body,
     if (payload == 0) {
         return OCA_FAIL_INVALID_ARG;
     }
-    if (cb == 0 || cb->sha256 == 0) {
+    if (cb == 0 || cb->hash == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
     if (declared_span > payload_len) {
@@ -654,7 +851,11 @@ oca_result_t oca_check_payload_at(const uint8_t *body,
     }
 
     if (encrypted) {
+#if OCA_CFG_SECURE_BOOT_DISABLED
+        return OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT;
+#else
         return check_encrypted_payload(payload, payload_len, body, cb, out_plaintext);
+#endif
     }
     return check_cleartext_payload(payload, (size_t)declared_span, body, cb,
                                    out_plaintext);
@@ -692,8 +893,8 @@ oca_result_t oca_check_payload(const uint8_t *body, size_t body_length,
         return OCA_FAIL_TRUNCATED;
     }
 
-    /* The manifest states where its payload lives, and if that is not directly after 
-     * the body then this entry point cannot be correct for this manifest. 
+    /* The manifest states where its payload lives, and if that is not directly after
+     * the body then this entry point cannot be correct for this manifest.
      *
      * A caller whose payload genuinely lives elsewhere resolves it with
      * oca_locate_payload() (which needs storage bounds this entry point does not
@@ -884,7 +1085,7 @@ oca_result_t oca_payload_encryption_info(const uint8_t *body,
         /* A cleartext manifest leaves these zero; report that rather than
          * whatever the fields happen to hold, so a caller can branch on
          * `encrypted` alone. */
-        out->type          = (uint8_t)OCA_ENCRYPTION_TYPE_NONE;
+        out->type          = OCA_ENCRYPTION_TYPE_NONE;
         out->secret_select = 0u;
         return OCA_OK;
     }

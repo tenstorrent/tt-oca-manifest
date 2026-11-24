@@ -65,6 +65,9 @@ validator integration tests, which skip without it):
   which OpenSSL provides from 3.5; with an older OpenSSL its build stops with the
   reason, and the integration tests skip saying so. Ubuntu 24.04's `libssl-dev`
   is 3.0.
+- **CMake 3.20+ and Ninja**, for the tests that build the
+  [validator integration guide](validators/oca/INTEGRATION.md)'s build snippets,
+  which skip without them.
 - **doxygen**, for the documentation gate test, which skips without it. Any
   current release works **except 1.9.8** — the version Ubuntu 24.04 LTS currently
   packages — which falsely reports documented functions as undocumented
@@ -314,7 +317,7 @@ secure_boot: 1
 encrypted_payload: 1
 encryption_type: 0x02                      # 0x02 = AES-256-CBC (default), 0x01 = AES-128-CBC
 encryption_key_derivation_function: 0x0001 # SP 800-108r1 CTR HMAC-SHA-256
-encryption_shared_secret_select: 1         # which provisioned secret (indices start at 1)
+encryption_shared_secret_select: 1         # which provisioned secret, 1 to 8
 encryption_secret: "<64 hex chars>"        # 32-byte secret; OR encryption_secret_file: <path>
 encryption_iv: "<32 hex chars>"            # 16-byte IV — optional, generated if omitted
 encryption_kdf_input: "<128 hex chars>"    # 64-byte KDF context — optional, generated if omitted
@@ -503,6 +506,13 @@ with Classic excluded (`both`, the default, accepts every variant); an
 excluded variant is then reported as an unsupported-variant failure rather
 than validated. This is the only build-time variant choice — there is no
 per-variant source fork.
+
+A part that does not use secure boot can build the validator with a hash and
+nothing else: `make -C validators/oca hash-only` builds
+`validators/oca/test/build_configs/hash_only.toml`, which checks integrity,
+verifies no signature, and must say so with `[secure_boot] disabled = true`.
+See [`validators/oca/INTEGRATION.md`](validators/oca/INTEGRATION.md) for what
+such a build refuses.
 
 #### Hardening, and where it stops
 
@@ -698,8 +708,8 @@ pytest -vvv --cov=tt_boot_manifest --cov-report=html
 ```
 
 A plain `pytest` run needs no host setup beyond the Python dependencies: the OCA
-C-validator tests skip, with the reason, when a C toolchain, `make` or `pkg-config` is
-absent, or when the OpenSSL `pkg-config` finds is older than 3.5. Set
+C-validator tests skip, with the reason, when a C toolchain, `make`, `pkg-config`,
+`cmake` or `ninja` is absent, or when the OpenSSL `pkg-config` finds is older than 3.5. Set
 `TT_BOOT_MANIFEST_REQUIRE_VALIDATOR=1` to make those skips failures, as CI does.
 
 ### Test Organization
@@ -719,6 +729,9 @@ Tests are grouped by the side they exercise:
 **C consumer/validator:**
 - **`tests/test_oca_c_validator_integration.py`** — packs fixtures and round-trips them through the compiled `oca-validate` CLI (skips, with the reason, if `make` or `pkg-config` is unavailable or OpenSSL is older than 3.5)
 - **`tests/test_oca_c_validator_layout_sync.py`** — fails on any producer↔consumer layout drift
+- **`tests/test_oca_integration_build_snippets.py`** — builds the CMake, Make and shell snippets in [validators/oca/INTEGRATION.md](validators/oca/INTEGRATION.md)'s "Configuring the build" section as written, in an adopter project that vendors `lib/`, and checks that each stays incremental and follows its configuration (skips, with the reason, without `cmake` or `ninja`)
+- **`tests/test_oca_build_guard.py`** — compiles the library and an application against different build configuration headers and requires the link to fail on the build guard, in C and C++ and with unused sections collected; and a missing header to stop the compile naming the generator
+- **`tests/test_oca_validator_version.py`** — holds the validator library's version macros in `oca_validator.h` to the package version in `pyproject.toml` and `tt_boot_manifest.__version__`
 - `make -C validators/oca check` — the validator's own C unit tests + fixture round-trips (see [validators/oca/README.md](validators/oca/README.md))
 
 Tests use the installed `tt_boot_manifest` package, so any changes to source files require the package to be installed/reinstalled (use `pip install -e .` for development mode).

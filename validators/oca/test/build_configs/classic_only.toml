@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+#
+# Build configuration for the `classic-only` target: lib/oca_config.toml with
+# PQC compiled out: OCA-PQC manifests are refused with
+# OCA_FAIL_UNSUPPORTED_VARIANT. ML-DSA-87 is off because no Classic manifest
+# carries a PQC signature.
+
+[variants]
+classic = true
+pqc = false
+
+[limits]
+toc_max_images = 256
+
+[hardening]
+recheck_security_version = true
+
+[secure_boot]
+disabled = false
+
+[hash]
+sha2_256 = true
+
+[signature_classic]
+rsa_3072_pkcs1v15_sha256 = true
+ecdsa_p256_sha256 = true
+
+[signature_pqc]
+ml_dsa_87 = false
+
+[der]
+rsa_public_key = true
+ecdsa_signature = true
+
+[encryption_cipher]
+aes_128_cbc = true
+aes_256_cbc = true
+
+[encryption_kdf]
+sp800_108_hmac_sha256 = true
+
+[encryption_key_source]
+preshared = true

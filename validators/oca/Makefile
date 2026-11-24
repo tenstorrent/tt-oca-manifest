@@ -9,7 +9,8 @@
 #
 # Targets:
 #   all        — default; builds the test CLI (depends on lib + test).
-#   lib        — builds the host static archive build/lib/liboca_validator.a.
+#   lib        — builds the static archive build/lib/liboca_validator.a, for
+#                the host unless CC, AR and EXTRA_CFLAGS name a target.
 #                Library translation units are compiled freestanding to prove
 #                target portability; the archive itself is for the host test
 #                CLI and CI, not a release artifact.
@@ -19,9 +20,28 @@
 #                test/fixtures/configs/*.yaml via the project's Python packer
 #                and validates the resulting binary against its .flags file.
 #   clean      — removes build/.
+#
+# Build configuration:
+#   Every compile-time setting of the library comes from one TOML file,
+#   CONFIG on the make command line (default lib/oca_config.toml; relative
+#   paths resolve from this directory). lib/scripts/gen_config.py generates
+#   $(BUILD)/gen/oca_config.h from it before anything compiles:
+#     make CONFIG=path/to/board.toml
+#   A configuration replaces the default rather than adjusting it, so it states
+#   every required setting. The library refuses the settings' former -D forms.
 
 CC          ?= cc
+# A cross build names the archiver that matches its compiler, such as
+# AR=riscv64-unknown-elf-ar.
+AR          ?= ar
 PROJECT_ROOT := $(abspath $(CURDIR)/../..)
+
+# The generator needs Python 3.11 or later and nothing else, so it takes PYTHON
+# only when the caller named one, and python3 otherwise. Resolved before PYTHON
+# is reassigned below, so the search there does not decide it.
+ifeq ($(origin CONFIG_PYTHON),undefined)
+CONFIG_PYTHON := $(or $(PYTHON),python3)
+endif
 
 # Resolve a Python interpreter that can import tt_boot_manifest.
 #
@@ -53,23 +73,32 @@ DOC_WARNINGS := $(shell $(CC) -Wdocumentation -Werror -x c -fsyntax-only /dev/nu
                   >/dev/null 2>&1 \
                   && echo "-Wdocumentation -Wdocumentation-unknown-command")
 
-CFLAGS       := -std=c99 -Wall -Wextra -Werror -pedantic $(DOC_WARNINGS)
+# -Wundef: an undefined macro in #if reads as 0, so a misspelled setting, or a
+# setting's former name, would silently compile its feature out.
+CFLAGS       := -std=c99 -Wall -Wextra -Werror -pedantic -Wundef $(DOC_WARNINGS)
 
-# Single hook for compile-time feature gates — variant restrictions today
-# (e.g. -DOCA_SUPPORT_PQC=0), and whatever algorithm/feature toggles get added
-# later. Folded into both the library and the CLI compiles. Empty by default
-# (every variant/feature enabled). Pass your own on the command line:
-#   make EXTRA_CFLAGS="-DOCA_SUPPORT_PQC=0 -DOCA_SUPPORT_SOME_ALGO=0"
-# The variant-gated targets below append their gate to this rather than
-# replacing it, so caller-supplied gates always survive.
+# Extra compiler flags for the library and CLI compiles: sanitizers, warnings,
+# optimization. Library settings belong in the build configuration (CONFIG),
+# not here; the library refuses their -D forms.
 EXTRA_CFLAGS ?=
 
 # -MMD -MP: emit per-object header-dependency files (.d) so a header edit
 # rebuilds every object that includes it (prevents stale-object ABI mismatches).
 DEPFLAGS     := -MMD -MP
 
+BUILD        := build
+LIB_BUILD    := $(BUILD)/lib
+TEST_BUILD   := $(BUILD)/test
+FIXTURE_BUILD := $(BUILD)/fixtures
+GEN_BUILD    := $(BUILD)/gen
+
+# Assigned with :=, so an unrelated CONFIG in the environment cannot choose the
+# configuration; a CONFIG on the make command line still overrides it.
+CONFIG       := lib/oca_config.toml
+CONFIG_HEADER := $(GEN_BUILD)/oca_config.h
+
 LIB_CFLAGS   := $(CFLAGS) -ffreestanding -nostdlib -fno-builtin -Os \
-                -Ilib $(EXTRA_CFLAGS) $(DEPFLAGS)
+                -Ilib -I$(GEN_BUILD) $(EXTRA_CFLAGS) $(DEPFLAGS)
 
 # OpenSSL discovery via pkg-config (macOS Homebrew, Linux distros). The CLI
 # tests need it for SHA-256 + signature verification. Override OPENSSL_CFLAGS
@@ -85,25 +114,31 @@ OPENSSL_LIBS   ?= $(shell pkg-config --libs openssl 2>/dev/null || echo "-lcrypt
 # and the unit tests do not use OpenSSL and are not gated.
 OPENSSL_MIN_VERSION ?= 3.5.0
 
-TEST_CFLAGS  := $(CFLAGS) -Ilib -Itest $(OPENSSL_CFLAGS) $(EXTRA_CFLAGS) $(DEPFLAGS)
+TEST_CFLAGS  := $(CFLAGS) -Ilib -I$(GEN_BUILD) -Itest $(OPENSSL_CFLAGS) \
+                $(EXTRA_CFLAGS) $(DEPFLAGS)
 TEST_LIBS    := $(OPENSSL_LIBS)
-
-BUILD        := build
-LIB_BUILD    := $(BUILD)/lib
-TEST_BUILD   := $(BUILD)/test
-FIXTURE_BUILD := $(BUILD)/fixtures
 
 # Flag-change detection.
 #
 # make decides what to rebuild from file timestamps, never from the command line
-# it last used. So changing EXTRA_CFLAGS — the documented hook for
-# -DOCA_TOC_MAX_IMAGES, -DOCA_SUPPORT_PQC=0 and the rest — silently reuses
-# objects compiled with the PREVIOUS value, yielding a binary that does not match
-# the flags you asked for. That has produced wrong test verdicts.
+# it last used. So changing EXTRA_CFLAGS, or the compiler, silently reuses
+# objects compiled with the PREVIOUS ones, yielding a binary that does not match
+# what you asked for. That has produced wrong test verdicts, and has put a host
+# object into a cross-compiled archive.
 #
-# Record the flags in a stamp file and make every object depend on it. The stamp
-# is rewritten ONLY when the flags actually differ, so an unchanged build stays
-# fully incremental.
+# Record the compiler and the flags in a stamp file and make every object depend
+# on it. The compiler is recorded as its command, the target it builds for and
+# its version line, so CC=cc still rebuilds when cc names another compiler. The
+# stamp is rewritten ONLY when this record actually differs, so an unchanged
+# build stays fully incremental. The generated configuration header works the
+# same way: it is regenerated on every build but rewritten only when its content
+# changes, so switching CONFIG, or editing the file it names, rebuilds exactly
+# when it must. The stamp recipes quote their text with single quotes, so any in
+# the version line are dropped.
+CC_IDENTITY  := $(CC) | $(shell $(CC) -dumpmachine 2>/dev/null) \
+                | $(shell $(CC) --version 2>/dev/null | head -n 1 | tr -d "'")
+LIB_STAMP_TEXT  := $(CC_IDENTITY) | $(LIB_CFLAGS)
+TEST_STAMP_TEXT := $(CC_IDENTITY) | $(TEST_CFLAGS)
 LIB_STAMP    := $(LIB_BUILD)/.cflags
 TEST_STAMP   := $(TEST_BUILD)/.cflags
 
@@ -139,42 +174,57 @@ check: unit_test fixture_sweep
 #
 # A single library normally handles every variant — the manifest magic selects
 # one at runtime. A consumer that must NEVER accept a given variant (e.g., a
-# pre-PQC ROM) can compile it out with the OCA_SUPPORT_* gates; the resolver
-# then reports UNSUPPORTED_VARIANT for the excluded magic. These targets build
-# the CLI three ways into isolated build dirs so the gate can be exercised:
-#   both         — every variant (identical to the default `all`).
-#   classic-only — PQC compiled out (-DOCA_SUPPORT_PQC=0).
-#   pqc-only     — Classic compiled out (-DOCA_SUPPORT_CLASSIC=0).
-.PHONY: both classic-only pqc-only
+# pre-PQC ROM) turns it off in [variants] of its build configuration; the
+# resolver then reports UNSUPPORTED_VARIANT for the excluded magic. These
+# targets build the CLI three ways into isolated build dirs so that setting can
+# be exercised:
+#   both         — every variant (the default configuration).
+#   classic-only — PQC compiled out (test/build_configs/classic_only.toml).
+#   pqc-only     — Classic compiled out (test/build_configs/pqc_only.toml).
+# A fourth builds the least configuration the library accepts:
+#   hash-only    — integrity only, no secure boot
+#                  (test/build_configs/hash_only.toml).
+.PHONY: both classic-only pqc-only hash-only
 
 both:
-	$(MAKE) BUILD=build/both all
+	$(MAKE) BUILD=build/both CONFIG=lib/oca_config.toml all
 
 classic-only:
-	$(MAKE) BUILD=build/classic-only EXTRA_CFLAGS="$(EXTRA_CFLAGS) -DOCA_SUPPORT_PQC=0" all
+	$(MAKE) BUILD=build/classic-only CONFIG=test/build_configs/classic_only.toml all
 
 pqc-only:
-	$(MAKE) BUILD=build/pqc-only EXTRA_CFLAGS="$(EXTRA_CFLAGS) -DOCA_SUPPORT_CLASSIC=0" all
+	$(MAKE) BUILD=build/pqc-only CONFIG=test/build_configs/pqc_only.toml all
+
+hash-only:
+	$(MAKE) BUILD=build/hash-only CONFIG=test/build_configs/hash_only.toml all
 
 # Always evaluated, but only writes when the flags differ — so it does not
 # invalidate objects on every invocation.
 .PHONY: FORCE
 FORCE:
 
+# Regenerated on every build from CONFIG, but rewritten only when its content
+# changes. An invalid configuration stops the build here, before any compile,
+# with the generator naming each problem. -I runs the generator in isolated
+# mode, so PYTHONPATH and the current directory cannot replace the
+# standard-library modules it imports.
+$(CONFIG_HEADER): FORCE | $(GEN_BUILD)
+	@$(CONFIG_PYTHON) -I lib/scripts/gen_config.py --config $(CONFIG) --out $@
+
 $(LIB_STAMP): FORCE | $(LIB_BUILD)
-	@printf '%s' '$(LIB_CFLAGS)' | cmp -s - $@ 2>/dev/null \
-		|| { printf '%s' '$(LIB_CFLAGS)' > $@; \
-		     echo "flags changed -> rebuilding lib objects"; }
+	@printf '%s' '$(LIB_STAMP_TEXT)' | cmp -s - $@ 2>/dev/null \
+		|| { printf '%s' '$(LIB_STAMP_TEXT)' > $@; \
+		     echo "compiler or flags changed -> rebuilding lib objects"; }
 
 $(TEST_STAMP): FORCE | $(TEST_BUILD)
-	@printf '%s' '$(TEST_CFLAGS)' | cmp -s - $@ 2>/dev/null \
-		|| { printf '%s' '$(TEST_CFLAGS)' > $@; \
-		     echo "flags changed -> rebuilding test objects"; }
+	@printf '%s' '$(TEST_STAMP_TEXT)' | cmp -s - $@ 2>/dev/null \
+		|| { printf '%s' '$(TEST_STAMP_TEXT)' > $@; \
+		     echo "compiler or flags changed -> rebuilding test objects"; }
 
-$(LIB_BUILD)/%.o: lib/%.c $(LIB_STAMP) | $(LIB_BUILD)
+$(LIB_BUILD)/%.o: lib/%.c $(LIB_STAMP) $(CONFIG_HEADER) | $(LIB_BUILD)
 	$(CC) $(LIB_CFLAGS) -c $< -o $@
 
-$(TEST_BUILD)/%.o: test/%.c $(TEST_STAMP) | $(TEST_BUILD)
+$(TEST_BUILD)/%.o: test/%.c $(TEST_STAMP) $(CONFIG_HEADER) | $(TEST_BUILD)
 	$(CC) $(TEST_CFLAGS) -c $< -o $@
 
 # Pull in auto-generated header dependencies (.d) emitted by -MMD, so editing a
@@ -185,7 +235,7 @@ $(LIB_ARCHIVE): $(LIB_OBJS) | $(LIB_BUILD)
 	@if [ -z "$(LIB_OBJS)" ]; then \
 		echo "lib: no library sources yet — skipping archive"; \
 	else \
-		ar rcs $@ $(LIB_OBJS); \
+		$(AR) rcs $@ $(LIB_OBJS); \
 		echo "lib: built $@"; \
 	fi
 
@@ -249,7 +299,7 @@ fixture_sweep: $(TEST_CLI) | $(FIXTURE_BUILD)
 	if [ $$found -eq 0 ]; then echo "fixture_sweep: no fixtures yet"; \
 	else echo "$$pass/$$found passed"; [ $$fail -eq 0 ]; fi
 
-$(LIB_BUILD) $(TEST_BUILD) $(FIXTURE_BUILD):
+$(LIB_BUILD) $(TEST_BUILD) $(FIXTURE_BUILD) $(GEN_BUILD):
 	@mkdir -p $@
 
 clean:

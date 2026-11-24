@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 /**
  * @file
- * @brief Little-endian field readers shared by the structural checks.
+ * @brief Little-endian field readers, and the one signing-description check,
+ *        shared by the structural and crypto checks.
  *
  * The manifest packs its integers little-endian at arbitrary offsets, so every
  * field read goes through one of these rather than a cast: the byte-order
@@ -66,5 +67,52 @@ static inline uint64_t oca_le_u64(const uint8_t *p)
 {
     return (uint64_t)oca_le_u32(p) | ((uint64_t)oca_le_u32(p + 4) << 32);
 }
+
+#if !OCA_CFG_SECURE_BOOT_DISABLED
+/** @brief One signature class's signature and public key, as checked. */
+typedef struct oca_class_blobs {
+    oca_crypto_blob_t signature;   /**< The class's signature field. */
+    oca_crypto_blob_t public_key;  /**< The class's public key field. */
+} oca_class_blobs_t;
+
+/**
+ * @brief Hold one signature class's signing description to this build.
+ *
+ * The algorithm and both encodings are resolved against the format and the
+ * build's portfolio first, then the declared sizes against the algorithm and
+ * the fields, then the padding past them. oca_check_signing_description() runs
+ * it for each enforced class, and every check that hands a class's key or
+ * signature to a callback runs it again at that point and hands over the blobs
+ * it returns. Each signing field is read once, so the values a callback
+ * receives are the values this check held to the build, whatever the body
+ * holds by then.
+ *
+ * @p out is emptied before anything is read and filled only on OCA_OK: no
+ * bytes, no length and no algorithm. A single fault that skips a caller's
+ * refusal therefore hands a callback empty blobs, never fields nothing
+ * checked.
+ *
+ * @param[in]  body  Whole variant body.
+ * @param[in]  algo  Which class's description to check.
+ * @param[out] out   Receives the class's signature and public key blobs on
+ *                   OCA_OK, and empty blobs otherwise. Required.
+ * @retval OCA_OK                            The description is consistent.
+ * @retval OCA_FAIL_MAGIC                    The body names no known variant.
+ * @retval OCA_FAIL_UNSUPPORTED_VARIANT      The body's variant is compiled out.
+ * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL  @p algo is the PQC class and the
+ *                                           variant carries no PQC fields.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED    The algorithm, an integrator
+ *                                           encoding, or a DER encoding it uses
+ *                                           is not enabled in this build.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED       The signature_type or an encoding
+ *                                           is reserved.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE        A size or encoding does not fit the
+ *                                           algorithm, or padding is not zero.
+ * @return The first failing step's result, always one of the codes above.
+ */
+oca_result_t oca_check_class_description(const uint8_t *body,
+                                         oca_key_algorithm_t algo,
+                                         oca_class_blobs_t *out);
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 #endif /* OCA_PARSER_H */

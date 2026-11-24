@@ -5,6 +5,10 @@
 # Only the OCA validator tree under validators/oca/ has C sources;
 # the rest of the repo is Python. clangd needs a few hints for the OCA
 # tree because no compile_commands.json is generated for it.
+#
+# The library includes oca_config.h, which the build generates from the build
+# configuration file into build/gen/. Build once (`make -C validators/oca`)
+# before clangd can resolve it.
 
 If:
   PathMatch: validators/oca/.*\.(c|h)$
@@ -16,5 +20,6 @@ CompileFlags:
     - -Wextra
     - -pedantic
     - -Ivalidators/oca/lib
+    - -Ivalidators/oca/build/gen
     - -Ivalidators/oca/test
   Compiler: clang

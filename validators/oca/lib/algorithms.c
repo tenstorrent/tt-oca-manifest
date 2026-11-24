@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+/**
+ * @file
+ * @brief The algorithm tables, compiled in by the build configuration.
+ */
+
+#include "algorithms.h"
+
+#include "oca_layout.h"
+#include "oca_layout_pqc.h"
+
+/* Each table ends in a row whose type is 0x00, a value every class reserves,
+ * so a build that enables nothing in a class still has a well-formed table.
+ * A walk also stops at the table's size, so it never reads past the table even
+ * if a fault makes that row's type read as non-zero. */
+
+/** @brief The rows of a table before its end row. */
+#define ROWS_BEFORE_END(table) (sizeof(table) / sizeof((table)[0]) - 1u)
+
+#if !OCA_CFG_SECURE_BOOT_DISABLED
+/** @brief Whether an RSA row accepts a DER (PKCS#1) public key in this build. */
+#define RSA_PUBLIC_KEY_DER \
+    (OCA_CFG_DER_RSA_PUBLIC_KEY ? OCA_DER_ENABLED : OCA_DER_DISABLED)
+
+/** @brief Whether an ECDSA row accepts a DER signature in this build. */
+#define ECDSA_SIGNATURE_DER \
+    (OCA_CFG_DER_ECDSA_SIGNATURE ? OCA_DER_ENABLED : OCA_DER_DISABLED)
+
+/** The classical signature algorithms this build enables. */
+static const oca_signature_algorithm_t CLASSICAL_SIGNATURES[] = {
+#if OCA_CFG_SIG_RSA_3072_PKCS1V15_SHA256
+    /* Raw key: big-endian modulus (384) || big-endian exponent (4). */
+    { 0x01u, 388u, 384u, RSA_PUBLIC_KEY_DER, OCA_DER_UNDEFINED, 0u },
+#endif
+#if OCA_CFG_SIG_ECDSA_P256_SHA256
+    /* Raw key: SEC1 uncompressed point; raw signature: r || s. */
+    { 0x05u, 65u, 64u, OCA_DER_UNDEFINED, ECDSA_SIGNATURE_DER, 72u },
+#endif
+    { 0x00u, 0u, 0u, OCA_DER_UNDEFINED, OCA_DER_UNDEFINED, 0u },
+};
+
+/** The PQC signature algorithms this build enables. FIPS 204 and FIPS 205 define
+ *  no bare ASN.1 structure for a key or signature, so no PQC row has DER. */
+static const oca_signature_algorithm_t PQC_SIGNATURES[] = {
+#if OCA_CFG_SIG_ML_DSA_87
+    { 0x33u, OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES, OCA_PQC_ML_DSA_87_SIGNATURE_BYTES,
+      OCA_DER_UNDEFINED, OCA_DER_UNDEFINED, 0u },
+#endif
+    { 0x00u, 0u, 0u, OCA_DER_UNDEFINED, OCA_DER_UNDEFINED, 0u },
+};
+
+/**
+ * @brief Whether the format defines a classical signature_type value.
+ *
+ * Every RSA, ECDSA and EdDSA algorithm the format lists, and the range it
+ * leaves to integrators. Anything else is reserved.
+ *
+ * @param[in] type  The signature_type_classic value.
+ * @return Non-zero for an RSA, ECDSA or EdDSA algorithm or an
+ *         integrator-defined value; zero for a reserved one.
+ */
+static int classical_signature_defined(oca_primitive_type_t type)
+{
+    return (type >= 0x01u && type <= 0x07u) || type == 0x0Au || type == 0x0Bu
+           || oca_integrator_byte(type);
+}
+
+/**
+ * @brief Whether the format defines a PQC signature_type value.
+ *
+ * 0x41 and 0x42 are held for FN-DSA, which FIPS 206 has not yet published, and
+ * are reserved until it is.
+ *
+ * @param[in] type  The signature_type_pqc value.
+ * @return Non-zero for an ML-DSA or SLH-DSA algorithm or an integrator-defined
+ *         value; zero for a reserved one.
+ */
+static int pqc_signature_defined(oca_primitive_type_t type)
+{
+    return (type >= 0x31u && type <= 0x33u) || (type >= 0x51u && type <= 0x56u)
+           || oca_integrator_byte(type);
+}
+
+const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t family,
+                                                         oca_primitive_type_t type,
+                                                         oca_result_t *status)
+{
+    const int pqc = family == OCA_KEY_ALGO_PQC;
+    const oca_signature_algorithm_t *table = pqc ? PQC_SIGNATURES : CLASSICAL_SIGNATURES;
+    const size_t rows = pqc ? ROWS_BEFORE_END(PQC_SIGNATURES)
+                            : ROWS_BEFORE_END(CLASSICAL_SIGNATURES);
+    if (type != 0x00u) {
+        for (size_t i = 0u; i < rows && table[i].type != 0x00u; ++i) {
+            if (table[i].type == type) {
+                *status = OCA_OK;
+                return &table[i];
+            }
+        }
+    }
+    const int defined = pqc ? pqc_signature_defined(type)
+                            : classical_signature_defined(type);
+    *status = defined ? OCA_FAIL_ALGORITHM_NOT_ENABLED : OCA_FAIL_ALGORITHM_RESERVED;
+    return 0;
+}
+
+oca_result_t oca_encoding_status(oca_key_algorithm_t family, oca_encoding_t encoding)
+{
+    if (encoding == OCA_ENCODING_RAW
+        || (encoding == OCA_ENCODING_DER && family != OCA_KEY_ALGO_PQC)) {
+        return OCA_OK;
+    }
+    /* The range both classes leave to integrators. */
+    return oca_integrator_byte(encoding) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                         : OCA_FAIL_ALGORITHM_RESERVED;
+}
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
+
+/**
+ * A hash row's digest size, as a constant expression that stops the build
+ * when the digest is empty or wider than the digest buffers: the array size
+ * goes negative. C99 has no static assertion, and this one sits in the row.
+ */
+#define HASH_DIGEST_SIZE(n) \
+    ((uint8_t)((n) * sizeof(char[((n) >= 1u && (n) <= OCA_HASH_MAX_DIGEST_SIZE) \
+                                 ? 1 : -1])))
+
+/** The digests this build enables, for manifest_hash_type and payload_hash_type. */
+static const oca_hash_algorithm_t HASHES[] = {
+#if OCA_CFG_HASH_SHA2_256
+    { 0x01u, HASH_DIGEST_SIZE(32u) },
+#endif
+    { 0x00u, 0u },
+};
+
+const oca_hash_algorithm_t *oca_hash_algorithm(oca_hash_type_t type, oca_result_t *status)
+{
+    const size_t rows = ROWS_BEFORE_END(HASHES);
+    if (type != 0x00u) {
+        for (size_t i = 0u; i < rows && HASHES[i].type != 0x00u; ++i) {
+            if (HASHES[i].type == type) {
+                *status = OCA_OK;
+                return &HASHES[i];
+            }
+        }
+    }
+    /* The SHA2, SHA3 and SHAKE256 digests; the format leaves no range to
+     * integrators here. */
+    *status = (type >= 0x01u && type <= 0x08u) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                               : OCA_FAIL_ALGORITHM_RESERVED;
+    return 0;
+}
+
+/**
+ * @brief The digest size the format gives a hash type.
+ *
+ * Written out from the format's hash-type list rather than read from HASHES,
+ * so a row whose size is corrupted disagrees with it.
+ *
+ * @param[in] type  A manifest_hash_type or payload_hash_type value.
+ * @return The digest size in bytes, or 0 for a value the format reserves.
+ */
+static size_t format_digest_size(uint8_t type)
+{
+    switch (type) {
+    case 0x01u:     /* SHA2-256 */
+    case 0x04u:     /* SHA3-256 */
+    case 0x07u:     /* SHAKE256-256 */
+        return 32u;
+    case 0x02u:     /* SHA2-384 */
+    case 0x05u:     /* SHA3-384 */
+        return 48u;
+    case 0x03u:     /* SHA2-512 */
+    case 0x06u:     /* SHA3-512 */
+    case 0x08u:     /* SHAKE256-512 */
+        return 64u;
+    default:
+        return 0u;
+    }
+}
+
+size_t oca_hash_digest_size(const oca_hash_algorithm_t *hash)
+{
+    if (hash == 0) {
+        return 0u;
+    }
+    const size_t size = hash->digest_size;
+    return (size == format_digest_size(hash->type) && size <= OCA_HASH_MAX_DIGEST_SIZE)
+        ? size : 0u;
+}
+
+/** The payload ciphers this build enables. */
+static const oca_cipher_algorithm_t CIPHERS[] = {
+#if OCA_CFG_CIPHER_AES_128_CBC
+    { 0x01u, OCA_AES_BLOCK_SIZE },
+#endif
+#if OCA_CFG_CIPHER_AES_256_CBC
+    { 0x02u, OCA_AES_BLOCK_SIZE },
+#endif
+    { 0x00u, 0u },
+};
+
+/**
+ * @brief Whether the format defines an encryption_type value.
+ *
+ * The AES CBC, CBC-HMAC and GCM-SIV modes, the two SM4 modes, and the range
+ * left to integrators. 0x13 is explicitly reserved, like every other gap.
+ *
+ * @param[in] type  The encryption_type value.
+ * @return Non-zero for a defined cipher; zero for a reserved value.
+ */
+static int cipher_defined(oca_encryption_type_t type)
+{
+    return (type >= 0x01u && type <= 0x06u) || type == 0x11u || type == 0x12u
+           || oca_integrator_byte(type);
+}
+
+const oca_cipher_algorithm_t *oca_cipher_algorithm(oca_encryption_type_t type,
+                                                   oca_result_t *status)
+{
+    const size_t rows = ROWS_BEFORE_END(CIPHERS);
+    if (type != 0x00u) {
+        for (size_t i = 0u; i < rows && CIPHERS[i].type != 0x00u; ++i) {
+            if (CIPHERS[i].type == type) {
+                *status = OCA_OK;
+                return &CIPHERS[i];
+            }
+        }
+    }
+    *status = cipher_defined(type) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                   : OCA_FAIL_ALGORITHM_RESERVED;
+    return 0;
+}
+
+oca_result_t oca_kdf_status(oca_kdf_t kdf)
+{
+#if OCA_CFG_KDF_SP800_108_HMAC_SHA256
+    if (kdf == 0x0001u) {
+        return OCA_OK;
+    }
+#endif
+    /* NONE, the SP 800-108r1 HMAC, CMAC and KMAC variants and HKDF, and the
+     * range left to integrators. */
+    return (kdf <= 0x0008u || kdf >= 0xFF00u) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                              : OCA_FAIL_ALGORITHM_RESERVED;
+}
+
+oca_result_t oca_key_source_status(oca_key_source_t source)
+{
+#if OCA_CFG_KEY_SOURCE_PRESHARED
+    if (source == 0x1u) {
+        return OCA_OK;
+    }
+#endif
+    /* The pre-shared secret and the KEM-unwrapped DEK. */
+    return (source == 0x1u || source == 0x2u) ? OCA_FAIL_ALGORITHM_NOT_ENABLED
+                                              : OCA_FAIL_ALGORITHM_RESERVED;
+}
+
+oca_result_t oca_secret_select_status(uint16_t secret_select)
+{
+    return (secret_select >= OCA_ENCRYPTION_SHARED_SECRET_SELECT_FIRST
+            && secret_select <= OCA_ENCRYPTION_SHARED_SECRET_SELECT_LAST)
+        ? OCA_OK : OCA_FAIL_ALGORITHM_RESERVED;
+}

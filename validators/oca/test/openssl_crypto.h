@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
 /*
  * openssl_crypto.h — Host-side crypto callbacks backed by OpenSSL 3.
- * Provides the sha256 and verify_signature callbacks the OCA validator
+ * Provides the hash and verify_signature callbacks the OCA validator
  * library expects when running on a developer laptop.
  */
 
@@ -12,6 +12,12 @@
 #include "cli_args.h"
 #include "oca_validator.h"
 
+/* The hash callback: the digests this backend implements, by type. */
+oca_result_t openssl_hash(oca_hash_type_t type,
+                          const uint8_t *msg, size_t msg_len,
+                          uint8_t *out_digest, size_t digest_len);
+
+/* SHA-256 itself, which the harness also uses to digest anchored keys. */
 oca_result_t openssl_sha256(const uint8_t *msg, size_t msg_len,
                             uint8_t out_digest[32]);
 

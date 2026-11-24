@@ -130,4 +130,7 @@ int cli_parse_args(int argc, char **argv, cli_options_t *opt);
 /* Print the full --help block to stdout. */
 void cli_print_help(void);
 
+/* Print the portfolio this binary's library was built from, for --build-info. */
+void cli_print_build_info(void);
+
 #endif /* OCA_CLI_ARGS_H */

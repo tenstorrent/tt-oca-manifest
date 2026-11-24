@@ -57,6 +57,16 @@
 #error "oca-validate needs OpenSSL 3.5 or later, the first release with ML-DSA"
 #endif
 
+oca_result_t openssl_hash(oca_hash_type_t type,
+                          const uint8_t *msg, size_t msg_len,
+                          uint8_t *out_digest, size_t digest_len)
+{
+    if (type != OCA_HASH_TYPE_SHA2_256 || digest_len != 32u) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    return openssl_sha256(msg, msg_len, out_digest);
+}
+
 oca_result_t openssl_sha256(const uint8_t *msg, size_t msg_len,
                             uint8_t out_digest[32])
 {
@@ -639,16 +649,22 @@ oca_result_t openssl_decrypt_payload(
     const oca_decrypt_input_t *in,
     const uint8_t **out_plaintext, size_t *out_plaintext_len)
 {
+    /* This backend derives one way, from one source. The library passes only
+     * what its build enables; anything else is a combination this backend has
+     * no implementation for. */
+    if (in->kdf != OCA_KDF_SP800_108_HMAC_SHA256
+        || in->key_source != OCA_KEY_SOURCE_PRESHARED) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
     /* Resolving the selector is this callback's job. The library hands over an
      * index and never sees the secret it names. */
     const uint8_t *secret = secret_for_slot(in->secret_select);
     if (secret == NULL) {
         return OCA_FAIL_NO_PROVISIONED_SECRET;
     }
-    /* The validator guarantees a non-zero, 16-byte-block-aligned ciphertext
-     * before invoking this callback, and rejects any cipher outside the two
-     * below before getting here — so the else branch is a belt-and-braces
-     * refusal, not a reachable path. */
+    /* The validator guarantees a non-zero, block-aligned ciphertext before
+     * invoking this callback, and passes only a cipher its build enables; the
+     * else branch is for a build enabling one this backend does not implement. */
     unsigned key_bits;
     const EVP_CIPHER *cipher;
     if (in->cipher == OCA_ENCRYPTION_TYPE_AES_128_CBC) {
@@ -656,7 +672,7 @@ oca_result_t openssl_decrypt_payload(
     } else if (in->cipher == OCA_ENCRYPTION_TYPE_AES_256_CBC) {
         key_bits = 256u; cipher = EVP_aes_256_cbc();
     } else {
-        return OCA_FAIL_DECRYPT;   /* unsupported cipher */
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
 
     uint8_t key[32];

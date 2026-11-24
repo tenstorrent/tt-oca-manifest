@@ -503,13 +503,14 @@ def validate_and_normalize_oca_classic(config: Dict[str, Any]) -> Dict[str, Any]
             config.get("encryption_key_derivation_function",
                        oca_consts.OcaEncryptionKdf.SP800_108_CTR_HMAC_SHA256.value)
         )
-        # Shared-secret indices start at 1 (0 means "unspecified"); default to
-        # the first slot when omitted.
-        sss = int(config.get("encryption_shared_secret_select", 1))
-        if not (1 <= sss < (1 << 16)):
+        # Defaults to the first slot when omitted.
+        first = oca_consts.ENCRYPTION_SHARED_SECRET_SELECT_FIRST
+        last = oca_consts.ENCRYPTION_SHARED_SECRET_SELECT_LAST
+        sss = int(config.get("encryption_shared_secret_select", first))
+        if not (first <= sss <= last):
             raise OcaConfigError(
-                f"encryption_shared_secret_select must be 1..65535 "
-                f"(indices start at 1); got {sss}",
+                f"encryption_shared_secret_select must be {first}..{last}; "
+                f"the format reserves every other value; got {sss}",
                 field_name="encryption_shared_secret_select",
             )
         out["encryption_shared_secret_select"] = sss

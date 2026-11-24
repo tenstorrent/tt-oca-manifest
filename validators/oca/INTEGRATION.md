@@ -23,17 +23,309 @@ Copy `lib/` into your tree:
 cp -r validators/oca/lib your-project/third_party/oca_validator
 ```
 
-`oca_validator.h` is the only header your code includes. Provide
-implementations of the callbacks declared at the top of that header
-(SHA-256, signature verify, hardware-identity readers), populate an
-`oca_callbacks_t`, and call one of the two entry points below. The library
-reads the magic bytes itself and routes to the appropriate format handler; the
-integrator never picks a variant.
+`oca_validator.h` is the only header your code includes. Generate the build
+configuration header (next section), provide implementations of the callbacks
+declared at the top of that header (hash, signature verify,
+hardware-identity readers), populate an `oca_callbacks_t`, and call one of the
+two entry points below. The library reads the magic bytes itself and routes to
+the appropriate format handler; the integrator never picks a variant.
 
 One exception, for convenience rather than necessity: the two secure-boot
 reporters answer in `oca_secure_bool_t`, and a translation unit that implements
 only those — a fuse-read shim, a life-cycle accessor, a board file — can include
 `oca_secure_bool.h` on its own instead of the whole validator API.
+
+## Configuring the build
+
+Every compile-time setting of the library comes from one TOML file, from which
+`lib/scripts/gen_config.py` generates `oca_config.h`. The library includes that
+header through the include path and does not compile without it. Keep your
+configuration file outside the vendored `lib/`, so a library upgrade never
+touches it, and start from a copy of `lib/oca_config.toml`, which documents
+every setting.
+
+Your file **replaces** that default; nothing in it is merged with yours, and an
+unknown or misspelled key is an error. Settings come in two kinds:
+
+- A **required** setting — a variant, the TOC limit, the security-version
+  recheck — must be stated. When an upgrade adds one, your build stops until you
+  choose its value, rather than quietly taking a default you never reviewed.
+- A **switch** — an algorithm, a DER encoding, `[secure_boot] disabled` — is off
+  unless your file turns it on. An upgrade that adds one changes nothing your
+  build accepts: a newly implemented algorithm stays off until you name it.
+
+Generate the header before compiling anything that includes `oca_validator.h`,
+and put its directory on the include path:
+
+```sh
+python3 -I third_party/oca_validator/scripts/gen_config.py \
+    --config board/oca_config.toml --out build/oca_gen/oca_config.h
+```
+
+The generator needs Python 3.11 or later and nothing outside its standard
+library. Run it with `-I`, Python's isolated mode, as every example here does:
+it ignores `PYTHONPATH` and the current directory, so a stray module there
+cannot replace one the generator imports. It validates the whole file and names every problem, exits 2 on an
+invalid one, and rewrites the header only when its content changes, so a build
+that depends on the header stays incremental. In CMake:
+
+```cmake
+find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
+set(OCA_LIB        ${CMAKE_SOURCE_DIR}/third_party/oca_validator)
+set(OCA_CONFIG     ${CMAKE_SOURCE_DIR}/board/oca_config.toml)
+set(OCA_CONFIG_DIR ${CMAKE_BINARY_DIR}/oca_gen)
+file(GLOB OCA_SOURCES CONFIGURE_DEPENDS ${OCA_LIB}/*.c)
+# The generator leaves an unchanged header alone, so a stamp, not the header,
+# records that the configuration was read.
+add_custom_command(
+  OUTPUT     ${OCA_CONFIG_DIR}/oca_config.stamp
+  BYPRODUCTS ${OCA_CONFIG_DIR}/oca_config.h
+  COMMAND ${Python3_EXECUTABLE} -I ${OCA_LIB}/scripts/gen_config.py
+          --config ${OCA_CONFIG} --out ${OCA_CONFIG_DIR}/oca_config.h
+  COMMAND ${CMAKE_COMMAND} -E touch ${OCA_CONFIG_DIR}/oca_config.stamp
+  DEPENDS ${OCA_CONFIG} ${OCA_LIB}/scripts/gen_config.py)
+# Listing the stamp as a source attaches the command to the library, so it
+# runs before anything that links the library compiles.
+add_library(oca_validator STATIC ${OCA_SOURCES} ${OCA_CONFIG_DIR}/oca_config.stamp)
+target_include_directories(oca_validator PUBLIC ${OCA_LIB} ${OCA_CONFIG_DIR})
+```
+
+Ninja re-checks an output after its command runs, and the Makefile generators
+do not. Under them, a header the generator left alone stays older than an
+edited configuration file, so a command producing the header itself would rerun
+on every build after a comment-only edit. The stamp keeps an unchanged build
+empty under both. `CONFIGURE_DEPENDS` makes the build notice a source a library
+upgrade adds to `lib/`, which would otherwise go uncompiled until you
+reconfigured.
+
+In GNU Make, run the generator on every build through a phony prerequisite and
+let its write-only-on-change keep objects up to date. Depending on the
+configuration file alone would miss a switch to a different file older than
+the header:
+
+```make
+OCA_LIB        := third_party/oca_validator
+OCA_CONFIG     := board/oca_config.toml
+OCA_CONFIG_DIR := $(BUILD_DIR)/oca_gen
+OCA_CONFIG_H   := $(OCA_CONFIG_DIR)/oca_config.h
+OCA_SOURCES    := $(wildcard $(OCA_LIB)/*.c)
+CPPFLAGS       += -I$(OCA_LIB) -I$(OCA_CONFIG_DIR)
+
+.PHONY: oca-config
+oca-config:
+
+$(OCA_CONFIG_H): oca-config
+	python3 -I $(OCA_LIB)/scripts/gen_config.py --config $(OCA_CONFIG) --out $@
+
+# Every object whose source includes oca_validator.h, not only the library's.
+$(OBJS): $(OCA_CONFIG_H)
+```
+
+The generator creates the output directory. Make the header a prerequisite of
+your own objects as well as the library's: an object's compiler-generated
+dependency file names the header only after its first compile, and the header
+must exist before then. Place that rule after `OBJS` is defined, because Make
+expands a rule's targets when it reads the rule.
+
+**Several builds from one tree**, such as a ROM that ships a Classic-only and a
+dual-variant image, each get a configuration file, chosen by a variable. Give
+each build its own directory, so each generates its own header and no object
+built for one configuration is reused for another. Set these ahead of the lines
+above, in place of their `OCA_CONFIG`:
+
+```make
+# make OCA_BUILD=classic_only builds from board/oca_classic_only.toml.
+OCA_BUILD  := default
+OCA_CONFIG := board/oca_$(OCA_BUILD).toml
+BUILD_DIR  := build/$(OCA_BUILD)
+```
+
+Each file is a complete configuration: copy `lib/oca_config.toml` and change
+what differs. `test/build_configs/classic_only.toml` and `pqc_only.toml` are
+the library's own examples. Assigning with `:=` rather than `?=` keeps a
+variable of the same name in the environment from choosing the build, while
+`make OCA_BUILD=...` still does.
+
+**The portfolio is policy, not footprint.** Turning an algorithm or a variant
+off makes the library refuse what it names. It does not make the library
+meaningfully smaller: an algorithm turned off loses its table row and little
+else. What an algorithm costs is the cryptography your callbacks link, which
+the library never contains. Choose the portfolio for what a part must accept,
+and size the image by the callbacks it wires. The exception is a build without
+secure boot, described below, which compiles out every check that needs it.
+
+**Every build names its portfolio.** The generated header states the settings
+that are not zero, one `name=value` line each in name order, as
+`OCA_CFG_PORTFOLIO_TEXT`; their SHA-256 as `OCA_CFG_PORTFOLIO_DIGEST`; and the
+first 32 bits of that as `OCA_CFG_PORTFOLIO_ID`. `oca_build_portfolio_digest()`
+returns the digest, which is what a device attests or a release gate holds
+against its approved portfolios. `oca_build_portfolio_id()` returns the 32-bit
+label, for a log line: it is short enough that a configuration can be searched
+for whose label matches another's, so never attest it. `oca-validate
+--build-info` prints all three, so a harness can tell which configuration built
+the library it drives. The digest depends on the settings alone, so two files
+that build the same library share it, whatever their names, comments or order,
+and a library upgrade that adds a switch left off does not change it. The
+library reports what its generated header states, and the header cannot state a
+digest other than its settings': the generator seals it with a macro named for
+the digest and every setting's value, so a header edited by hand so that they
+disagree does not compile. `gen_config.py --check` is what catches a header
+that no longer matches its file.
+
+**Attest the library version beside the digest.** Two versions of the library
+built from one configuration share a digest, and a release that changes how a
+manifest is checked changes no setting. `oca_validator_version()` returns the
+library's version as one number, the major version in bits 16 and up, the minor
+in bits 8 to 15 and the patch in bits 0 to 7, and `OCA_VALIDATOR_VERSION` is the
+same number as the header you compile against states it. A device that reports
+what it runs reports both, and a release gate approves the pair. `oca-validate
+--build-info` prints the version on its first line.
+
+**Choose what else to compile from the same file.** The callbacks an algorithm
+needs are yours to compile, and the configuration already says which
+algorithms are on. `gen_config.py --print NAME` writes one setting's value,
+`--print-all` every setting as `name=value`, and neither writes a header:
+
+```make
+OCA_GEN := python3 -I $(OCA_LIB)/scripts/gen_config.py --config $(OCA_CONFIG)
+
+ML_DSA_87 := $(shell $(OCA_GEN) --print signature_pqc.ml_dsa_87 || echo error)
+ifeq ($(ML_DSA_87),error)
+$(error cannot read signature_pqc.ml_dsa_87 from $(OCA_CONFIG))
+endif
+ifeq ($(ML_DSA_87),1)
+SRCS += src/crypto/ml_dsa_87_verify.c
+endif
+```
+
+An unknown name exits 2 with a message naming it. `$(shell)` discards an exit
+status, so the snippet turns a failure into `error` and stops the build;
+without that, a misspelled setting would read as off. C code needs neither: it
+tests the `OCA_CFG_*` macros of the header it compiles against.
+
+**Compile your own code against the same header.** `OCA_TOC_MAX_IMAGES` and
+`OCA_RECHECK_SECURITY_VERSION` are part of the public header and come from the
+configuration, so every translation unit that includes `oca_validator.h` must
+see the header the library was built with. The `PUBLIC` include directory in
+the CMake example and the `CPPFLAGS` in the Make example do that. Two builds
+that share a configuration file, such as firmware and its host tests, each
+generate the same header from it.
+
+The link enforces this. The library defines a guard symbol named for every
+setting of its header, and each file that includes `oca_validator.h` refers to
+the guard its own header names, so a file compiled against any other header
+fails the link:
+
+```
+undefined reference to `oca_build_guard_variant_classic_1_variant_pqc_1_toc_max_images_16u_...'
+```
+
+The name spells the settings that file was compiled with; compare it with the
+library's guard (`nm` lists it) to see which setting differs, and build both
+from one header. Code that sizes a buffer by `OCA_TOC_MAX_IMAGES` is why this
+matters: against a stale header it would size the buffer by one limit while
+the library accepts manifests up to another. The guard needs gcc 11 or later
+or clang 13 or later; with another compiler, nothing checks this, so hold the
+include paths to it yourself. A file that cannot find `oca_config.h` at all
+stops the compile with a message naming the generator.
+
+Every program that includes `oca_validator.h` therefore links the library. A
+host tool that uses only the header's types and constants, and never links the
+library, defines `OCA_BUILD_GUARD_OMIT` before including it. Defining it in
+code that does link the library only silences the check.
+
+**Compile with `-Wundef`**, as the library's own build does. A macro nothing
+defines reads as 0 in `#if`, so a misspelled setting, or code still testing a
+name the library no longer defines, silently compiles its branch out; with
+`-Wundef -Werror` it stops the build instead. The settings are the `OCA_CFG_*`
+macros in the generated header.
+
+**A part that does not use secure boot** can build the library with one variant
+and one hash and nothing else: it checks manifest and payload integrity and
+verifies no signature. The configuration must say so with `[secure_boot]
+disabled = true`; a file that enables no signature algorithm without it is
+refused, so an omitted algorithm section cannot quietly produce a build that
+authenticates nothing. The declaration is refused alongside any signature
+algorithm, and alongside payload encryption, because a payload is decrypted only
+once its manifest's signature verifies (see
+[Encryption requires confirmed secure boot](#encryption-requires-confirmed-secure-boot)).
+
+The declaration compiles out everything secure boot needs: signature
+verification, ROOT-key authorization and revocation, the signing-description
+and posture checks, anti-rollback, the device-state commit and payload
+decryption. Measured for rv32imc at `-Os`, that is about 4.4 KB of the default
+build's 12.3 KB. The entry points of those checks remain, so code that composes
+them by hand links unchanged. Each confirms the secure-boot determination as the
+full check does, refusing a context it cannot confirm. While secure boot is not
+in force it has nothing to do and returns `OCA_OK`; while it is in force, it
+refuses with `OCA_FAIL_ALGORITHM_NOT_ENABLED`. `[hardening]
+recheck_security_version` is still stated in the file, and has no effect.
+
+Such a build:
+
+- refuses every manifest that asserts secure boot with
+  `OCA_FAIL_ALGORITHM_NOT_ENABLED`, once the manifest hash and the
+  determination have run and before any other callback, and every encrypted
+  payload;
+- boots nothing on a part whose `is_secure_boot_active` reports enforcement,
+  exactly as a full build refuses an unsigned manifest there;
+- never commits device state: `oca_commit_security_state()` has nothing to
+  commit while secure boot is not in force and is refused while it is, so
+  anti-rollback and revocation state never advance.
+
+It needs the `hash` callback, a secure-boot reporter that says the part does not
+enforce secure boot (`is_secure_boot_disabled` or `is_secure_boot_active`; with
+neither wired the library assumes it does, and this build boots nothing), and
+whichever hardware-identity readers the manifests' constraints use.
+`verify_signature`, `is_key_authorized`, `decrypt_payload` and the posture
+readers are never called. `test/build_configs/hash_only.toml` is a complete
+example.
+
+**A compile environment without Python 3.11**, such as a ROM toolchain image,
+can compile against headers generated elsewhere. Generate each build's header
+on a host that has Python 3.11 and commit it beside its configuration file.
+The compile environment puts the committed directory on the include path and
+leaves out the rule that generates the header; objects still depend on it. The
+header records only its file's name and the settings, so the same file gives
+the same header on any host, and editing a comment leaves it unchanged:
+
+```make
+OCA_CONFIG_DIR := board/oca_gen/$(OCA_BUILD)
+OCA_BUILDS     := default classic_only
+
+# Run on a host with Python 3.11 after editing a configuration; commit the result.
+.PHONY: oca-config-regen
+oca-config-regen:
+	for build in $(OCA_BUILDS); do \
+	    python3 -I $(OCA_LIB)/scripts/gen_config.py --config board/oca_$$build.toml \
+	        --out board/oca_gen/$$build/oca_config.h || exit 1; \
+	done
+```
+
+The compile environment then never notices a header that has fallen behind its
+file, so check every pair in CI, where Python is available.
+`gen_config.py --check` writes nothing and exits 1 unless the header matches
+the file:
+
+```sh
+for build in default classic_only; do
+    python3 -I third_party/oca_validator/scripts/gen_config.py --check \
+        --config board/oca_$build.toml --out board/oca_gen/$build/oca_config.h || exit 1
+done
+```
+
+`lib/oca_config_check.h` repeats the guards the library depends on. A header
+that was not generated, is in another header format, is missing a setting,
+holds a switch other than 0 or 1, or combines settings no build can use fails
+the compile with an `#error` naming the problem. It also refuses the
+settings' former `-D` forms, such as `-DOCA_TOC_MAX_IMAGES=32`, so a stale
+override fails instead of being ignored. A header edited by hand, such as one
+with an algorithm turned off, fails too: its settings no longer match the seal
+and portfolio digest the generator wrote. It does not compare the header with
+its configuration file, so one left behind when the file changed compiles.
+Generate the header in the build, or check a committed one with
+`gen_config.py --check`. The settings and their defaults
+are listed in [README.md](README.md#settings).
 
 ## Callbacks you must provide
 
@@ -54,9 +346,9 @@ not need a callback never touch it, and a check that *does* need one fails with
 
 | Field | What it is | Prototype | Purpose, and why it is a callback | System resources it reaches for you |
 |---|---|---|---|---|
-| `sha256` | Message digest | `oca_result_t (*)(const uint8_t *msg, size_t msg_len, uint8_t out_digest[32])` | Every integrity check in the library is built on this one primitive — `manifest_hash`, `payload_hash`, `payload_hash_chain`, per-image entry hashes. The library ships no hash implementation, so the target can use its accelerator instead of paying for a software SHA-256 in ROM. **Required on every path**; `manifest_hash` runs unconditionally and early, so a NULL here fails immediately. | SHA-256 engine or accelerator; whatever DMA/clock/power gating it needs. Software SHA-256 if there is no engine. |
+| `hash` | Message digest | `oca_result_t (*)(oca_hash_type_t type, const uint8_t *msg, size_t msg_len, uint8_t *out_digest, size_t digest_len)` | Every integrity check in the library is built on this one primitive — `manifest_hash` with the manifest's `manifest_hash_type`; `payload_hash`, `payload_hash_chain` and per-image entry hashes with its `payload_hash_type`. The library asks only for a digest its build enables (SHA2-256, `OCA_HASH_TYPE_SHA2_256`, is the one that can be enabled today), and `digest_len` is always that digest's size; a backend without one returns `OCA_FAIL_CALLBACK_UNAVAILABLE`. The library ships no hash implementation, so the target can use its accelerator instead of paying for a software one in ROM. **Required on every path**; `manifest_hash` runs unconditionally and early, so a NULL here fails immediately. | SHA-2 engine or accelerator; whatever DMA/clock/power gating it needs. Software SHA-256 if there is no engine. |
 | `verify_signature` | Signature verification | `oca_result_t (*)(const oca_crypto_blob_t *signature, const oca_crypto_blob_t *public_key, const uint8_t *signed_region, size_t signed_region_len)` | The library's only authenticity primitive — it establishes trust in the signed region, and transitively in every digest that region carries. Invoked once per signature class the manifest enforces: a hybrid manifest produces one classical call and one PQC call, and both must verify. This library composes and enforces the AND result of the two signatures. Algorithm and encoding vary (classical: RSA-3072 PKCS#1 v1.5 or ECDSA P-256, DER or raw; PQC: ML-DSA-87 today, raw only) so the `oca_crypto_blob_t` descriptors tell you which, and `key_algorithm` names the family. Each blob's `length` is its validated size; read no further than it, and parse a DER value within it — a DER public key must occupy exactly `length` bytes, and a DER ECDSA signature, whose `length` is the 72-byte maximum, may be followed only by zero bytes up to it. For ML-DSA-87 the contract is pure FIPS 204 ML-DSA.Verify over `signed_region` exactly as given, with the empty context: no pre-hash and no HashML-DSA (an engine that takes μ computes it as [Enabling PQC secure boot](#enabling-pqc-secure-boot) shows). The key is the raw 2592-byte FIPS 204 public-key encoding and the signature the raw 4627-byte signature encoding. The library performs none of this cryptography. A backend without a PQC implementation returns `OCA_FAIL_CALLBACK_UNAVAILABLE` for `OCA_KEY_ALGO_PQC` and the manifest fails closed. Required under secure boot. | Public-key accelerator or bignum unit; constant-time modular arithmetic; any key-format parsing (DER) you need; a PQC signature engine or software implementation (ML-DSA today) for the PQC class. |
-| `decrypt_payload` | Payload key derivation + decryption | `oca_result_t (*)(const oca_decrypt_input_t *in, const uint8_t **out_plaintext, size_t *out_plaintext_len)` | Resolves `in->secret_select` against your key store, runs the SP 800-108r1 CTR-HMAC-SHA-256 KDF over `in->kdf_input`, and AES-CBC-decrypts with the result, stripping PKCS#7. It is a callback because **the provisioned secret is**: the library must never hold key material. Everything the operation reads is a named field on `in` — including the cipher and the secret index — so it never re-reads the manifest. The selector is an INDEX, never a secret: no key material crosses this boundary in either direction. Invoked only after the ciphertext's `payload_hash` verifies. Required only for encrypted payloads. | AES engine (CBC, 128/256-bit); HMAC-SHA-256 for the KDF; the **key store** holding the pre-shared secret — fuses, OTP, a key vault, or a derived-key slot the CPU cannot read. |
+| `decrypt_payload` | Payload key derivation + decryption | `oca_result_t (*)(const oca_decrypt_input_t *in, const uint8_t **out_plaintext, size_t *out_plaintext_len)` | Takes the input key from `in->key_source` — for the pre-shared source, resolving `in->secret_select` against your key store — derives the payload key over `in->kdf_input` with `in->kdf`, and decrypts with `in->cipher`; today the SP 800-108r1 CTR-HMAC-SHA-256 KDF and AES-CBC, stripping PKCS#7. It is a callback because **the provisioned secret is**: the library must never hold key material. Everything the operation reads is a named field on `in` — including the cipher and the secret index — so it never re-reads the manifest. The selector is an INDEX, never a secret: no key material crosses this boundary in either direction. Invoked only after the ciphertext's `payload_hash` verifies. Required only for encrypted payloads. | AES engine (CBC, 128/256-bit); HMAC-SHA-256 for the KDF; the **key store** holding the pre-shared secret — fuses, OTP, a key vault, or a derived-key slot the CPU cannot read. |
 | `get_identity_bytes` | Silicon identity readback | `oca_hw_result_t (*)(oca_id_kind_t field, uint8_t out[32])` | Supplies the chiplet / package / system ID the manifest is checked against, per `selector_bits`. The library holds no device state, so these can only come from silicon. Returning `OCA_HW_UNAVAILABLE` is a hard failure, never a silent pass. Required when the matching selector bit is set. | Identity fuses, OTP, ID ROM, or an ID register block. |
 | `get_lifecycle_state` | Lifecycle readback | `oca_hw_result_t (*)(oca_lifecycle_level_t level, oca_lifecycle_token_t *out_state)` | Reports the device's current lifecycle state so the manifest's permitted-state mask can be enforced. Same reasoning as identity: device state the library cannot see. Required when the lifecycle selector bit is set. | Lifecycle-state fuses or the lifecycle controller. |
 | `get_version` | Version readback | `oca_hw_result_t (*)(oca_version_level_t level, uint16_t *out_major, uint16_t *out_minor)` | Reports the hardware version per level for the manifest's min/max range check. Required when the version selector bit is set. | Version fuses or revision-ID registers. |
@@ -105,7 +397,7 @@ exactly one entry:
 ```c
 oca_callbacks_t cb;
 memset(&cb, 0, sizeof cb);
-cb.sha256 = my_sha256;
+cb.hash = my_hash;
 cb.is_secure_boot_active = my_secure_boot_state;  /* else secure-by-default */
 ```
 
@@ -136,10 +428,16 @@ would:
 /* In your image. The library neither holds nor forwards this. */
 static my_engine_t *g_sha_engine;
 
-oca_result_t my_sha256(const uint8_t *msg, size_t len, uint8_t out[32])
+oca_result_t my_hash(oca_hash_type_t type, const uint8_t *msg, size_t len,
+                     uint8_t *out, size_t out_len)
 {
-    return my_engine_digest(g_sha_engine, msg, len, out) ? OCA_OK
-                                                        : OCA_FAIL_CALLBACK_UNAVAILABLE;
+    /* Refuse what this function cannot compute exactly: another digest, or a
+     * length other than SHA2-256's. */
+    if (type != OCA_HASH_TYPE_SHA2_256 || out_len != 32u) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    return my_engine_sha256(g_sha_engine, msg, len, out)
+               ? OCA_OK : OCA_FAIL_CALLBACK_UNAVAILABLE;
 }
 ```
 
@@ -457,14 +755,22 @@ ciphertext, so take both values from the report.
 ### Writing the decryption callback
 
 Everything the operation reads arrives in one read-only descriptor, so the
-callback needs nothing else:
+callback needs nothing else. `in->cipher`, `in->kdf` and `in->key_source` name
+the algorithms the manifest declares; the library hands over only ones the
+build configuration enables, so a backend that implements fewer returns
+`OCA_FAIL_CALLBACK_UNAVAILABLE` for the rest:
 
 ```c
 static oca_result_t my_decrypt_payload(
     const oca_decrypt_input_t *in,
     const uint8_t **out_pt, size_t *out_pt_len)
 {
-    /* The selector is a 1-based INDEX into your provisioned secrets, never a
+    if (in->kdf != OCA_KDF_SP800_108_HMAC_SHA256
+        || in->key_source != OCA_KEY_SOURCE_PRESHARED) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+
+    /* The selector is an INDEX into your provisioned secrets, 1 to 8, never a
      * secret. Resolving it is this callback's job, which is what keeps key
      * material out of the library entirely. */
     const uint8_t *secret = my_key_store_slot(in->secret_select);
@@ -568,7 +874,8 @@ decode structure, and well-formed structure is not a trust statement.
 
 **Integrity comes from the payload check.** `oca_check_payload()` in the
 whole-bundle flow, `oca_check_payload_at()` in the staged one: both verify
-SHA-256 digests through your `sha256` callback — `payload_hash` over the
+digests through your `hash` callback, with the manifest's `payload_hash_type` —
+`payload_hash` over the
 ciphertext when the payload is encrypted (before any decryption) or over the TOC
 region when it is not, then `payload_hash_chain` across the TOC and every image,
 then each TOC entry's own `hash` against the bytes it describes. That is
@@ -610,8 +917,10 @@ at every use" below.
 
 - **Signing description** (`oca_check_signing_description()`) — each enforced
   class's signature type, encodings and size fields must describe a key and
-  signature this library accepts, and every byte of its key and signature
-  fields past the declared size must be zero (`CRYPTO_FIELD_SIZE` otherwise).
+  signature this build accepts (`ALGORITHM_NOT_ENABLED` or
+  `ALGORITHM_RESERVED` for the algorithm or an encoding, `CRYPTO_FIELD_SIZE`
+  for a size), and every byte of its key and signature fields past the
+  declared size must be zero (`CRYPTO_FIELD_SIZE` otherwise).
   The signature fields lie outside the signed region, so a padding byte that
   were allowed to vary would give one signed manifest many byte-distinct
   bundles. These are
@@ -620,6 +929,11 @@ at every use" below.
   boot itself validates them even on a manifest that leaves the bit clear, and
   while secure boot is not in force they are ignored, whatever they hold — a
   manifest that does not assert secure boot is not refused for carrying them.
+  `oca_check_root_key_authorized()` and `oca_check_signature()` hold each class
+  to the same rules again before handing its key or signature to a callback,
+  so a hand-composed sequence that skipped this check still never puts an
+  algorithm the build leaves off, or an unchecked length, in front of the trust
+  anchor or the verifier.
 - **Signature posture** (`oca_check_signature_posture()`) — the device's
   signature class revocation and cohort enforcement, as
   `get_signature_class_revoke` and `get_signature_cohort_enforce` report them,
@@ -681,7 +995,8 @@ at every use" below.
   a flag the device has already recorded is rejected (`SECURITY_VERSION`) as a
   downgrade. Evaluated twice: once *before* the signature, so a replayed manifest
   is rejected without paying for a public-key operation, and again after it by
-  default (`OCA_RECHECK_SECURITY_VERSION`). The early pass is not a decision — it
+  default (`recheck_security_version` in the build configuration). The early
+  pass is not a decision — it
   becomes one retroactively once the signature verifies over the region holding
   the compared value.
 
@@ -831,8 +1146,8 @@ follows from that choice: per-class authorization, revocation and
 verification, and the AND of a hybrid manifest. What a device adds is the
 PQC half of each callback, plus a decision the library leaves to you.
 
-**1. Keep PQC compiled in, and budget for its body.** `OCA_SUPPORT_PQC`
-defaults to 1. An OCA-PQC body is 36864 bytes against Classic's 4096, and in
+**1. Keep PQC compiled in, and budget for its body.** The build
+configuration's `[variants] pqc` defaults to `true`. An OCA-PQC body is 36864 bytes against Classic's 4096, and in
 the staged flow it stays resident from authentication through the payload step.
 The verify callback reads the signed region, key and signature straight out of
 that buffer, so it needs no copy of its own.
@@ -922,7 +1237,7 @@ what `get_signature_cohort_enforce` and `get_signature_class_revoke` report:
   `OCA_FAIL_ROOT_KEY_UNAUTHORIZED` for `OCA_KEY_ALGO_CLASSIC`. Only manifests
   that enforce the PQC class alone verify; a hybrid manifest is refused too,
   since it needs both anchors.
-- **Compiling Classic out is not the same thing.** `OCA_SUPPORT_CLASSIC=0`
+- **Compiling Classic out is not the same thing.** `[variants] classic = false`
   refuses the Classic variant, but an OCA-PQC manifest signed only
   classically still verifies.
 
@@ -934,7 +1249,9 @@ what `get_signature_cohort_enforce` and `get_signature_class_revoke` report:
 | `ROOT_KEY_REVOKED` | The selected PQC key is revoked in the manifest's or the device's PQC bitmap |
 | `SIGNATURE` | The PQC signature did not verify, or either half of a hybrid manifest did not |
 | `CALLBACK_UNAVAILABLE` | `verify_signature` has no backend for the manifest's PQC algorithm, the PQC revocation state could not be read, or a signature posture reader is missing or failed |
-| `CRYPTO_FIELD_SIZE` | The PQC description names an algorithm, encoding or size this library does not accept — today, anything but raw ML-DSA-87 at its exact sizes — or the PQC key or signature field is not zero past that size |
+| `ALGORITHM_NOT_ENABLED` | The PQC algorithm is one the format defines but this build does not enable — anything but ML-DSA-87, or ML-DSA-87 in a build whose configuration turns it off — or a PQC encoding is integrator-defined (`0xF0`–`0xFF`) |
+| `ALGORITHM_RESERVED` | `signature_type_pqc` holds a value the format reserves, including `0x41` / `0x42`, held for FN-DSA, or a PQC encoding does, including DER (`0x01`) |
+| `CRYPTO_FIELD_SIZE` | The PQC description declares a size other than ML-DSA-87's exact raw sizes, or the PQC key or signature field is not zero past that size |
 | `SIGNATURE_CLASS_CONTROL` | `secure_boot_pqc` on a Classic manifest, or secure boot with no class selected |
 | `SIGNATURE_ALGORITHM_REVOKED` | The device has disabled the PQC algorithm's class, or the whole PQC group (`0xAC`) — or, for a hybrid manifest, the classical one's |
 | `SIGNATURE_COHORT_REQUIRED` | The device demands a cohort the manifest does not enforce: PQC of a classic-only manifest, or the classical cohort of a PQC-only one |
@@ -960,6 +1277,20 @@ verifying a different construction from the one the packer signs.
 ## Upgrading to 0.7
 
 Changes an existing integration should check. Most show only at run time.
+
+- **The build configuration is a file.** The library needs a generated
+  `oca_config.h` on the include path; see
+  [Configuring the build](#configuring-the-build). `OCA_SUPPORT_CLASSIC`,
+  `OCA_SUPPORT_PQC`, `OCA_TOC_MAX_IMAGES` and `OCA_RECHECK_SECURITY_VERSION` are
+  no longer set with `-D`: each is a key in the configuration file, and passing
+  the old `-D` fails the compile, naming that key. The last two stay available
+  to your code as macros. The first two do not: code of yours that tests
+  `#if OCA_SUPPORT_PQC` now reads 0 without complaint. Test
+  `OCA_CFG_VARIANT_CLASSIC` and `OCA_CFG_VARIANT_PQC` instead, and compile with
+  `-Wundef` to find every such test. A Make build that chose its variants per
+  invocation keeps one configuration file per build instead, and a compile
+  environment without Python 3.11 can commit generated headers; both are under
+  [Configuring the build](#configuring-the-build).
 
 - **Revocation is called per family.** `get_root_key_revocation` and
   `set_root_key_revocation` are now called with `OCA_KEY_ALGO_PQC` as well as
@@ -991,16 +1322,63 @@ Changes an existing integration should check. Most show only at run time.
   returns `OCA_FAIL_SIGNATURE_COHORT_REQUIRED` and
   `OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED`; a `switch` over `oca_result_t` with
   no `default` needs both cases.
-- **The PQC description is pinned.** The PQC class accepts raw ML-DSA-87 at its
-  exact sizes; anything else is `CRYPTO_FIELD_SIZE`.
+- **The build chooses its algorithms.** A signature algorithm the build
+  configuration does not enable — or one the library cannot yet judge — is
+  refused with the new `OCA_FAIL_ALGORITHM_NOT_ENABLED`, and a
+  `signature_type` the format reserves with the new
+  `OCA_FAIL_ALGORITHM_RESERVED`. Both used to be `CRYPTO_FIELD_SIZE`. A
+  signature or public-key encoding follows the same rule: an integrator
+  encoding (`0xF0`–`0xFF`) is `ALGORITHM_NOT_ENABLED`, and a value the format
+  reserves — unset, and DER on a PQC field, included — `ALGORITHM_RESERVED`.
+  `CRYPTO_FIELD_SIZE` now means only a size that does not fit the algorithm,
+  or a DER the algorithm does not define. A configuration can also turn off
+  DER RSA keys or DER ECDSA signatures. The posture check reports an undefined
+  type as `ALGORITHM_RESERVED` too.
 - **Declared algorithms are checked.** A `manifest_hash_type` or
-  `payload_hash_type` other than SHA2-256, and on an encrypted payload an
-  `encryption_key_derivation_function` other than SP 800-108r1 with
-  HMAC-SHA-256 or an `input_key_source` other than the pre-shared secret, is
-  refused with the new `OCA_FAIL_UNSUPPORTED_ALGORITHM` before anything is
-  hashed or decrypted. Such a manifest was previously hashed or decrypted as if
-  it named the supported algorithm. A `switch` over `oca_result_t` with no
-  `default` needs the new case.
+  `payload_hash_type` other than SHA2-256, and on an encrypted payload a
+  cipher, key derivation function or input-key source the build does not
+  enable, is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` — or
+  `OCA_FAIL_ALGORITHM_RESERVED` for a value the format reserves — before
+  anything is hashed or decrypted. Such a manifest was previously hashed or
+  decrypted as if it named the supported algorithm, and an unsupported cipher
+  reported `OCA_FAIL_DECRYPT` after the payload hash. The payload's algorithms
+  are manifest fields, so `oca_validate_manifest()` now checks them too. It
+  does so before any device read or signature check, so a staged boot rejects
+  such a manifest before it copies the payload or commits device state. A
+  hand-composed sequence gets the same early check by calling
+  `oca_check_payload_algorithms()`. `oca_check_payload_at()` still checks again
+  when the payload is verified. A `switch` over
+  `oca_result_t` with no `default` needs both new cases.
+- **The hash callback names its digest.** `sha256` is replaced by `hash`, which
+  takes the `oca_hash_type_t` the manifest names and the digest length to
+  write. Today the library only ever asks for `OCA_HASH_TYPE_SHA2_256` at 32
+  bytes, so an existing SHA-256 implementation needs only the new signature,
+  and a refusal of any other type.
+- **The decryption input names the derivation.** `oca_decrypt_input_t` gains
+  `kdf` and `key_source` (new types `oca_kdf_t`, `oca_key_source_t`), so a
+  backend dispatches on what the manifest declares instead of assuming it.
+- **Only slots 1 to 8 reach the decryption callback.** The format names eight
+  pre-shared secret slots. An `encryption_shared_secret_select` of 0 or above 8
+  is refused with `OCA_FAIL_ALGORITHM_RESERVED` before the callback runs, where
+  it used to reach the callback and usually fail `NO_PROVISIONED_SECRET`. A key
+  store that numbers its slots past 8 must renumber them. The packer refuses
+  such values too.
+- **The value types are fixed-width integers.** `oca_result_t` is a
+  `uint32_t`, and every other type that names a value from a list —
+  `oca_id_kind_t`, `oca_lifecycle_level_t`, `oca_version_level_t`,
+  `oca_lifecycle_token_t`, `oca_hw_result_t` and the crypto types
+  `oca_key_algorithm_t`, `oca_blob_kind_t`, `oca_encoding_t`,
+  `oca_primitive_type_t`, `oca_hash_type_t`, `oca_encryption_type_t`,
+  `oca_kdf_t` and `oca_key_source_t` — a `uint16_t`. The enum of the same name
+  without the `_t` lists each one's values. A compiler chooses an enum's size,
+  so as enums they laid `oca_crypto_blob_t` and `oca_decrypt_input_t` out
+  differently in a library and a callback built with and without
+  `-fshort-enums`, and a `get_lifecycle_state` built without it wrote four
+  bytes into a one-byte token. `oca_payload_encryption_t::type` is an
+  `oca_encryption_type_t` too, where it was a byte. Code that names the types
+  and compares against the enumerators compiles unchanged. A `switch` over one
+  no longer gets `-Wswitch`'s check for a missing enumerator, and code that
+  wrote `enum oca_encoding` for a type must use `oca_encoding_t`.
 - **Padding past a declared size must be zero.** Under secure boot, a key or
   signature field of an enforced class that holds a non-zero byte past its
   declared size is `CRYPTO_FIELD_SIZE`. This packer has always written zeros

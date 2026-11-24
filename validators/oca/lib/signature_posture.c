@@ -13,20 +13,22 @@
 
 #include "oca_validator.h"
 
+#include "algorithms.h"
 #include "oca_layout.h"
 #include "oca_layout_pqc.h"
 #include "secure_boot.h"
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief The signature_class_revoke bit of a classical signature_type.
  *
  * Both RSA-3072 schemes share one class, as do both RSA-4096 schemes; every
  * integrator-defined type shares the integrator class.
  *
- * @param[in] type  The manifest's signature_type_classic byte.
+ * @param[in] type  The manifest's signature_type_classic value.
  * @return The bit, or -1 for a type the format does not define.
  */
-static int classical_revoke_bit(uint8_t type)
+static int classical_revoke_bit(oca_primitive_type_t type)
 {
     switch (type) {
         case 0x01u: case 0x02u: return 0;   /* RSA-3072 */
@@ -36,7 +38,7 @@ static int classical_revoke_bit(uint8_t type)
         case 0x07u:             return 4;   /* NIST P-521 ECDSA */
         case 0x0Au:             return 5;   /* Ed25519 */
         case 0x0Bu:             return 6;   /* Ed448 */
-        default:                return (type >= 0xF0u) ? 7 : -1;
+        default:                return oca_integrator_byte(type) ? 7 : -1;
     }
 }
 
@@ -47,10 +49,10 @@ static int classical_revoke_bit(uint8_t type)
  * as do both FN-DSA sizes; every integrator-defined type shares the integrator
  * class.
  *
- * @param[in] type  The manifest's signature_type_pqc byte.
+ * @param[in] type  The manifest's signature_type_pqc value.
  * @return The bit, or -1 for a type the format does not define.
  */
-static int pqc_revoke_bit(uint8_t type)
+static int pqc_revoke_bit(oca_primitive_type_t type)
 {
     switch (type) {
         case 0x31u:             return 24;  /* ML-DSA-44 */
@@ -60,7 +62,7 @@ static int pqc_revoke_bit(uint8_t type)
         case 0x51u: case 0x54u: return 28;  /* SLH-DSA-128 */
         case 0x52u: case 0x55u: return 29;  /* SLH-DSA-192 */
         case 0x53u: case 0x56u: return 30;  /* SLH-DSA-256 */
-        default:                return (type >= 0xF0u) ? 31 : -1;
+        default:                return oca_integrator_byte(type) ? 31 : -1;
     }
 }
 
@@ -77,7 +79,8 @@ static int pqc_revoke_bit(uint8_t type)
  * @param[in] revoke          The device's signature_class_revoke state.
  * @retval OCA_OK                               The algorithm is usable.
  * @retval OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED Its class or group is disabled.
- * @retval OCA_FAIL_CRYPTO_FIELD_SIZE           The type names no class.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED          The type names no class, which
+ *                                              only a reserved value does.
  */
 static oca_result_t check_class_algorithm(
     int bit,
@@ -85,7 +88,7 @@ static oca_result_t check_class_algorithm(
     const uint8_t revoke[OCA_LEN_SIGNATURE_CLASS_REVOKE])
 {
     if (bit < 0) {
-        return OCA_FAIL_CRYPTO_FIELD_SIZE;
+        return OCA_FAIL_ALGORITHM_RESERVED;
     }
     oca_secure_bool_t class_disabled =
         (((revoke[bit / 8] >> (bit % 8)) & 1u) != 0u)
@@ -127,6 +130,7 @@ static oca_result_t check_cohort(oca_secure_bool_t demanded,
     }
     return OCA_FAIL_SIGNATURE_COHORT_REQUIRED;
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 oca_result_t oca_check_signature_posture(const uint8_t *body,
                                          const oca_callbacks_t *cb,
@@ -138,6 +142,9 @@ oca_result_t oca_check_signature_posture(const uint8_t *body,
     if (ctx != 0) {
         ctx->secure_boot_posture_met = OCA_SECURE_FALSE;
     }
+#if OCA_CFG_SECURE_BOOT_DISABLED
+    return oca_secure_boot_not_built(body, cb, ctx);
+#else
     oca_secure_bool_t engaged;
     oca_result_t confirmed = oca_secure_boot_confirm(body, cb, ctx, &engaged);
     if (confirmed != OCA_OK) {
@@ -165,7 +172,12 @@ oca_result_t oca_check_signature_posture(const uint8_t *body,
     for (unsigned i = 0u; i < OCA_LEN_SIGNATURE_COHORT_ENFORCE; ++i) {
         cohort[i] = 0xFFu;
     }
-    if (cb->get_signature_class_revoke(revoke) != OCA_OK
+    if (cb->get_signature_class_revoke(revoke) != OCA_OK) {
+        return OCA_FAIL_CALLBACK_UNAVAILABLE;
+    }
+    /* Checked again where it is called: the first reader can change the
+     * table. */
+    if (cb->get_signature_cohort_enforce == 0
         || cb->get_signature_cohort_enforce(cohort) != OCA_OK) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
@@ -226,4 +238,5 @@ oca_result_t oca_check_signature_posture(const uint8_t *body,
 
     ctx->secure_boot_posture_met = OCA_SECURE_TRUE;
     return OCA_OK;
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 }

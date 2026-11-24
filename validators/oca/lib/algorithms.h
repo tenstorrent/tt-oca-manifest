@@ -1,0 +1,241 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+/**
+ * @file
+ * @brief The algorithms this build accepts, and the format's rules for each.
+ *
+ * Every algorithm the library knows how to judge is a row in a table, and the
+ * build configuration decides which rows are compiled in. A manifest value
+ * therefore resolves three ways: to a row, to an algorithm the format defines
+ * but this build does not enable, or to a value the format reserves.
+ *
+ * Adding an algorithm means adding its row to algorithms.c, with the sizes the
+ * format fixes for it, among other steps; validators/oca/README.md,
+ * "Implementing an algorithm", lists them all.
+ *
+ * This is an internal header — it is not part of the public library API.
+ */
+
+#ifndef OCA_ALGORITHMS_H
+#define OCA_ALGORITHMS_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "oca_layout.h"
+#include "oca_validator.h"
+
+/**
+ * @brief Whether a value of a one-byte algorithm field lies in the range the
+ *        format leaves to integrators, 0xF0 to 0xFF.
+ *
+ * Bounded above as well as below: the crypto types are wider than the byte
+ * fields they carry, and a value past the field is one the format reserves.
+ *
+ * @param[in] value  The field's value, as its crypto type.
+ * @return Non-zero from 0xF0 to 0xFF; zero otherwise.
+ */
+static inline int oca_integrator_byte(uint16_t value)
+{
+    return value >= 0xF0u && value <= 0xFFu;
+}
+
+/**
+ * @brief Whether a manifest may encode a value as ASN.1 DER.
+ *
+ * Kept apart from "not enabled" so a manifest that uses DER where the format
+ * defines none is a malformed description, while one that uses a DER the
+ * build turned off is a portfolio refusal. A byte, as the public header's
+ * value types are fixed-width, so a table row holds it without padding.
+ */
+typedef uint8_t oca_der_support_t;
+
+/** @brief The values of oca_der_support_t. */
+enum oca_der_support {
+    OCA_DER_UNDEFINED = 0,  /**< The format defines no DER form for this value. */
+    OCA_DER_DISABLED  = 1,  /**< Defined, but the build configuration turns it off. */
+    OCA_DER_ENABLED   = 2   /**< Defined and accepted. */
+};
+
+/**
+ * @brief The format's encoding rules for one signature algorithm.
+ *
+ * Sizes are from the format's encoded-length tables. A DER public key has no
+ * fixed size; its declared size is taken as exact. A DER signature's declared
+ * size is the algorithm's maximum DER length.
+ */
+typedef struct oca_signature_algorithm {
+    uint8_t           type;               /**< The signature_type_* value. */
+    uint16_t          public_key_raw;     /**< Raw public key length. */
+    uint16_t          signature_raw;      /**< Raw signature length. */
+    oca_der_support_t public_key_der;     /**< Whether a DER public key is accepted. */
+    oca_der_support_t signature_der;      /**< Whether a DER signature is accepted. */
+    uint16_t          signature_der_max;  /**< Largest DER signature; 0 when undefined. */
+} oca_signature_algorithm_t;
+
+#if !OCA_CFG_SECURE_BOOT_DISABLED
+/**
+ * @brief Resolve a signature_type value against the format and this build.
+ *
+ * The two classes number their algorithms independently and both reserve
+ * 0xF0 and above for integrator-defined algorithms, so the class decides how
+ * the value is read.
+ *
+ * @param[in]  family  Which class's signature_type field the value is from.
+ * @param[in]  type    The signature_type value.
+ * @param[out] status  Receives OCA_OK, OCA_FAIL_ALGORITHM_NOT_ENABLED or
+ *                     OCA_FAIL_ALGORITHM_RESERVED.
+ * @return The algorithm's row when this build enables it; NULL when the
+ *         format defines it but this build does not enable it, or when the
+ *         format reserves the value.
+ */
+const oca_signature_algorithm_t *oca_signature_algorithm(oca_key_algorithm_t family,
+                                                         oca_primitive_type_t type,
+                                                         oca_result_t *status);
+
+/**
+ * @brief Resolve a signature or public-key encoding value against the format.
+ *
+ * Decides only whether the class defines the encoding at all. Whether the
+ * algorithm defines it, and whether the build enables a DER it defines, is the
+ * algorithm row's to say.
+ *
+ * @param[in] family    Which class's *_encoding_* field the value is from.
+ * @param[in] encoding  The encoding value.
+ * @retval OCA_OK                          Raw, or for the classical class DER.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An integrator-defined encoding, which
+ *                                         this library implements none of.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     A value the format reserves, unset and
+ *                                         a PQC DER included.
+ * @return One of the codes above, by how the format treats @p encoding.
+ */
+oca_result_t oca_encoding_status(oca_key_algorithm_t family, oca_encoding_t encoding);
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
+
+/** @brief The largest digest any hash a build can enable produces. */
+#define OCA_HASH_MAX_DIGEST_SIZE 32u
+
+/* A digest is compared within its hash field, and the field is padded past it,
+ * so no digest may be wider than the field. */
+#if OCA_HASH_MAX_DIGEST_SIZE > OCA_LEN_HASH_FIELD
+#error "OCA_HASH_MAX_DIGEST_SIZE exceeds OCA_LEN_HASH_FIELD, the width of the hash fields digests are stored in"
+#endif
+
+/** @brief The format's rules for one digest algorithm. */
+typedef struct oca_hash_algorithm {
+    uint8_t type;         /**< The manifest_hash_type / payload_hash_type value. */
+    uint8_t digest_size;  /**< Digest length in bytes: the format's size for
+                               @c type, at most OCA_HASH_MAX_DIGEST_SIZE; the
+                               leading part of the hash field it is stored
+                               in. */
+} oca_hash_algorithm_t;
+
+/**
+ * @brief Resolve a manifest_hash_type or payload_hash_type value.
+ *
+ * Both fields draw on the same list of digests, and one build configuration
+ * section governs both.
+ *
+ * @param[in]  type    The hash-type value.
+ * @param[out] status  Receives OCA_OK, OCA_FAIL_ALGORITHM_NOT_ENABLED or
+ *                     OCA_FAIL_ALGORITHM_RESERVED.
+ * @return The digest's row when this build enables it; NULL when the format
+ *         defines it but this build does not enable it, or reserves the value.
+ */
+const oca_hash_algorithm_t *oca_hash_algorithm(oca_hash_type_t type, oca_result_t *status);
+
+/**
+ * @brief The digest size to use a hash row at.
+ *
+ * Every digest the library takes, compares or chains is sized through this,
+ * read once per use, so the size the callback writes is the size compared and
+ * no buffer is sized from a value nothing checked. The table's rows are held
+ * to the buffers at compile time; this holds a row that reached a use
+ * corrupted. Its size must be the one the format gives its type, so a size
+ * read short is refused rather than comparing part of each digest.
+ *
+ * @param[in] hash  A row from oca_hash_algorithm(), or NULL.
+ * @return The row's digest size, from 1 to OCA_HASH_MAX_DIGEST_SIZE; 0 when
+ *         @p hash is NULL, its size is not the format's for its type, or the
+ *         size is wider than the digest buffers, which a caller treats as a
+ *         digest that does not match.
+ */
+size_t oca_hash_digest_size(const oca_hash_algorithm_t *hash);
+
+/**
+ * @brief The format's rules for one payload cipher.
+ *
+ * Every cipher a build can enable today is a block mode with PKCS#7 padding,
+ * so its ciphertext is a whole number of blocks and runs 1 to block_size bytes
+ * longer than the plaintext.
+ */
+typedef struct oca_cipher_algorithm {
+    uint8_t type;        /**< The encryption_type value. */
+    uint8_t block_size;  /**< The cipher's block size in bytes. */
+} oca_cipher_algorithm_t;
+
+/**
+ * @brief Resolve an encryption_type value against the format and this build.
+ *
+ * Only an encrypted payload names a cipher; 0x00, which a cleartext manifest
+ * carries, is reserved here like every other value the format leaves unused.
+ *
+ * @param[in]  type    The encryption_type value.
+ * @param[out] status  Receives OCA_OK, OCA_FAIL_ALGORITHM_NOT_ENABLED or
+ *                     OCA_FAIL_ALGORITHM_RESERVED.
+ * @return The cipher's row when this build enables it; NULL when the format
+ *         defines it but this build does not enable it, or reserves the value.
+ */
+const oca_cipher_algorithm_t *oca_cipher_algorithm(oca_encryption_type_t type,
+                                                   oca_result_t *status);
+
+/**
+ * @brief Resolve an encryption_key_derivation_function value.
+ *
+ * The derivation itself is the decryption callback's; this decides only
+ * whether the callback may be asked for it.
+ *
+ * @param[in] kdf  The encryption_key_derivation_function value.
+ * @retval OCA_OK                          This build enables it.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  The format defines it; this build
+ *                                         does not enable it.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     The format reserves the value.
+ * @return One of the codes above, by how the format and the build treat @p kdf.
+ */
+oca_result_t oca_kdf_status(oca_kdf_t kdf);
+
+/**
+ * @brief Resolve an input_key_source value.
+ *
+ * The field must select exactly one source, so the empty pattern and every
+ * combination of sources are reserved along with the unassigned values.
+ *
+ * @param[in] source  The three-bit input_key_source value, already shifted
+ *                    down from payload_encryption_control.
+ * @retval OCA_OK                          This build enables it.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  The format defines it; this build
+ *                                         does not enable it.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     The format reserves the value — every
+ *                                         pattern but exactly one source,
+ *                                         including none.
+ * @return One of the codes above, by how the format and the build treat
+ *         @p source.
+ */
+oca_result_t oca_key_source_status(oca_key_source_t source);
+
+/**
+ * @brief Resolve an encryption_shared_secret_select value.
+ *
+ * The format names eight pre-shared secret slots, 1 to 8, and reserves every
+ * other value. A part need not hold a secret in every slot; the decryption
+ * callback reports an empty one with OCA_FAIL_NO_PROVISIONED_SECRET.
+ *
+ * @param[in] secret_select  The encryption_shared_secret_select value.
+ * @retval OCA_OK                       A slot the format names.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED  The format reserves the value.
+ * @return One of the codes above, by whether the format names
+ *         @p secret_select.
+ */
+oca_result_t oca_secret_select_status(uint16_t secret_select);
+
+#endif /* OCA_ALGORITHMS_H */

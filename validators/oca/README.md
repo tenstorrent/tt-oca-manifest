@@ -26,12 +26,16 @@ validators/oca/
 │   ├── oca_validator.h     # SOLE public header (format-agnostic API)
 │   ├── oca_validator.c     # entry point — dispatches on magic
 │   ├── oca_layout.h        # field offsets (mirrors the packer constants)
+│   ├── oca_config.toml     # the default build configuration
+│   ├── oca_config_check.h  # refuses a missing, malformed or wrong-version oca_config.h
 │   ├── ...                 # per-format decoders
 │   └── scripts/
+│       ├── gen_config.py   # generates oca_config.h from a build configuration
 │       └── sync_layout.py  # drift check against src/oca/constants.py
 └── test/              # host harness (NEVER ship to silicon)
     ├── main.c           # the CLI driver
     ├── unit_test.c      # in-tree C unit tests
+    ├── build_configs/   # build configurations for the variant-gated and hash-only targets
     └── fixtures/
         ├── configs/     # YAML configs that drive `make check`
         └── *.bin        # generated binaries (gitignored)
@@ -47,62 +51,116 @@ make check       # unit tests + packer-fixture round-trip sweep
 make clean
 ```
 
-The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic
+The library compiles `-std=c99 -Wall -Wextra -Werror -pedantic -Wundef
 -ffreestanding -nostdlib`. The host CLI links OpenSSL 3.5 or later (`-lcrypto`).
 
-### Compile-time overrides
+`make lib` can also build the library for a target. Name the cross compiler with
+`CC`, its archiver with `AR`, and the target's flags with `EXTRA_CFLAGS`. CI
+builds every configuration this way for rv32, with enums as small as their
+values allow:
 
-`EXTRA_CFLAGS` is the single hook for the feature gates (`OCA_TOC_MAX_IMAGES`,
-`OCA_SUPPORT_PQC=0`, …):
-
-```sh
-make EXTRA_CFLAGS="-DOCA_TOC_MAX_IMAGES=32" test
+```
+make lib CC=riscv64-unknown-elf-gcc AR=riscv64-unknown-elf-ar \
+    EXTRA_CFLAGS="-march=rv32imac -mabi=ilp32 -fshort-enums"
 ```
 
-Changing `EXTRA_CFLAGS` does force a rebuild. `make` decides what to recompile from file
-timestamps and never from the command line it last used, so the build records the
-flags in a stamp file (`build/*/.cflags`) that every object depends on. Without
-that, changing a `-D` and rebuilding into the same directory silently reused
-objects compiled with the previous value — a binary that did not match the flags
-you asked for, which has produced wrong test verdicts. The stamp is rewritten only
-when the flags actually differ, so an unchanged rebuild stays incremental. This is
-independent of your make version: **no** make tracks the command line it last used,
-so the stamp is required regardless.
+Only `lib` builds for a target. The CLI and the unit tests run on the host, so
+they need a host compiler.
 
-The `classic-only` / `pqc-only` targets use separate `BUILD` directories, so they
-never contend with the default build. Do the same for ad-hoc experiments if you
-want to keep both around:
+### Build configuration
+
+Every compile-time setting of the library lives in one TOML file. The build
+generates `build/gen/oca_config.h` from it before compiling anything, and the
+library does not compile without that header. `lib/oca_config.toml` is the
+default; name another with `CONFIG`. A relative path is resolved from
+`validators/oca`, the Makefile's directory, not from where you ran `make`:
 
 ```sh
-make BUILD=build/cap32 EXTRA_CFLAGS="-DOCA_TOC_MAX_IMAGES=32" all
+make CONFIG=path/to/board.toml test
 ```
 
-#### Available gates
+A configuration **replaces** the default rather than adjusting it. An unknown or
+misspelled key is an error, and the generator reports every problem in one pass.
+The settings in `[variants]`, `[limits]` and `[hardening]` are required: when a
+library upgrade adds one, your build stops until you choose its value, instead
+of inheriting one nobody reviewed. Every other setting is a switch, off unless
+the file turns it on, so a new algorithm stays off until you name it. The
+settings' former `-D` forms (`-DOCA_TOC_MAX_IMAGES=32` and the
+rest) are refused at compile time, naming the key that replaced each.
+`EXTRA_CFLAGS` remains for compiler flags only: sanitizers, warnings,
+optimization.
 
-| Symbol | Default | Effect |
-|---|---|---|
-| `OCA_SUPPORT_CLASSIC` | `1` | Compile in the `OCAC` variant. |
-| `OCA_SUPPORT_PQC` | `1` | Compile in the `OCAP` variant. |
-| `OCA_TOC_MAX_IMAGES` | `256` | Cap on payload TOC entries this build will process. |
-| `OCA_RECHECK_SECURITY_VERSION` | `1` | Re-evaluate anti-rollback after the signature verifies. |
+The generator, `lib/scripts/gen_config.py`, needs Python 3.11 or later and
+nothing beyond its standard library. The Makefile runs it with `PYTHON` when you
+set one, `python3` otherwise, and `CONFIG_PYTHON` overrides both. It rewrites
+the header only when the content changes, so an unchanged build stays
+incremental while editing the file, or switching `CONFIG`, rebuilds what
+depends on it. `INTEGRATION.md`, "Configuring the build", covers generating the
+header from another build system.
 
-`OCA_RECHECK_SECURITY_VERSION` is worth understanding before turning it off. The
-anti-rollback comparison runs *before* signature verification, so a replayed
-manifest is rejected without paying for a public-key operation. That early
-evaluation is sound in the rejection direction: the compared value is inside the
-signed region, so a manifest altered to change the outcome fails verification
-anyway.
+The header also names the build's portfolio: `OCA_CFG_PORTFOLIO_DIGEST` is a
+SHA-256 over the settings that are not zero, so it depends on the settings alone
+and not on the file's name, comments or order, and `OCA_CFG_PORTFOLIO_ID` is its
+first 32 bits. The library returns the digest from
+`oca_build_portfolio_digest()` and the shorter label from
+`oca_build_portfolio_id()`, and `build/test/oca-validate --build-info` prints
+both with the settings behind them and the library version. The header is
+sealed: it defines a macro named for the digest and every setting's value,
+which `lib/oca_config_check.h` rebuilds from what it finds, and it requires the
+label to be the digest's first 32 bits. A header whose settings, digest or
+label were edited apart from each other therefore fails the compile, so the
+library never reports a portfolio it does not build. The digest leaves out the
+library version, which `oca_validator_version()` returns and
+`OCA_VALIDATOR_VERSION_MAJOR`, `_MINOR` and `_PATCH` state; they are the
+package version, and `tests/test_oca_validator_version.py` fails when the two
+differ. `gen_config.py --print NAME`
+and `--print-all` give a build system a setting's value without parsing TOML:
 
-The second evaluation, which this gate controls, is therefore defence in depth
-rather than correctness — it catches a fault that skipped or glitched past the
-first. Setting it to `0` saves one device-state read and one 16-byte compare on
-the accept path, against a signature verification that dominates both. Disable it
-only on a target that genuinely cannot afford that, and knowing what is given up.
+```sh
+python3 -I lib/scripts/gen_config.py --config lib/oca_config.toml --print signature_pqc.ml_dsa_87
+```
 
-**If you script builds, use GNU Make 4.x.** older version of make (such as 3.81 that 
-macOS ships) compares timestamps at whole-second granularity. A script that rewrites 
-a source file and rebuilds within the same second gets `Nothing to be done` and a stale
-binary. 
+Code compiled against another header does not link with the library. The
+library defines a guard symbol named for every setting of the header it was
+compiled against, `oca_build_guard_variant_classic_1_variant_pqc_1_...`, and
+every file that includes `oca_validator.h` refers to the guard its own header
+names. A file compiled against a stale header or another board's therefore
+fails the link with an undefined reference to its guard, whose
+name spells the settings that file was compiled with. The reference costs one
+4-byte pointer in the image, shared by every file. It needs gcc 11 or later or
+clang 13 or later, which can keep it through a link that collects unused
+sections; another compiler builds without the guard. A program that includes
+the header but never links the library defines `OCA_BUILD_GUARD_OMIT` before
+including it. A missing header stops the compile with a message naming the
+generator.
+
+Changing `EXTRA_CFLAGS` or the compiler forces a rebuild too. `make` decides
+what to recompile from file timestamps and never from the command line it last
+used, so the build records the compiler and the flags in a stamp file
+(`build/*/.cflags`) that every object depends on. The compiler is recorded as
+its command, the target it reports with `-dumpmachine`, and the first line of
+its `--version`, so `CC=cc` still rebuilds when `cc` has come to name a
+different compiler. Without the stamp, rebuilding into the same directory
+silently reused objects built by the previous compiler or with the previous
+flags — a binary that did not match what you asked for. That has produced wrong
+test verdicts, and a host object in a cross-compiled archive. The stamp is
+rewritten only when its contents actually differ, so an unchanged rebuild stays
+incremental. This is independent of your make version: **no** make tracks the
+command line it last used, so the stamp is required regardless.
+
+The `classic-only`, `pqc-only` and `hash-only` targets build from
+`test/build_configs/` into separate `BUILD` directories, so they never contend
+with the default build. Do the same for ad-hoc experiments if you want to keep
+both around:
+
+```sh
+make BUILD=build/cap32 CONFIG=path/to/cap32.toml all
+```
+
+**If you script builds, use GNU Make 4.x.** Older versions of make, such as the
+3.81 macOS ships, compare timestamps at whole-second granularity. A script that
+rewrites a source file and rebuilds within the same second gets `Nothing to be
+done` and a stale binary.
 
 Interactive editing never hits this, since seconds always pass between saving and
 building. Scripted A/B harnesses that swap files in and out do. `brew install make`
@@ -120,7 +178,7 @@ Expected `make check` output (tail) — every unit test + every fixture
 round-trip passes:
 
 ```
-315/315 passed
+351/351 passed
 PASS: all_constraints
 PASS: basic
 PASS: control_plane
@@ -145,11 +203,143 @@ check: complete
 (Counts grow as tests and fixtures are added; the shape is what matters — every
 unit test and every fixture round-trip passes.)
 
+`make check` runs the unit tests under the build configuration it is given.
+pytest runs them again under configurations that, between them, turn off each
+variant, each signature algorithm, each DER encoding, each cipher and payload
+encryption as a whole (`tests/test_oca_build_config_matrix.py`). A test whose
+fixtures need something a configuration can turn off registers with
+`RUN_TEST_IF(needs, test)`, `needs` being an expression over the settings. In a
+build without it, the driver prints `NOT RUN: <test> (needs ...)` and counts it
+apart from the `N/N passed` summary. Tests of each setting's off branch run in
+every build and check what it refuses instead. Under the default configuration
+every test runs.
+
+#### Settings
+
+The default is the value `lib/oca_config.toml` states. A switch the file leaves
+out — every row from `[secure_boot]` down — is off.
+
+| Key | Default | Effect |
+|---|---|---|
+| `[variants] classic` | `true` | Accept the `OCAC` variant. |
+| `[variants] pqc` | `true` | Accept the `OCAP` variant. |
+| `[limits] toc_max_images` | `256` | Cap on payload TOC entries this build will process (exposed to code as `OCA_TOC_MAX_IMAGES`). |
+| `[hardening] recheck_security_version` | `true` | Re-evaluate anti-rollback after the signature verifies (`OCA_RECHECK_SECURITY_VERSION`). |
+| `[secure_boot] disabled` | `false` | Declare a build that verifies no signature, and compile out the code that would. Required when no signature algorithm is on; refused alongside one, or alongside payload encryption. |
+| `[hash] sha2_256` | `true` | Compute SHA2-256 for `manifest_hash_type` and `payload_hash_type`. At least one hash must be on. |
+| `[signature_classic] rsa_3072_pkcs1v15_sha256` | `true` | Verify RSA-3072, RSASSA-PKCS1-v1_5, SHA-256. |
+| `[signature_classic] ecdsa_p256_sha256` | `true` | Verify ECDSA P-256, SHA-256. |
+| `[signature_pqc] ml_dsa_87` | `true` | Verify FIPS 204 ML-DSA-87. Needs `[variants] pqc`. |
+| `[der] rsa_public_key` | `true` | Accept DER (PKCS#1) RSA public keys. Needs an RSA algorithm. |
+| `[der] ecdsa_signature` | `true` | Accept DER ECDSA signatures. Needs an ECDSA algorithm. |
+| `[encryption_cipher] aes_128_cbc` | `true` | Decrypt AES-128-CBC payloads. |
+| `[encryption_cipher] aes_256_cbc` | `true` | Decrypt AES-256-CBC payloads. |
+| `[encryption_kdf] sp800_108_hmac_sha256` | `true` | Derive the payload key with SP 800-108r1 counter mode, HMAC-SHA-256. |
+| `[encryption_key_source] preshared` | `true` | Take the input key from a provisioned secret. |
+
+A cipher, a KDF and a key source are enabled together or not at all. A build
+that enables none of them refuses every encrypted payload.
+
+At least one variant must be on. A variant turned off is refused with
+`OCA_FAIL_UNSUPPORTED_VARIANT` instead of validated.
+
+The algorithm sections are the build's portfolio, and they work differently
+from the settings above: an algorithm or encoding the file does not name is
+off, so the file lists what the build accepts and nothing is accepted by
+default. Every algorithm the format defines may be named — `lib/oca_config.toml`
+lists them — but only those with a row in `lib/algorithms.c` may be turned on;
+turning on any other stops the generator, naming it as not implemented. A
+manifest that names an algorithm or DER encoding the build leaves off is refused
+with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, before any signature is checked.
+
+The least a build can be is one variant and one hash: it checks each manifest's
+and payload's integrity and verifies no signature, for a part that does not use
+secure boot. Leaving every signature algorithm out is refused unless the file
+also declares it, with `[secure_boot] disabled = true`, so giving up
+authentication is a decision rather than an omission. That declaration is
+refused alongside a signature algorithm, and alongside payload encryption, since
+a payload is decrypted only once its manifest's signature verifies. The
+declaration compiles out every check that needs secure boot, about a third of
+the library; each of their entry points remains, refusing a manifest that
+needs one. Such a build refuses every manifest that asserts secure boot with
+`OCA_FAIL_ALGORITHM_NOT_ENABLED` and every encrypted payload, boots nothing on a
+part that enforces secure boot, and never commits device state.
+`INTEGRATION.md`, "A part that does not use secure boot", says what remains.
+`test/build_configs/hash_only.toml` is that build, and `make hash-only` builds
+it. `tests/test_oca_c_validator_integration.py` runs every fixture through that
+build's CLI: those without secure boot must pass, and the rest must be refused.
+
+`recheck_security_version` is worth understanding before turning it off. The
+anti-rollback comparison runs *before* signature verification, so a replayed
+manifest is rejected without paying for a public-key operation. That early
+evaluation is sound in the rejection direction: the compared value is inside the
+signed region, so a manifest altered to change the outcome fails verification
+anyway.
+
+The second evaluation, which this setting controls, is therefore defence in depth
+rather than correctness — it catches a fault that skipped or glitched past the
+first. Setting it to `0` saves one device-state read and one 16-byte compare on
+the accept path, against a signature verification that dominates both. Disable it
+only on a target that genuinely cannot afford that, and knowing what is given up.
+
+#### Implementing an algorithm
+
+The format defines more algorithms than the library implements.
+`gen_config.py` lists each one as a switch without a macro, so naming it stops
+the generator. Implementing one takes every step below; the tests named in each
+fail until it is done.
+
+1. **A signature algorithm starts in the packer.** The validator's signature
+   rows must be exactly the types the packer writes, and the default
+   configuration must enable every algorithm the packer writes
+   (`tests/test_oca_primitive_enum_sync.py`,
+   `tests/test_oca_build_config_generator.py`).
+   The packer and the validator therefore gain it in one change, on by default.
+   The packer accepts only what the boot ROM does, so this also needs the
+   amendment to the cryptographic rules that `AGENTS.md` describes.
+2. **Name it in the public header.** A signature algorithm needs an
+   enumerator equal to its code in `enum oca_primitive_type`, which lists the
+   `oca_primitive_type_t` values, because the library hands the manifest's byte
+   to `verify_signature` untranslated. If the enumerator is already there,
+   remove it from `_SPEC_ONLY` in `tests/test_oca_primitive_enum_sync.py`. A
+   hash, cipher, KDF or key source needs its enumerator in `enum oca_hash_type`,
+   `oca_encryption_type`, `oca_kdf` or `oca_key_source`, the values of the
+   type its callback receives.
+3. **Add its row to `lib/algorithms.c`**, under `#if` of its macro and in the
+   shape of the rows already there, with the sizes the format's encoded-length
+   tables fix. A KDF or key source has no table; add its value to
+   `oca_kdf_status()` or `oca_key_source_status()` the same way.
+4. **A hash wider than 32 bytes** raises `OCA_HASH_MAX_DIGEST_SIZE` in
+   `lib/algorithms.h`, the width of every digest buffer. It cannot pass the
+   64-byte hash fields, and a row wider than it stops the build.
+5. **An algorithm with a DER form** shares its `[der]` switch: add its setting
+   to that switch's `requires` in `gen_config.py`, and give its row the
+   switch's DER macro from `lib/algorithms.c`.
+6. **Give its `Setting` a macro** in `gen_config.py`. The generator's rules
+   that span settings read its lists and need nothing more.
+7. **Add the macro to `lib/oca_config_check.h`**: a missing-setting guard, a
+   line in the 0-or-1 check, and every guard that names the macros of its kind.
+   Those are the signature guards (no algorithm, and `[secure_boot] disabled`),
+   the PQC-variant guard, the no-hash guard and the payload-encryption guards.
+   The guard that pairs the cipher, KDF and key source compares one of each, so
+   a second KDF or key source means rewriting it to compare any of each. Add it
+   to the build guard's name too, in `OCA_BUILD_GUARD_NAME()` and
+   `OCA_BUILD_GUARD_PASTE()`, in the generator's order;
+   `tests/test_oca_build_guard.py` fails until the name spells every setting.
+8. **Turn it on** in `lib/oca_config.toml`, add it to the settings table above,
+   and decide its value in each file in `test/build_configs/`.
+9. **Test it.** Implement it in the CLI's `test/openssl_crypto.c`, add a fixture
+   under `test/fixtures/configs/`, register any unit test that needs it with
+   `RUN_TEST_IF`, and add a configuration that turns it off to
+   `UNIT_TEST_CONFIGURATIONS` in `tests/oca_fixtures/generator.py`. The
+   code-point probe in `tests/test_oca_build_config_code_points.py` then holds
+   its row to the generator's list, and its revocation bit to its definition.
+
 ### Prerequisites
 
 - A host C toolchain (gcc 12+ or clang 16+) with `-std=c99` support.
 - GNU Make. 3.81 (what macOS bundles) works for ordinary use; **4.x is preferred
-  if you script builds** — see "Compile-time overrides" for why.
+  if you script builds** — see "Build configuration" for why.
 - OpenSSL 3.5 or later development headers, discovered via `pkg-config` (macOS:
   `brew install openssl@3`; Debian 13+ or Ubuntu 26.04+: `apt install libssl-dev`).
   The CLI verifies ML-DSA-87, which OpenSSL provides from 3.5. When `pkg-config`
@@ -196,25 +386,30 @@ The Makefile also auto-discovers a venv at `<repo>/.venv` or
 The
 [OCA boot manifest specification](https://www.openchipletatlas.org/specifications/oca/latest)
 asks every consumer implementor to document the "security portfolio" — the
-algorithms and manifest capabilities it supports. This library accepts the
-following and rejects everything else it is asked to act upon on the current
-boot path.
+algorithms and manifest capabilities it supports. This library can accept the
+following, and the default build configuration enables all of it. A build's
+configuration chooses which of these it accepts ([Settings](#settings)); a
+manifest naming an algorithm the build does not enable is refused with
+`OCA_FAIL_ALGORITHM_NOT_ENABLED`, and one naming a value the format reserves
+with `OCA_FAIL_ALGORITHM_RESERVED`. Everything else the library is asked to act
+upon on the current boot path is rejected too.
 
 | Manifest field | Supported value(s) | Notes |
 |----------------|--------------------|-------|
 | manifest format (magic) | `OCAC` (classic), `OCAP` (PQC) | one library parses both; magic selects the path |
-| `manifest_hash_type` | SHA2-256 (`0x01`) | the only digest this build recomputes; any other is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` before anything is hashed |
-| `payload_hash_type` | SHA2-256 (`0x01`) | covers `payload_hash`, the chain and every TOC entry hash; any other is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` when a payload is declared |
-| `signature_type_classic` | RSA-3072-PKCS#1v1.5-SHA256 (`0x01`), ECDSA-P256-SHA256 (`0x05`) | the primitive is passed to the host `verify_signature` callback; the callback owns the math |
-| `signature_encoding_classic` / `public_key_encoding_classic` | raw (`0x02`); ASN.1 DER (`0x01`) for RSA public keys and ECDSA signatures | under secure boot, every key and signature field of an enforced class must be zero past its declared size, or the manifest is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
+| `manifest_hash_type` | SHA2-256 (`0x01`) | computed by the host `hash` callback; any other digest the format defines is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED` before anything is hashed, a reserved value with `OCA_FAIL_ALGORITHM_RESERVED` |
+| `payload_hash_type` | SHA2-256 (`0x01`) | covers `payload_hash`, the chain and every TOC entry hash; refused like `manifest_hash_type` when a payload is declared, by `oca_validate_manifest()` before the signature and again at the payload stage. `payload_hash` and `payload_hash_chain` must be zero past the digest, as `manifest_hash` must, or the payload is refused with `OCA_FAIL_PAYLOAD_HASH` or `OCA_FAIL_PAYLOAD_HASH_CHAIN` |
+| `signature_type_classic` | RSA-3072-PKCS#1v1.5-SHA256 (`0x01`), ECDSA-P256-SHA256 (`0x05`) | the primitive is passed to the host `verify_signature` callback; the callback owns the math. Under secure boot, any other algorithm the format defines is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, a reserved value with `OCA_FAIL_ALGORITHM_RESERVED` |
+| `signature_encoding_classic` / `public_key_encoding_classic` | raw (`0x02`); ASN.1 DER (`0x01`) for RSA public keys and ECDSA signatures | each DER encoding can be turned off in `[der]`, after which it is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`; DER for any other value is `OCA_FAIL_CRYPTO_FIELD_SIZE`. An integrator encoding (`0xF0`–`0xFF`) is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, any other value with `OCA_FAIL_ALGORITHM_RESERVED`. Under secure boot, every key and signature field of an enforced class must be zero past its declared size, or the manifest is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
 | `secure_boot_control` signature classes | classical, PQC, or both (hybrid) | under secure boot at least one class must be set, and the PQC class only on an `OCAP` manifest (else `OCA_FAIL_SIGNATURE_CLASS_CONTROL`); each enforced class's key is authorized against its own anchor family, and a hybrid manifest needs both signatures to verify |
-| `signature_type_pqc` | ML-DSA-87 (`0x33`) | pure FIPS 204 over the signed region, empty context; the host `verify_signature` callback owns the math |
-| `signature_encoding_pqc` / `public_key_encoding_pqc` | raw (`0x02`) only, with exact sizes: 4627-byte signature, 2592-byte key | any other PQC primitive, encoding or size is refused with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
+| `signature_type_pqc` | ML-DSA-87 (`0x33`) | pure FIPS 204 over the signed region, empty context; the host `verify_signature` callback owns the math. ML-DSA-44 / -65 and SLH-DSA are refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, a reserved value (including `0x41` / `0x42`, held for FN-DSA) with `OCA_FAIL_ALGORITHM_RESERVED` |
+| `signature_encoding_pqc` / `public_key_encoding_pqc` | raw (`0x02`) only, with exact sizes: 4627-byte signature, 2592-byte key | an integrator encoding (`0xF0`–`0xFF`) is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, any other encoding, DER included, with `OCA_FAIL_ALGORITHM_RESERVED`, and any other size with `OCA_FAIL_CRYPTO_FIELD_SIZE` |
 | device signature posture (`signature_class_revoke`, `signature_cohort_enforce` as committed) | per-algorithm class bits and the `0xCA` / `0xAC` group codes; the ROOT key's cohort nibble | applied at every secure boot by `oca_check_signature_posture()`: an enforced class whose algorithm the device has disabled is refused with `OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED`, and a manifest that does not enforce a cohort the device demands of the ROOT key with `OCA_FAIL_SIGNATURE_COHORT_REQUIRED` |
-| `encryption_type` | AES-128-CBC (`0x01`) or AES-256-CBC (`0x02`) + PKCS#7 | payload decryption is delegated to the host `decrypt_payload` callback; the key length follows the type |
-| `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below). Any other value on an encrypted payload is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` |
-| `input_key_source` | pre-shared secret (b001) | any other source on an encrypted payload, the KEM-unwrapped DEK included, is refused with `OCA_FAIL_UNSUPPORTED_ALGORITHM` |
-| payload `image_count` | 1 .. `OCA_TOC_MAX_IMAGES` (default **256**) | a consumer resource limit, not a format limit — see below |
+| `encryption_type` | AES-128-CBC (`0x01`) or AES-256-CBC (`0x02`) + PKCS#7 | payload decryption is delegated to the host `decrypt_payload` callback; the key length follows the type. Any other cipher, KDF or key source is refused by `oca_validate_manifest()` before the signature, and again before the ciphertext is hashed: `OCA_FAIL_ALGORITHM_NOT_ENABLED` for one the format defines, `OCA_FAIL_ALGORITHM_RESERVED` otherwise |
+| `encryption_key_derivation_function` | NIST SP 800-108r1 CTR-HMAC-SHA256 (`0x0001`) | key material is provisioned host-side; the KDF consumes a 192-byte structured input block (see below). Any other value on an encrypted payload is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`, or `OCA_FAIL_ALGORITHM_RESERVED` for one the format reserves |
+| `input_key_source` | pre-shared secret (b001) | the KEM-unwrapped DEK (b010) is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`; every other pattern, including none and two sources at once, with `OCA_FAIL_ALGORITHM_RESERVED` |
+| `encryption_shared_secret_select` | slots 1 to 8 | the host `decrypt_payload` callback resolves the slot, and reports one the part holds no secret for with `OCA_FAIL_NO_PROVISIONED_SECRET`; every other value is reserved and refused with `OCA_FAIL_ALGORITHM_RESERVED` before the callback is invoked |
+| payload `image_count` | 1 .. `toc_max_images` (default **256**) | a consumer resource limit, not a format limit — see below |
 
 **Payload TOC size limit.** The format sets no upper bound on `image_count`, so
 the only structural constraint is that the TOC fit inside the payload — a bound
@@ -229,18 +424,15 @@ far above any real boot payload) and reports
 `OCA_FAIL_PAYLOAD_TOO_MANY_IMAGES` — deliberately distinct from
 `OCA_FAIL_PAYLOAD_TOC` so a field failure distinguishes "this consumer refuses a
 manifest this large" from "this TOC is malformed". Tighten it for a smaller
-budget:
-
-```
-make EXTRA_CFLAGS="-DOCA_TOC_MAX_IMAGES=32"
-```
+budget with `toc_max_images` in the `[limits]` section of your build
+configuration.
 
 Note this is a documented *deviation*: a manifest above the cap may be entirely
 spec-legal. The spec states the principle that a Consumer may refuse what its own
 portfolio cannot support, and a resource ceiling is the same kind of declaration —
 which is why it is recorded here rather than left implicit in a buffer size.
 
-Cryptography itself is never performed inside the library — SHA-256, signature
+Cryptography itself is never performed inside the library — hashing, signature
 verification, and payload decryption are all host-supplied callbacks (see
 `oca_validator.h`). This table describes which manifest-declared algorithm
 *values* the library is prepared to route to those callbacks.
@@ -263,11 +455,20 @@ state, so it is reproducible in every lifecycle state.
 **Not supported (rejected or not yet verified).** These are documented so an
 integrator knows the current boundary:
 
-- **PQC signature algorithms other than ML-DSA-87** — ML-DSA-44 / -65 and
-  SLH-DSA are refused with `OCA_FAIL_CRYPTO_FIELD_SIZE`.
-- **Composite CBC-HMAC and AEAD (e.g. GCM-SIV) encryption modes**, and
-  **KEM-unwrapped DEK** (`input_key_source` b010) — only plain AES-128-CBC and
-  AES-256-CBC with a pre-shared secret are handled.
+- **Digests other than SHA2-256** — the format's SHA2-384/-512, SHA3 and
+  SHAKE256 digests are listed in `[hash]` but not implemented, so a manifest
+  naming one is refused with `OCA_FAIL_ALGORITHM_NOT_ENABLED`.
+- **Signature algorithms other than RSA-3072-PKCS#1v1.5, ECDSA-P256 and
+  ML-DSA-87** — the library has no rules for the format's other RSA, ECDSA,
+  EdDSA, ML-DSA and SLH-DSA algorithms, so no build configuration can turn one
+  on (the generator stops the build). Manifests naming them are refused with
+  `OCA_FAIL_ALGORITHM_NOT_ENABLED`. "Implementing an algorithm" above lists
+  every step of adding one.
+- **Composite CBC-HMAC and AEAD (e.g. GCM-SIV) encryption modes, SM4, KDFs
+  other than SP 800-108r1 with HMAC-SHA-256, and the KEM-unwrapped DEK**
+  (`input_key_source` b010) — only plain AES-128-CBC and AES-256-CBC, derived
+  from a pre-shared secret, can be enabled. The others are listed in the build
+  configuration and refused there as not implemented.
 - **Verifier key entry and co-signer entry verification** — the appended-entry
   trust chain is not walked.
 - **Cohort enforcement for the verifier key and co-signers** — the device's

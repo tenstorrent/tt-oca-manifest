@@ -20,6 +20,39 @@
 #include "selector.h"
 #include "version_range.h"
 
+/** The guard every file compiled against this build's header refers to; see
+ *  oca_config_check.h. */
+const char OCA_BUILD_GUARD = 0;
+
+/** Stops the build if the minor or patch version exceeds 255, the most its 8
+ *  bits of OCA_VALIDATOR_VERSION can hold. */
+typedef char oca_validator_version_fits[
+    (OCA_VALIDATOR_VERSION_MINOR <= 0xffu && OCA_VALIDATOR_VERSION_PATCH <= 0xffu) ? 1 : -1];
+
+uint32_t oca_validator_version(void)
+{
+    return OCA_VALIDATOR_VERSION;
+}
+
+/** The portfolio digest the generated header states. */
+static const uint8_t PORTFOLIO_DIGEST[] = { OCA_CFG_PORTFOLIO_DIGEST };
+
+/** Stops the build when the header states other than a whole digest, which an
+ *  initializer short of it would otherwise pad with zeros. */
+typedef char oca_portfolio_digest_is_whole[
+    (sizeof PORTFOLIO_DIGEST == OCA_PORTFOLIO_DIGEST_SIZE) ? 1 : -1];
+
+const uint8_t *oca_build_portfolio_digest(void)
+{
+    return PORTFOLIO_DIGEST;
+}
+
+uint32_t oca_build_portfolio_id(void)
+{
+    return ((uint32_t)PORTFOLIO_DIGEST[0] << 24) | ((uint32_t)PORTFOLIO_DIGEST[1] << 16)
+           | ((uint32_t)PORTFOLIO_DIGEST[2] << 8) | (uint32_t)PORTFOLIO_DIGEST[3];
+}
+
 const char *oca_result_str(oca_result_t r)
 {
     switch (r) {
@@ -65,7 +98,8 @@ const char *oca_result_str(oca_result_t r)
         case OCA_FAIL_SIGNATURE_COHORT_REQUIRED: return "SIGNATURE_COHORT_REQUIRED";
         case OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED:
                                                 return "SIGNATURE_ALGORITHM_REVOKED";
-        case OCA_FAIL_UNSUPPORTED_ALGORITHM:    return "UNSUPPORTED_ALGORITHM";
+        case OCA_FAIL_ALGORITHM_NOT_ENABLED:    return "ALGORITHM_NOT_ENABLED";
+        case OCA_FAIL_ALGORITHM_RESERVED:       return "ALGORITHM_RESERVED";
     }
     return "UNKNOWN";
 }
@@ -178,12 +212,12 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
                                    const oca_callbacks_t *cb,
                                    oca_validation_context_t *ctx)
 {
-    /* The secure boot determination has to land somewhere every check below can 
+    /* The secure boot determination has to land somewhere every check below can
      * read it, whether or not the caller wanted the record. A caller passing NULL
      * is declining the REPORT, not the determination, so the composition owns a
      * context for that case and every check downstream is reached identically on
      * both paths. One composition, not one for callers who supply a context and
-     * another for callers who do not: two would be free to drift */
+     * another for callers who do not: two would be free to drift. */
     oca_validation_context_t owned;
     oca_validation_context_t *vctx = (ctx != 0) ? ctx : &owned;
 
@@ -257,26 +291,26 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
     if (r != OCA_OK) return r;
     r = oca_check_signature_class_variant(body);
     if (r != OCA_OK) return r;
-    /* Confirm the consistency of the signature revocation group codes; if these
-    values are mal-formed then the manifest is suspect. We don't care what
-    algorithms are actually revoked here. That check can only be done against the 
-    on device fuse values */
+    /* Confirm the signature revocation group codes are consistent; a manifest
+     * with malformed ones is suspect. Which algorithms are revoked does not
+     * matter here: that can only be checked against the device's fuse values. */
     r = oca_check_signature_class_group_codes(body);
     if (r != OCA_OK) return r;
 
     /* Secure boot determination
      *
-     * Every check below that gates on secure boot re-derives the same values as this 
-     * and requires the answer to still match what was recorded 
-     * (see oca_secure_boot_confirm()).
-     * So this establishes a REFERENCE, not a verdict they inherit.
+     * Every check below that gates on secure boot re-derives the same values as
+     * this and requires the answer to still match what was recorded (see
+     * oca_secure_boot_confirm()). So this establishes a REFERENCE, not a verdict
+     * they inherit.
      *
-     * That combination is the point. Deriving independently at each check, let a 
-     * single glitched reporter read at the signature site skip signature 
-     * verification alone, with revocation and anti-rollback none the wiser and nothing comparing the two. Recording once and having
-     * everyone simply READ it would be worse: one glitched determination would
-     * disarm all of them at once. Doing both costs an attacker a consistent fault
-     * at the determination AND at every confirm.
+     * That combination is the point. Deriving independently at each check would
+     * let a single glitched reporter read at the signature site skip signature
+     * verification alone, with revocation and anti-rollback none the wiser and
+     * nothing comparing the two. Recording once and having everyone simply READ
+     * it would be worse: one glitched determination would disarm all of them at
+     * once. Doing both costs an attacker a consistent fault at the determination
+     * AND at every confirm.
      *
      * Placed after framing, integrity, and the structural checks, because the
      * determination's highest-priority input is a manifest bit and settling the
@@ -299,6 +333,15 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
      * Necessary but not sufficient — the confirmed form runs at the end, once
      * the signature has actually been checked. */
     r = oca_check_payload_encryption_precondition(body, cb, vctx);
+    if (r != OCA_OK) return r;
+
+    /* Refuse a payload whose hash, cipher, KDF or key source this build does
+     * not enable. These are manifest fields, so a manifest read is enough to
+     * reject it before any expensive check runs. It comes after the encryption
+     * precondition so that an encrypted payload on a part without secure boot
+     * reports that failure instead. oca_check_payload_at() checks again at the
+     * point of use. */
+    r = oca_check_payload_algorithms(body);
     if (r != OCA_OK) return r;
 
     /* The signing description, under secure boot only, keyed on the
@@ -346,7 +389,7 @@ oca_result_t oca_validate_manifest(const uint8_t *body,
     r = oca_check_demotion_control(body);
     if (r != OCA_OK) return r;
 
-    /* Authenticity check based on cryptographic signatures 
+    /* Authenticity check based on cryptographic signatures.
      * Integrity was settled earlier, by oca_check_manifest_hash.
      *
      * ROOT-key authorization runs first, so a key the device does not trust is

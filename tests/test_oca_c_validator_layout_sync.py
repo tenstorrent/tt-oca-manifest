@@ -66,26 +66,31 @@ def _load_sync_layout():
     return module
 
 
-def _sync_passes(monkeypatch, extra_mapping: dict) -> bool:
-    """Run the drift gate in process with `extra_mapping` added to MAPPING."""
+def _sync_passes(monkeypatch, extra_mapping: dict, extra_headers=()) -> bool:
+    """Run the drift gate in process with `extra_mapping` added to MAPPING and
+    `extra_headers` to the C headers it reads."""
     sync_layout = _load_sync_layout()
     monkeypatch.setattr(sync_layout, "MAPPING", {**sync_layout.MAPPING, **extra_mapping})
+    monkeypatch.setattr(sync_layout, "C_HEADERS", [*sync_layout.C_HEADERS, *extra_headers])
     monkeypatch.setattr(sys, "argv", [SYNC_SCRIPT])
     return sync_layout.main() == 0
 
 
-def test_sync_gate_pins_a_c_value_to_an_enum_member(monkeypatch):
+def test_sync_gate_pins_a_c_value_to_an_enum_member(monkeypatch, tmp_path):
     """`EnumName.MEMBER` resolves to the member's value, so a C value whose
-    only Python form is an enum member is compared, not skipped."""
+    only Python form is an enum member is compared, not skipped. The C value is
+    planted in a header of its own, so the pairing is a true one."""
     from tt_boot_manifest.oca import constants as oca_consts
 
     sync_layout = _load_sync_layout()
     assert sync_layout.python_value(oca_consts, "OcaClassicHashType.SHA2_256") == 0x01
     assert sync_layout.python_value(oca_consts, "OFF_MANIFEST_HASH_TYPE") == 2067
-    assert _sync_passes(monkeypatch, {
-        "OCA_HASH_TYPE_SHA2_256": ("OcaClassicHashType.SHA2_256", "hex")})
-    assert not _sync_passes(monkeypatch, {
-        "OCA_HASH_TYPE_SHA2_256": ("OcaClassicSignatureType.ECDSA_P256_SHA256", "hex")})
+    mapping = {"OCA_PLANTED_HASH_TYPE_SHA2_256": ("OcaClassicHashType.SHA2_256", "hex")}
+    header = tmp_path / "planted.h"
+    header.write_text("#define OCA_PLANTED_HASH_TYPE_SHA2_256 0x01u\n")
+    assert _sync_passes(monkeypatch, mapping, extra_headers=[header])
+    header.write_text("#define OCA_PLANTED_HASH_TYPE_SHA2_256 0x02u\n")
+    assert not _sync_passes(monkeypatch, mapping, extra_headers=[header])
 
 
 @pytest.mark.parametrize("py_name", ["NO_SUCH_CONSTANT", "OcaClassicHashType.NO_SUCH_MEMBER"])

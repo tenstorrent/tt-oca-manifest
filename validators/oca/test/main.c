@@ -111,9 +111,11 @@ static const char *reason_for(oca_result_t r)
         case OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED:
             return "a signature this manifest relies on uses an algorithm the "
                    "device has disabled (see --signature-class-revoke)";
-        case OCA_FAIL_UNSUPPORTED_ALGORITHM:
-            return "manifest declares a hash, key derivation function, or input "
-                   "key source this build does not implement";
+        case OCA_FAIL_ALGORITHM_NOT_ENABLED:
+            return "manifest names an algorithm or encoding this build's "
+                   "configuration does not enable";
+        case OCA_FAIL_ALGORITHM_RESERVED:
+            return "manifest names an algorithm value the format reserves";
         case OCA_FAIL_SIGNATURE_CLASS_CONTROL:
             return "secure_boot_control class bits name a signature policy this "
                    "manifest cannot satisfy (neither class selected under secure "
@@ -162,8 +164,8 @@ static const char *reason_for(oca_result_t r)
                    "0x00 nor its group's constant, or a group sets every class "
                    "bit without its group code";
         case OCA_FAIL_CRYPTO_FIELD_SIZE:
-            return "signing fields name an algorithm, encoding or size this "
-                   "library does not accept";
+            return "signing fields declare a size, or a DER encoding, the "
+                   "algorithm does not define";
         case OCA_FAIL_INVALID_ARG:
             return "internal: invalid argument";
         case OCA_OK:
@@ -507,7 +509,7 @@ int main(int argc, char **argv)
 
     oca_callbacks_t cb;
     memset(&cb, 0, sizeof(cb));
-    cb.sha256              = openssl_sha256;
+    cb.hash                = openssl_hash;
     cb.verify_signature    = openssl_verify_signature;
     cb.decrypt_payload     = openssl_decrypt_payload;
     cb.is_key_authorized   = cli_is_key_authorized;

@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Tenstorrent USA, Inc.
+#
+# Build configuration for the OCA validator library: the default.
+#
+# Every compile-time setting of the library lives in a file like this one.
+# lib/scripts/gen_config.py turns it into oca_config.h, and the library refuses
+# to compile without that header. To configure a build, copy this file outside
+# the vendored lib/ directory, edit the copy, and generate from it. Your file
+# replaces this one entirely, and nothing here is merged into it. The settings
+# in [variants], [limits] and [hardening] must be stated. Every other setting is
+# a switch, off unless your file turns it on.
+
+[variants]
+# Which manifest variants this build accepts. A variant set to false is refused
+# with OCA_FAIL_UNSUPPORTED_VARIANT instead of validated. At least one must be
+# true.
+classic = true
+pqc = true
+
+[limits]
+# Most payload TOC entries this build processes, 1 to 4294967295. The format
+# sets no upper bound, and the TOC overlap check is quadratic in the count, so
+# a larger TOC is refused with OCA_FAIL_PAYLOAD_TOO_MANY_IMAGES.
+toc_max_images = 256
+
+[hardening]
+# Evaluate anti-rollback a second time, after the signature verifies. The first
+# evaluation already decides; the second catches a fault that skipped it.
+recheck_security_version = true
+
+[secure_boot]
+# Declares a build that verifies no signature: it checks manifest and payload
+# integrity only. Every manifest that asserts secure boot is then refused with
+# OCA_FAIL_ALGORITHM_NOT_ENABLED, a part that enforces secure boot boots
+# nothing, and device state is never committed, since a commit needs an
+# authenticated manifest. Required when no signature algorithm is enabled, and
+# refused alongside one, or alongside payload encryption, which is decrypted
+# only once a signature verifies. Off when left out.
+disabled = false
+
+[hash]
+# Digests this build computes, for both manifest_hash_type and
+# payload_hash_type. Every manifest carries a manifest_hash, so at least one
+# must be on. The format also defines the other SHA2 and SHA3 lengths and
+# SHAKE256, not implemented yet.
+sha2_256 = true
+
+[signature_classic]
+# Classical signature algorithms this build verifies. Any algorithm not listed
+# here as true is refused with OCA_FAIL_ALGORITHM_NOT_ENABLED. The format also
+# defines rsa_3072_pss_sha256, rsa_4096_pkcs1v15_sha512, rsa_4096_pss_sha512,
+# ecdsa_p384_sha384, ecdsa_p521_sha512, ed25519 and ed448; the library has no
+# rules for those yet, so turning one on stops the build.
+rsa_3072_pkcs1v15_sha256 = true
+ecdsa_p256_sha256 = true
+
+[signature_pqc]
+# Post-quantum signature algorithms this build verifies; needs [variants] pqc.
+# The format also defines ml_dsa_44, ml_dsa_65 and the six slh_dsa_* parameter
+# sets, which are not implemented yet.
+ml_dsa_87 = true
+
+[der]
+# ASN.1 DER encodings, where the format defines one. Raw encodings are always
+# accepted. Turned off, a manifest using the encoding is refused with
+# OCA_FAIL_ALGORITHM_NOT_ENABLED; each needs an algorithm of its family.
+rsa_public_key = true
+ecdsa_signature = true
+
+[encryption_cipher]
+# Payload ciphers this build decrypts. A cipher, a KDF and a key source are
+# enabled together, or none of them, in which case every encrypted payload is
+# refused with OCA_FAIL_ALGORITHM_NOT_ENABLED. The format also defines the
+# AES CBC-HMAC and GCM-SIV modes and two SM4 modes, not implemented yet.
+aes_128_cbc = true
+aes_256_cbc = true
+
+[encryption_kdf]
+# How the payload key is derived from the input key. The format also defines
+# none, the other SP 800-108r1 variants, KMAC and HKDF, not implemented yet.
+sp800_108_hmac_sha256 = true
+
+[encryption_key_source]
+# Where the input key comes from. The KEM-unwrapped DEK (kem), and with it every
+# [encryption_kem] function, is not implemented yet.
+preshared = true

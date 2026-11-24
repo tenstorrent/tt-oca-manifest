@@ -18,20 +18,23 @@
 #include "oca_validator.h"
 
 /**
- * @brief Unavailable-sentinel stub standing in for an unwired sha256 callback.
+ * @brief Unavailable-sentinel stub standing in for an unwired hash callback.
  *
  * Computes nothing and leaves @p out_digest untouched. Substituting this for a
  * NULL pointer is what turns an unwired callback into a clean refusal at the
  * point of use rather than a null dereference.
  *
+ * @param[in]  type        Ignored.
  * @param[in]  msg         Ignored.
  * @param[in]  msg_len     Ignored.
  * @param[out] out_digest  Left untouched.
+ * @param[in]  digest_len  Ignored.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE  Always.
  */
-oca_result_t       oca_default_sha256(
+oca_result_t       oca_default_hash(
+                       oca_hash_type_t type,
                        const uint8_t *msg, size_t msg_len,
-                       uint8_t out_digest[32]);
+                       uint8_t *out_digest, size_t digest_len);
 
 /**
  * @brief Unavailable-sentinel stub for an unwired verify_signature callback.

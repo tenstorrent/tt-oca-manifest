@@ -7,12 +7,15 @@
 
 #include "default_callbacks.h"
 
-oca_result_t oca_default_sha256(const uint8_t *msg, size_t msg_len,
-                                uint8_t out_digest[32])
+oca_result_t oca_default_hash(oca_hash_type_t type,
+                              const uint8_t *msg, size_t msg_len,
+                              uint8_t *out_digest, size_t digest_len)
 {
+    (void)type;
     (void)msg;
     (void)msg_len;
     (void)out_digest;
+    (void)digest_len;
     return OCA_FAIL_CALLBACK_UNAVAILABLE;
 }
 

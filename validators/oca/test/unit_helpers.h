@@ -19,8 +19,8 @@
  *   }
  *
  * A test that runs to completion without an ASSERT failing passes. The
- * report prints "<P>/<N> passed" and main returns 0 iff every test
- * passed.
+ * report prints "<P>/<N> passed", counting only the tests that ran, and
+ * main returns 0 iff every one of them passed.
  */
 
 #ifndef OCA_TEST_UNIT_HELPERS_H
@@ -65,6 +65,22 @@ void unit_run_all(int reverse);
 
 #define RUN_TEST(name) unit_register(#name, (name))
 
+/* RUN_TEST_IF registers a test whose fixtures need something the build
+ * configuration can turn off: `needs` is an expression over its settings. A
+ * test whose needs this build does not meet is listed as not run and counted
+ * apart, so a reduced build reports what it did not exercise rather than
+ * failing on a fixture it cannot accept. What the build refuses instead is the
+ * business of the tests that check each setting's off branch. */
+#define RUN_TEST_IF(needs, name) unit_register_if((needs), #needs, #name, (name))
+
+void unit_register_if(int met, const char *needs, const char *name, unit_test_fn fn);
+
+/* NOT_RUN lists a test this build compiles out with the library code it calls,
+ * so it is counted as not run rather than silently missing. */
+#define NOT_RUN(needs, name) unit_register_if(0, #needs, #name, NULL)
+
+extern int g_unit_not_run;
+
 #define ASSERT_EQ_INT(actual, expected) do {                           \
         long _a = (long)(actual);                                      \
         long _e = (long)(expected);                                    \
@@ -97,6 +113,10 @@ static inline int unit_report(void)
 {
     int passed = g_unit_total - g_unit_failed;
     fprintf(stderr, "%d/%d passed\n", passed, g_unit_total);
+    if (g_unit_not_run > 0) {
+        fprintf(stderr, "%d not run: this build configuration turns off what "
+                        "they need\n", g_unit_not_run);
+    }
     return (g_unit_failed == 0) ? 0 : 1;
 }
 

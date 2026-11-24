@@ -105,8 +105,7 @@ MAPPING: dict[str, tuple[str, str]] = {
     "OCA_CLASSIC_OFF_SIGNATURE":                   ("OFF_SIGNATURE_CLASSIC", "dec"),
     "OCA_LEN_SIGNATURE":                   ("SIGNATURE_CLASSIC_SIZE", "dec"),
     "OCA_CLASSIC_OFF_MANIFEST_HASH":               ("OFF_MANIFEST_HASH", "dec"),
-    "OCA_LEN_MANIFEST_HASH":               ("HASH_FIELD_SIZE", "dec"),
-    "OCA_MANIFEST_HASH_DIGEST_SIZE":              ("MANIFEST_HASH_DIGEST_SIZE", "dec"),
+    "OCA_LEN_HASH_FIELD":                  ("HASH_FIELD_SIZE", "dec"),
     # PQC variant: its sizes, the PQC-only signing fields, the shared fields at
     # their PQC positions, signature_pqc, then the ML-DSA-87 encoded lengths.
     "OCA_PQC_BODY_SIZE":                   ("OCA_PQC_BODY_SIZE", "dec"),
@@ -135,21 +134,18 @@ MAPPING: dict[str, tuple[str, str]] = {
     # validation stage) and the PTOC sizes used to recompute the plaintext chain.
     "OCA_OFF_PAYLOAD_ENCRYPTION_CONTROL":  ("OFF_PAYLOAD_ENCRYPTION_CONTROL", "dec"),
     "OCA_OFF_ENCRYPTION_SHARED_SECRET_SELECT": ("OFF_ENCRYPTION_SHARED_SECRET_SELECT", "dec"),
+    "OCA_ENCRYPTION_SHARED_SECRET_SELECT_FIRST": ("ENCRYPTION_SHARED_SECRET_SELECT_FIRST", "hex"),
+    "OCA_ENCRYPTION_SHARED_SECRET_SELECT_LAST": ("ENCRYPTION_SHARED_SECRET_SELECT_LAST", "hex"),
     "OCA_OFF_ENCRYPTION_IV":               ("OFF_ENCRYPTION_IV", "dec"),
     "OCA_LEN_ENCRYPTION_IV":               ("ENCRYPTION_IV_SIZE", "dec"),
     "OCA_OFF_ENCRYPTION_KDF_INPUT":        ("OFF_ENCRYPTION_KDF_INPUT", "dec"),
     "OCA_LEN_ENCRYPTION_KDF_INPUT":        ("ENCRYPTION_KDF_INPUT_SIZE", "dec"),
     "OCA_OFF_ENCRYPTION_TYPE":             ("OFF_ENCRYPTION_TYPE", "dec"),
     "OCA_OFF_ENCRYPTION_KDF":              ("OFF_ENCRYPTION_KDF", "dec"),
-    "OCA_ENCRYPTION_KDF_SP800_108_HMAC_SHA256":
-        ("OcaEncryptionKdf.SP800_108_CTR_HMAC_SHA256", "hex"),
     "OCA_ENCRYPTION_INPUT_KEY_SOURCE_SHIFT": ("ENCRYPTION_INPUT_KEY_SOURCE_SHIFT", "dec"),
-    "OCA_ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED":
-        ("ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED", "hex"),
     # The declared algorithms of manifest_hash and of the payload digests.
     "OCA_OFF_MANIFEST_HASH_TYPE":          ("OFF_MANIFEST_HASH_TYPE", "dec"),
     "OCA_OFF_PAYLOAD_HASH_TYPE":           ("OFF_PAYLOAD_HASH_TYPE", "dec"),
-    "OCA_HASH_TYPE_SHA2_256":              ("OcaClassicHashType.SHA2_256", "hex"),
     "OCA_OFF_PAYLOAD_HASH":                ("OFF_PAYLOAD_HASH", "dec"),
     "OCA_OFF_PAYLOAD_HASH_CHAIN":          ("OFF_PAYLOAD_HASH_CHAIN", "dec"),
     "OCA_OFF_PAYLOAD_HASHED_LENGTH":       ("OFF_PAYLOAD_HASHED_LENGTH", "dec"),

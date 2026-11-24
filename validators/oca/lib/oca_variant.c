@@ -77,7 +77,7 @@ const oca_variant_t *oca_variant_for_body(const uint8_t *body,
                                           oca_result_t *status)
 {
     if (magic_matches(body, OCA_VARIANT_CLASSIC.magic)) {
-#if OCA_SUPPORT_CLASSIC
+#if OCA_CFG_VARIANT_CLASSIC
         *status = OCA_OK;
         return &OCA_VARIANT_CLASSIC;
 #else
@@ -86,7 +86,7 @@ const oca_variant_t *oca_variant_for_body(const uint8_t *body,
 #endif
     }
     if (magic_matches(body, OCA_VARIANT_PQC.magic)) {
-#if OCA_SUPPORT_PQC
+#if OCA_CFG_VARIANT_PQC
         *status = OCA_OK;
         return &OCA_VARIANT_PQC;
 #else

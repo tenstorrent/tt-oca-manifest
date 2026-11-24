@@ -49,7 +49,7 @@
 /* Unsigned-tail field offsets (PQC positions; shifted down vs Classic;
  * lengths are shared — see OCA_LEN_* in oca_layout.h). */
 #define OCA_PQC_OFF_SIGNATURE               5903u   /* signature_classic, OCA_LEN_SIGNATURE */
-#define OCA_PQC_OFF_MANIFEST_HASH           6415u   /* OCA_LEN_MANIFEST_HASH */
+#define OCA_PQC_OFF_MANIFEST_HASH           6415u   /* OCA_LEN_HASH_FIELD */
 #define OCA_PQC_OFF_PAYLOAD_OFFSET          6479u   /* i64 LE */
 
 /* Appended-entry sizes for this variant (34816 B PQC). */
@@ -63,25 +63,23 @@
 #define OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES  2592u
 #define OCA_PQC_ML_DSA_87_SIGNATURE_BYTES   4627u
 
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-_Static_assert(
-    OCA_PQC_OFF_TRAILER + OCA_PQC_TRAILER_LEN == OCA_PQC_SIGNED_REGION_END,
-    "pqc_manifest_trailer must end exactly at the PQC signed-region boundary");
-_Static_assert(
-    OCA_PQC_OFF_SIGNATURE == OCA_PQC_SIGNED_REGION_END,
-    "signature_classic must begin at the PQC signed-region boundary");
-_Static_assert(
-    OCA_PQC_OFF_PUBLIC_KEY + OCA_PQC_LEN_PUBLIC_KEY <= OCA_PQC_OFF_TRAILER,
-    "public_key_pqc must fit before the PQC trailer");
-_Static_assert(
-    OCA_PQC_OFF_SIGNATURE_PQC + OCA_PQC_LEN_SIGNATURE_PQC <= OCA_PQC_BODY_SIZE,
-    "signature_pqc must fit within the PQC body");
-_Static_assert(
-    OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES <= OCA_PQC_LEN_PUBLIC_KEY,
-    "an ML-DSA-87 public key must fit public_key_pqc");
-_Static_assert(
-    OCA_PQC_ML_DSA_87_SIGNATURE_BYTES <= OCA_PQC_LEN_SIGNATURE_PQC,
-    "an ML-DSA-87 signature must fit signature_pqc");
+#if !(OCA_PQC_OFF_TRAILER + OCA_PQC_TRAILER_LEN == OCA_PQC_SIGNED_REGION_END)
+#error "pqc_manifest_trailer must end exactly at the PQC signed-region boundary"
+#endif
+#if !(OCA_PQC_OFF_SIGNATURE == OCA_PQC_SIGNED_REGION_END)
+#error "signature_classic must begin at the PQC signed-region boundary"
+#endif
+#if !(OCA_PQC_OFF_PUBLIC_KEY + OCA_PQC_LEN_PUBLIC_KEY <= OCA_PQC_OFF_TRAILER)
+#error "public_key_pqc must fit before the PQC trailer"
+#endif
+#if !(OCA_PQC_OFF_SIGNATURE_PQC + OCA_PQC_LEN_SIGNATURE_PQC <= OCA_PQC_BODY_SIZE)
+#error "signature_pqc must fit within the PQC body"
+#endif
+#if !(OCA_PQC_ML_DSA_87_PUBLIC_KEY_BYTES <= OCA_PQC_LEN_PUBLIC_KEY)
+#error "an ML-DSA-87 public key must fit public_key_pqc"
+#endif
+#if !(OCA_PQC_ML_DSA_87_SIGNATURE_BYTES <= OCA_PQC_LEN_SIGNATURE_PQC)
+#error "an ML-DSA-87 signature must fit signature_pqc"
 #endif
 
 #endif /* OCA_LAYOUT_PQC_H */

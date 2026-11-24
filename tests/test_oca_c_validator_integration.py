@@ -13,6 +13,7 @@ happy-path PASS for every fixture plus the documented FAIL paths
 from __future__ import annotations
 
 import functools
+import hashlib
 import os
 import re
 import shutil
@@ -20,14 +21,17 @@ import struct
 import subprocess
 import sys
 import time
+import tomllib
 
 import pytest
 
+import tt_boot_manifest
 from tt_boot_manifest.oca import constants as oca_constants
 from tt_boot_manifest.oca.entry import pack_oca_bundle
 from tt_boot_manifest.oca.signing import (build_pqc_signing_key, build_signing_key,
                                           sign_signed_region, sign_signed_region_pqc)
 from tt_boot_manifest.utils import load_config
+from oca_fixtures import build_config
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -124,8 +128,9 @@ def _run_cli(args: list[str]) -> subprocess.CompletedProcess:
 
 
 def _gated_cli(target: str) -> str:
-    """Build a variant-gated CLI (`classic-only` / `pqc-only` / `both`) and
-    return the path to its binary. Idempotent — `make` is a no-op once built."""
+    """Build the CLI for one of the Makefile's configuration targets
+    (`classic-only` / `pqc-only` / `both` / `hash-only`) and return the path to
+    its binary. Idempotent — `make` is a no-op once built."""
     result = subprocess.run(
         ["make", "-C", VALIDATOR_DIR, target],
         cwd=PROJECT_ROOT,
@@ -348,7 +353,7 @@ def test_secure_boot_device_state_example_builds_and_validates():
 
 
 # ---------------------------------------------------------------------------
-# Build-time variant gate: OCA_SUPPORT_CLASSIC / OCA_SUPPORT_PQC
+# Build-time variant gate: [variants] in the build configuration
 # ---------------------------------------------------------------------------
 
 
@@ -410,6 +415,95 @@ def test_gate_default_build_accepts_both(fixture):
     assert result.returncode == 0, (
         f"default build must accept {fixture}; got exit {result.returncode}\n"
         f"stderr: {result.stderr!r}")
+
+
+# ---------------------------------------------------------------------------
+# Hash-only build: integrity checks only, with secure boot compiled out
+# ---------------------------------------------------------------------------
+
+_FIXTURES = sorted(name[:-len(".yaml")] for name in os.listdir(FIXTURE_DIR)
+                   if name.endswith(".yaml"))
+
+
+def _asserts_secure_boot(fixture: str) -> bool:
+    return bool(load_config(os.path.join(FIXTURE_DIR, f"{fixture}.yaml"))["secure_boot"])
+
+
+def test_the_hash_only_sweep_covers_both_outcomes():
+    """The sweep below must hold at least one fixture on each side, or one
+    half of it would pass without checking anything."""
+    asserting = [fixture for fixture in _FIXTURES if _asserts_secure_boot(fixture)]
+    assert asserting and len(asserting) < len(_FIXTURES), asserting
+
+
+def test_the_hash_only_cli_is_built_without_secure_boot():
+    """The sweep is only meaningful if the binary it runs is the hash-only
+    build, not the default one."""
+    result = _run_cli_at(_gated_cli("hash-only"), ["--build-info"])
+    assert result.returncode == 0, result.stderr
+    assert b"secure_boot.disabled=1\n" in result.stdout, result.stdout
+    assert not re.search(rb"^(signature|encryption)_", result.stdout, re.M), result.stdout
+
+
+@pytest.mark.parametrize("fixture", _FIXTURES)
+def test_hash_only_cli_passes_cleartext_and_refuses_secure_boot(fixture):
+    """Every fixture runs through the hash-only CLI with the flags it needs.
+    A manifest that does not assert secure boot passes. One that does,
+    whether signed, hybrid or encrypted, is refused as needing an algorithm
+    this build leaves out."""
+    cli = _gated_cli("hash-only")
+    result = _run_cli_at(cli, ["--manifest", _pack_fixture(fixture), *_read_flags(fixture)])
+    if _asserts_secure_boot(fixture):
+        assert result.returncode == 1, result.stderr
+        assert re.match(rb"^FAIL: ALGORITHM_NOT_ENABLED: ", result.stderr), result.stderr
+        assert result.stdout == b""
+    else:
+        assert result.returncode == 0, result.stderr
+        assert PASS_RE.match(result.stdout), result.stdout
+
+
+@pytest.mark.parametrize("fixture", ["secure_rsa", "pqc_secure_mldsa"])
+def test_hash_only_cli_refuses_secure_boot_on_a_part_without_it(fixture):
+    """Telling the CLI the part does not use secure boot does not help. The
+    manifest still asserts secure boot, so its signature must still be checked,
+    and this build cannot check it."""
+    cli = _gated_cli("hash-only")
+    result = _run_cli_at(cli, ["--manifest", _pack_fixture(fixture),
+                               *_read_flags(fixture), "--secure-boot-disabled"])
+    assert result.returncode == 1, result.stderr
+    assert re.match(rb"^FAIL: ALGORITHM_NOT_ENABLED: ", result.stderr), result.stderr
+
+
+def test_hash_only_cli_boots_nothing_on_a_part_that_enforces_secure_boot():
+    """A manifest without secure boot passes on its own, but not on a part
+    that enforces secure boot."""
+    cli = _gated_cli("hash-only")
+    bundle = _pack_fixture("basic")
+    assert _run_cli_at(cli, ["--manifest", bundle]).returncode == 0
+    result = _run_cli_at(cli, ["--manifest", bundle, "--secure-boot-active"])
+    assert result.returncode == 1, result.stderr
+    assert re.match(rb"^FAIL: SIGNATURE_CLASS_CONTROL: ", result.stderr), result.stderr
+
+
+@pytest.mark.parametrize("fixture", ["basic", "pqc_basic"])
+def test_hash_only_cli_rejects_a_tampered_manifest(fixture, tmp_path):
+    """With no signature to check, the manifest hash is all that protects the
+    manifest, so this build must still check it."""
+    data = bytearray(open(_pack_fixture(fixture), "rb").read())
+    data[1000] ^= 0xFF
+    tampered = tmp_path / f"{fixture}.bin"
+    tampered.write_bytes(bytes(data))
+    result = _run_cli_at(_gated_cli("hash-only"), ["--manifest", str(tampered)])
+    assert result.returncode == 1, result.stderr
+    assert re.match(rb"^FAIL: MANIFEST_HASH: ", result.stderr), result.stderr
+
+
+def test_hash_only_cli_rejects_a_tampered_payload(tmp_path):
+    path = _tampered_bundle(tmp_path, "basic", "image_flip", _flip_image_byte,
+                            reseal=False)
+    result = _run_cli_at(_gated_cli("hash-only"), ["--manifest", path])
+    assert result.returncode == 1, result.stderr
+    assert re.match(rb"^FAIL: PAYLOAD_HASH_CHAIN: ", result.stderr), result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -1165,7 +1259,7 @@ def test_cli_decrypt_in_place_is_inert_for_cleartext_bundles():
 
 
 # ---------------------------------------------------------------------------
-# image_count cap (OCA_TOC_MAX_IMAGES)
+# image_count cap (OCA_TOC_MAX_IMAGES, [limits] toc_max_images)
 #
 # The format puts no upper bound on image_count, so the only structural limit is
 # that the TOC fit inside the payload -- which grows with the input, while the
@@ -1242,14 +1336,64 @@ def _craft_oversized_toc_bundle(template_path: str, image_count: int, out_path):
     return out_path
 
 
-def _c_toc_max_images() -> int:
-    """Read OCA_TOC_MAX_IMAGES out of the public header."""
-    header = os.path.join(VALIDATOR_DIR, "lib", "oca_validator.h")
-    with open(header) as handle:
-        match = re.search(r"^#define\s+OCA_TOC_MAX_IMAGES\s+(\d+)u?\s*$",
-                          handle.read(), re.MULTILINE)
-    assert match, "OCA_TOC_MAX_IMAGES not found in oca_validator.h"
-    return int(match.group(1))
+def _default_toc_max_images() -> int:
+    """toc_max_images from the default build configuration, which the CLI is built with."""
+    with open(os.path.join(VALIDATOR_DIR, "lib", "oca_config.toml"), "rb") as handle:
+        return tomllib.load(handle)["limits"]["toc_max_images"]
+
+
+def _build_config_text(toc_max_images=256, rsa=True, ecdsa=True, ml_dsa=True,
+                       der_rsa=True, der_ecdsa=True, aes_128=True, aes_256=True,
+                       encryption=True) -> str:
+    """A complete build configuration: the shipped default, with the given changes."""
+    return build_config.config_text({
+        "limits.toc_max_images": toc_max_images,
+        "signature_classic.rsa_3072_pkcs1v15_sha256": rsa,
+        "signature_classic.ecdsa_p256_sha256": ecdsa,
+        "signature_pqc.ml_dsa_87": ml_dsa,
+        "der.rsa_public_key": der_rsa,
+        "der.ecdsa_signature": der_ecdsa,
+        "encryption_cipher.aes_128_cbc": encryption and aes_128,
+        "encryption_cipher.aes_256_cbc": encryption and aes_256,
+        "encryption_kdf.sp800_108_hmac_sha256": encryption,
+        "encryption_key_source.preshared": encryption,
+    })
+
+
+def _configured_cli(build_dir, config_text: str) -> str:
+    """Build the CLI from a build configuration of its own; return its path."""
+    config = os.path.join(build_dir, "build_config.toml")
+    os.makedirs(build_dir, exist_ok=True)
+    with open(config, "w") as handle:
+        handle.write(config_text)
+    result = subprocess.run(
+        ["make", "-C", VALIDATOR_DIR, f"BUILD={build_dir}", f"CONFIG={config}", "test"],
+        cwd=PROJECT_ROOT, capture_output=True, text=True,
+        env={**os.environ, "PYTHON": sys.executable},
+    )
+    if result.returncode != 0:
+        pytest.fail(f"configured build failed:\nstdout:\n{result.stdout}\n"
+                    f"stderr:\n{result.stderr}")
+    return os.path.join(build_dir, "test", "oca-validate")
+
+
+def _assert_toc_cap_is(cli: str, cap: int, tmp_path) -> None:
+    """One image over the cap is refused on the count; exactly at it is not.
+
+    At the cap the bundle fails later, on the hash chain, which is exactly the
+    proof that the count check let it through.
+    """
+    template = _pack_fixture("basic")
+    over = _craft_oversized_toc_bundle(template, cap + 1, tmp_path / "over.bin")
+    result = _run_cli_at(cli, ["--manifest", str(over)])
+    assert re.match(rb"^FAIL: PAYLOAD_TOO_MANY_IMAGES: ", result.stderr), result.stderr
+
+    at_cap = _craft_oversized_toc_bundle(template, cap, tmp_path / "at_cap.bin")
+    result = _run_cli_at(cli, ["--manifest", str(at_cap)])
+    assert re.match(rb"^FAIL: PAYLOAD_HASH_CHAIN: ", result.stderr), (
+        f"a TOC exactly at the cap should pass the count check and fail later; "
+        f"got {result.stderr!r}"
+    )
 
 
 def test_oversized_toc_is_rejected_on_the_count(tmp_path):
@@ -1277,23 +1421,120 @@ def test_oversized_toc_is_rejected_on_the_count(tmp_path):
 
 
 def test_toc_just_over_the_cap_is_rejected_and_just_under_is_not(tmp_path):
-    """Boundary check against the header's own value, so the test tracks the cap
-    rather than hardcoding it."""
-    cap = _c_toc_max_images()
-    template = _pack_fixture("basic")
+    """Boundary check against the default configuration's own value, so the test
+    tracks the cap rather than hardcoding it."""
+    _assert_toc_cap_is(CLI_PATH, _default_toc_max_images(), tmp_path)
 
-    over = _craft_oversized_toc_bundle(template, cap + 1, tmp_path / "over.bin")
-    result = _run_cli(["--manifest", str(over)])
-    assert re.match(rb"^FAIL: PAYLOAD_TOO_MANY_IMAGES: ", result.stderr), result.stderr
 
-    # At the cap the count is accepted; the bundle then fails later, on the hash
-    # chain, which is exactly the proof that the count check let it through.
-    at_cap = _craft_oversized_toc_bundle(template, cap, tmp_path / "at_cap.bin")
-    result = _run_cli(["--manifest", str(at_cap)])
-    assert re.match(rb"^FAIL: PAYLOAD_HASH_CHAIN: ", result.stderr), (
-        f"a TOC exactly at the cap should pass the count check and fail later; "
-        f"got {result.stderr!r}"
-    )
+def _portfolio_from_generator(config: str) -> list[str]:
+    """The portfolio lines gen_config.py --print-all states for a configuration:
+    every setting that is not zero, in name order."""
+    printed = subprocess.run(
+        [sys.executable, os.path.join(VALIDATOR_DIR, "lib", "scripts", "gen_config.py"),
+         "--config", config, "--print-all"],
+        capture_output=True, text=True, check=True)
+    return sorted(line for line in printed.stdout.splitlines() if not line.endswith("=0"))
+
+
+def _assert_build_info_names(cli: str, config: str) -> str:
+    """The CLI's --build-info names the library's version and the portfolio of
+    config. Returns the portfolio's identifier."""
+    result = _run_cli_at(cli, ["--build-info"])
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.decode().splitlines()
+    stated = _portfolio_from_generator(config)
+    digest = hashlib.sha256("".join(f"{line}\n" for line in stated).encode()).hexdigest()
+    assert lines == [f"library {tt_boot_manifest.__version__}", f"portfolio 0x{digest[:8]}",
+                     f"sha256 {digest}", *stated]
+    return lines[1]
+
+
+def test_cli_reports_the_portfolio_it_was_built_from(tmp_path):
+    """The identifier comes from oca_build_portfolio_id() in the compiled
+    library, and must match what the generator says of the configuration file,
+    for the default build and for one built from another configuration."""
+    default = _assert_build_info_names(
+        CLI_PATH, os.path.join(VALIDATOR_DIR, "lib", "oca_config.toml"))
+    build_dir = str(tmp_path / "build")
+    cli = _configured_cli(build_dir, _build_config_text(der_ecdsa=False))
+    configured = _assert_build_info_names(cli, os.path.join(build_dir, "build_config.toml"))
+    assert configured != default
+
+
+def test_the_toc_cap_follows_the_build_configuration(tmp_path):
+    """A cap set in the configuration file reaches the built validator."""
+    cli = _configured_cli(str(tmp_path / "build"), _build_config_text(toc_max_images=3))
+    _assert_toc_cap_is(cli, 3, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# The algorithm portfolio: what a build configuration turns off is refused
+#
+# Two CLIs built from reduced configurations. Everything they leave on still
+# verifies; everything they turn off is refused as not enabled, before any
+# signature is checked.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def ecdsa_raw_only_cli(tmp_path_factory):
+    """ECDSA P-256 with raw signatures only: no RSA, no ML-DSA, no DER."""
+    return _configured_cli(str(tmp_path_factory.mktemp("ecdsa-raw-only")),
+                           _build_config_text(rsa=False, ml_dsa=False,
+                                              der_rsa=False, der_ecdsa=False))
+
+
+@pytest.fixture(scope="module")
+def rsa_raw_only_cli(tmp_path_factory):
+    """RSA-3072 with raw public keys only, and AES-256-CBC only: no ECDSA, no
+    ML-DSA, no DER, no AES-128-CBC."""
+    return _configured_cli(str(tmp_path_factory.mktemp("rsa-raw-only")),
+                           _build_config_text(ecdsa=False, ml_dsa=False,
+                                              der_rsa=False, der_ecdsa=False,
+                                              aes_128=False))
+
+
+@pytest.fixture(scope="module")
+def no_encryption_cli(tmp_path_factory):
+    """The default signature algorithms, with payload encryption turned off."""
+    return _configured_cli(str(tmp_path_factory.mktemp("no-encryption")),
+                           _build_config_text(encryption=False))
+
+
+@pytest.mark.parametrize("cli_fixture, fixture, outcome", [
+    ("ecdsa_raw_only_cli", "secure_ecdsa", "PASS"),
+    ("ecdsa_raw_only_cli", "secure_rsa", "ALGORITHM_NOT_ENABLED"),
+    ("ecdsa_raw_only_cli", "pqc_secure_mldsa", "ALGORITHM_NOT_ENABLED"),
+    ("ecdsa_raw_only_cli", "pqc_hybrid_ecdsa", "ALGORITHM_NOT_ENABLED"),
+    ("rsa_raw_only_cli", "secure_rsa", "PASS"),
+    ("rsa_raw_only_cli", "pqc_secure_rsa", "PASS"),
+    ("rsa_raw_only_cli", "secure_rsa_der", "ALGORITHM_NOT_ENABLED"),
+    ("rsa_raw_only_cli", "secure_ecdsa", "ALGORITHM_NOT_ENABLED"),
+    ("rsa_raw_only_cli", "pqc_hybrid_rsa", "ALGORITHM_NOT_ENABLED"),
+    ("rsa_raw_only_cli", "encrypted_aes", "PASS"),
+    ("rsa_raw_only_cli", "encrypted_aes_pqc", "ALGORITHM_NOT_ENABLED"),
+    ("no_encryption_cli", "secure_rsa", "PASS"),
+    ("no_encryption_cli", "encrypted_aes", "ALGORITHM_NOT_ENABLED"),
+    ("no_encryption_cli", "encrypted_aes_pqc_mldsa", "ALGORITHM_NOT_ENABLED"),
+])
+def test_a_build_refuses_what_its_configuration_turns_off(request, cli_fixture,
+                                                          fixture, outcome):
+    cli = request.getfixturevalue(cli_fixture)
+    result = _run_cli_at(cli, ["--manifest", _pack_fixture(fixture), *_read_flags(fixture)])
+    if outcome == "PASS":
+        _assert_passed(result)
+    else:
+        _assert_refused(result, outcome)
+
+
+def test_a_der_ecdsa_signature_is_refused_where_der_is_turned_off(tmp_path,
+                                                                ecdsa_raw_only_cli):
+    """The same DER-signed manifest verifies on the default build."""
+    bundle = tmp_path / "der_ecdsa.bin"
+    bundle.write_bytes(_ecdsa_bundle_for_timestamp(0))
+    args = ["--manifest", str(bundle), "--trust-any-root-key"]
+    _assert_passed(_run_cli(args))
+    _assert_refused(_run_cli_at(ecdsa_raw_only_cli, args), "ALGORITHM_NOT_ENABLED")
 
 
 def test_real_multi_image_fixture_is_unaffected_by_the_cap():
@@ -1303,7 +1544,7 @@ def test_real_multi_image_fixture_is_unaffected_by_the_cap():
     assert result.returncode == 0, result.stderr
     toc, images = _parse_listing(result.stdout)
     assert int(toc["images"]) == 3
-    assert 3 < _c_toc_max_images()
+    assert 3 < _default_toc_max_images()
 
 
 # ---------------------------------------------------------------------------
@@ -2557,20 +2798,24 @@ def test_fixture_anchor_is_the_digest_of_the_key_it_signs_with(fixture, flag, ke
 # --- The PQC signing description ---
 
 
-@pytest.mark.parametrize("name,offset,width,value", [
-    ("ml-dsa-65", oca_constants.OFF_SIGNATURE_TYPE_PQC, 1, 0x32),
+@pytest.mark.parametrize("name,offset,width,value,code", [
+    ("ml-dsa-65", oca_constants.OFF_SIGNATURE_TYPE_PQC, 1, 0x32, "ALGORITHM_NOT_ENABLED"),
+    ("fn-dsa-512", oca_constants.OFF_SIGNATURE_TYPE_PQC, 1, 0x41, "ALGORITHM_RESERVED"),
     ("signature-size", oca_constants.OFF_SIGNATURE_SIZE_PQC, 2,
-     oca_constants.ML_DSA_87_SIGNATURE_BYTES - 1),
+     oca_constants.ML_DSA_87_SIGNATURE_BYTES - 1, "CRYPTO_FIELD_SIZE"),
     ("key-size", oca_constants.OFF_PUBLIC_KEY_SIZE_PQC, 2,
-     oca_constants.ML_DSA_87_PUBLIC_KEY_BYTES + 1),
-    ("signature-der", oca_constants.OFF_SIGNATURE_ENCODING_PQC, 1, 0x01),
-    ("key-der", oca_constants.OFF_PUBLIC_KEY_ENCODING_PQC, 1, 0x01),
+     oca_constants.ML_DSA_87_PUBLIC_KEY_BYTES + 1, "CRYPTO_FIELD_SIZE"),
+    ("signature-der", oca_constants.OFF_SIGNATURE_ENCODING_PQC, 1, 0x01, "ALGORITHM_RESERVED"),
+    ("key-der", oca_constants.OFF_PUBLIC_KEY_ENCODING_PQC, 1, 0x01, "ALGORITHM_RESERVED"),
+    ("key-integrator", oca_constants.OFF_PUBLIC_KEY_ENCODING_PQC, 1, 0xFF,
+     "ALGORITHM_NOT_ENABLED"),
 ])
-def test_cli_mldsa_refuses_a_description_it_cannot_verify(tmp_path, name, offset, width, value):
+def test_cli_mldsa_refuses_a_description_it_cannot_verify(tmp_path, name, offset, width,
+                                                          value, code):
     data = _fixture_bytes("pqc_secure_mldsa")
     _set_le(data, offset, width, value)
     _reseal_manifest_hash(data)
-    _assert_refused(_run_bundle(tmp_path, data, name), "CRYPTO_FIELD_SIZE")
+    _assert_refused(_run_bundle(tmp_path, data, name), code)
 
 
 # --- ROOT-key revocation, per family ---
@@ -2826,21 +3071,30 @@ def test_cli_refuses_a_der_key_longer_than_its_declared_size(tmp_path, fixture):
                     "CRYPTO_FIELD_SIZE")
 
 
-@pytest.mark.parametrize("fixture,offset,value", [
-    ("secure_rsa", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC, 0x00),
-    ("secure_rsa_der", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC, 0xF0),
-    ("secure_ecdsa", oca_constants.OFF_SIGNATURE_ENCODING_CLASSIC, 0x03),
-], ids=["rsa-key-unset", "rsa-key-integrator", "ecdsa-signature-reserved"])
-def test_cli_refuses_a_classical_encoding_its_primitive_does_not_define(tmp_path, fixture,
-                                                                       offset, value):
+@pytest.mark.parametrize("fixture,offset,value,refused_with", [
+    ("secure_rsa", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC, 0x00,
+     "ALGORITHM_RESERVED"),
+    ("secure_rsa_der", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC, 0xF0,
+     "ALGORITHM_NOT_ENABLED"),
+    ("secure_ecdsa", oca_constants.OFF_SIGNATURE_ENCODING_CLASSIC, 0x03,
+     "ALGORITHM_RESERVED"),
+    ("secure_ecdsa", oca_constants.OFF_PUBLIC_KEY_ENCODING_CLASSIC,
+     oca_constants.OcaClassicPublicKeyEncoding.ASN1_DER.value, "CRYPTO_FIELD_SIZE"),
+], ids=["rsa-key-unset", "rsa-key-integrator", "ecdsa-signature-reserved",
+        "ecdsa-key-der"])
+def test_cli_refuses_a_classical_encoding_its_primitive_does_not_define(
+        tmp_path, fixture, offset, value, refused_with):
     """An encoding outside the ones the primitive defines is refused by the
     library, before any callback, rather than read under another encoding's
-    rule and left for the crypto backend to reject."""
+    rule and left for the crypto backend to reject. A value the format
+    reserves is refused as reserved, an integrator encoding as one this build
+    does not enable, and a DER the class defines but the algorithm does not as
+    a description at odds with itself."""
     data = _fixture_bytes(fixture)
     data[offset] = value
     _reseal_manifest_hash(data)
     _assert_refused(_run_bundle(tmp_path, data, f"{fixture}_encoding_{value:#04x}"),
-                    "CRYPTO_FIELD_SIZE")
+                    refused_with)
 
 
 # (fixture, field offset, declared valid bytes, field width). The signature
@@ -2929,13 +3183,13 @@ def test_cli_refuses_a_der_ecdsa_signature_with_bytes_past_its_maximum(tmp_path)
 
 
 # ---------------------------------------------------------------------------
-# Declared algorithms the library cannot compute
+# Declared algorithms the build does not enable
 #
 # manifest_hash_type and payload_hash_type name the digests, and an encrypted
-# payload names its key derivation and input-key source. This build computes
-# SHA2-256 and derives from the pre-shared secret through SP 800-108r1 with
-# HMAC-SHA-256; anything else is refused by name rather than hashed or
-# decrypted as if it were.
+# payload names its cipher, key derivation and input-key source. The default
+# build enables SHA2-256 and derives from the pre-shared secret through
+# SP 800-108r1 with HMAC-SHA-256; anything else is refused by name rather than
+# hashed or decrypted as if it were.
 # ---------------------------------------------------------------------------
 
 _SHA2_384 = 0x02
@@ -2951,21 +3205,23 @@ def test_cli_refuses_digests_it_does_not_compute_even_when_resealed_as_sha256(tm
     data[oca_constants.OFF_PAYLOAD_HASH_TYPE] = _SHAKE256_512
     _reseal_manifest_hash(data)
     _assert_refused(_run_bundle(tmp_path, data, "declared_sha384", flags=()),
-                    "UNSUPPORTED_ALGORITHM")
+                    "ALGORITHM_NOT_ENABLED")
 
 
-@pytest.mark.parametrize("fixture,offset,value", [
-    ("basic", oca_constants.OFF_MANIFEST_HASH_TYPE, _SHA2_384),
-    ("pqc_basic", oca_constants.OFF_MANIFEST_HASH_TYPE, _SHA2_384),
-    ("basic", oca_constants.OFF_PAYLOAD_HASH_TYPE, _SHAKE256_512),
-    ("pqc_basic", oca_constants.OFF_PAYLOAD_HASH_TYPE, 0x00),
-], ids=["manifest-classic", "manifest-pqc", "payload-classic", "payload-pqc-unset"])
-def test_cli_refuses_an_unsupported_hash_type(tmp_path, fixture, offset, value):
+@pytest.mark.parametrize("fixture,offset,value,code", [
+    ("basic", oca_constants.OFF_MANIFEST_HASH_TYPE, _SHA2_384, "ALGORITHM_NOT_ENABLED"),
+    ("pqc_basic", oca_constants.OFF_MANIFEST_HASH_TYPE, _SHA2_384, "ALGORITHM_NOT_ENABLED"),
+    ("basic", oca_constants.OFF_PAYLOAD_HASH_TYPE, _SHAKE256_512, "ALGORITHM_NOT_ENABLED"),
+    ("pqc_basic", oca_constants.OFF_PAYLOAD_HASH_TYPE, 0x00, "ALGORITHM_RESERVED"),
+    ("basic", oca_constants.OFF_MANIFEST_HASH_TYPE, 0x09, "ALGORITHM_RESERVED"),
+], ids=["manifest-classic", "manifest-pqc", "payload-classic", "payload-pqc-unset",
+         "manifest-reserved"])
+def test_cli_refuses_an_unsupported_hash_type(tmp_path, fixture, offset, value, code):
     data = _fixture_bytes(fixture)
     data[offset] = value
     _reseal_manifest_hash(data)
     result = _run_bundle(tmp_path, data, f"{fixture}_hash_type_{offset}", flags=())
-    _assert_refused(result, "UNSUPPORTED_ALGORITHM")
+    _assert_refused(result, code)
     assert not result.stderr.rstrip().endswith(b": ok"), result.stderr
 
 
@@ -2975,6 +3231,10 @@ def _encrypted_with(field: str, value: int) -> bytearray:
     data = _fixture_bytes("encrypted_aes")
     if field == "kdf":
         _set_le(data, oca_constants.OFF_ENCRYPTION_KDF, 2, value)
+    elif field == "cipher":
+        data[oca_constants.OFF_ENCRYPTION_TYPE] = value
+    elif field == "secret_select":
+        _set_le(data, oca_constants.OFF_ENCRYPTION_SHARED_SECRET_SELECT, 2, value)
     else:
         control = struct.unpack_from("<H", data,
                                      oca_constants.OFF_PAYLOAD_ENCRYPTION_CONTROL)[0]
@@ -2993,22 +3253,50 @@ def test_cli_a_resigned_encrypted_bundle_still_decrypts(tmp_path):
                                flags=_read_flags("encrypted_aes")))
 
 
-@pytest.mark.parametrize("field,value", [
-    ("kdf", 0x0000),     # NONE: the input key used directly
-    ("kdf", 0x0002),     # SP 800-108r1 with HMAC-SHA-512
-    ("kdf", 0xFF00),     # integrator defined
-    ("key_source", 0b010),   # a KEM-unwrapped DEK
-    ("key_source", 0b000),   # no source selected
-    ("key_source", 0b011),   # two sources at once
+@pytest.mark.parametrize("field,value,code", [
+    ("kdf", 0x0000, "ALGORITHM_NOT_ENABLED"),       # NONE: the input key used directly
+    ("kdf", 0x0002, "ALGORITHM_NOT_ENABLED"),       # SP 800-108r1 with HMAC-SHA-512
+    ("kdf", 0xFF00, "ALGORITHM_NOT_ENABLED"),       # integrator defined
+    ("kdf", 0x0009, "ALGORITHM_RESERVED"),
+    ("key_source", 0b010, "ALGORITHM_NOT_ENABLED"),  # a KEM-unwrapped DEK
+    ("key_source", 0b000, "ALGORITHM_RESERVED"),     # no source selected
+    ("key_source", 0b011, "ALGORITHM_RESERVED"),     # two sources at once
+    ("cipher", 0x03, "ALGORITHM_NOT_ENABLED"),       # AES-128-CBC-HMAC-SHA256
+    ("cipher", 0x05, "ALGORITHM_NOT_ENABLED"),       # AES-128-GCM-SIV
+    ("cipher", 0x13, "ALGORITHM_RESERVED"),
 ])
-def test_cli_refuses_an_encrypted_payload_it_cannot_derive_a_key_for(tmp_path, field, value):
-    """The reference backend always derives through SP 800-108r1 HMAC-SHA-256
-    from the pre-shared secret, so without this refusal a manifest naming any
-    other derivation decrypts as if it named that one."""
+def test_cli_refuses_an_encrypted_payload_algorithm_the_build_does_not_enable(
+        tmp_path, field, value, code):
+    """Each cipher, KDF and input-key source this build does not enable is
+    refused by the library before anything is hashed or decrypted:
+    ALGORITHM_NOT_ENABLED for one the format defines, ALGORITHM_RESERVED
+    otherwise."""
     data = _encrypted_with(field, value)
     result = _run_bundle(tmp_path, data, f"encrypted_{field}_{value:#x}",
                          flags=_read_flags("encrypted_aes"))
-    _assert_refused(result, "UNSUPPORTED_ALGORITHM")
+    _assert_refused(result, code)
+
+
+def _secret_at(slot: int) -> list[str]:
+    """CLI flags that hold the fixture's secret in one slot only."""
+    return ["--trust-any-root-key", "--payload-secret", f"{slot}:{_PAYLOAD_SECRET}"]
+
+
+def test_cli_decrypts_with_the_last_secret_slot(tmp_path):
+    """Slot 8 is the last the format names. With the secret held there and
+    nowhere else, the bundle decrypts."""
+    data = _encrypted_with("secret_select", 8)
+    _assert_passed(_run_bundle(tmp_path, data, "encrypted_slot_8", flags=_secret_at(8)))
+
+
+@pytest.mark.parametrize("slot", [0, 9, 0xFFFF])
+def test_cli_refuses_a_reserved_secret_slot_even_with_a_secret_held_there(tmp_path, slot):
+    """The format names secret slots 1 to 8 and reserves every other value. A
+    manifest selecting one is refused before decryption, even on a part that
+    holds a secret under that number."""
+    data = _encrypted_with("secret_select", slot)
+    result = _run_bundle(tmp_path, data, f"encrypted_slot_{slot}", flags=_secret_at(slot))
+    _assert_refused(result, "ALGORITHM_RESERVED")
 
 
 def _unreachable_openssl_minimum() -> str:

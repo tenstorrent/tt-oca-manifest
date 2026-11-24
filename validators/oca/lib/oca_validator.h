@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "oca_config_check.h"
 #include "oca_secure_bool.h"
 
 #ifdef __cplusplus
@@ -100,17 +101,16 @@ extern "C" {
  * anyone able to write flash can recompute. Left uncapped it is an availability
  * problem on non-secure parts, not merely a fuzzing artifact.
  *
- * 256 entries is far above any real boot payload (a handful of images) and
- * bounds the overlap scan at ~32k comparisons. Override at build time for a
- * tighter budget:  -DOCA_TOC_MAX_IMAGES=32
+ * The default, 256 entries, is far above any real boot payload (a handful of
+ * images) and bounds the overlap scan at ~32k comparisons. Set by
+ * `[limits] toc_max_images` in the build configuration file; lower it for a
+ * tighter budget.
  *
  * Exceeding it fails with OCA_FAIL_PAYLOAD_TOO_MANY_IMAGES — deliberately
  * distinct from OCA_FAIL_PAYLOAD_TOC so an integrator can tell "this consumer
  * refuses to process a manifest this large" from "this TOC is malformed".
  */
-#ifndef OCA_TOC_MAX_IMAGES
-#define OCA_TOC_MAX_IMAGES  256u
-#endif
+#define OCA_TOC_MAX_IMAGES  OCA_CFG_TOC_MAX_IMAGES
 
 /**
  * @brief Re-evaluate the anti-rollback comparison after the signature verified.
@@ -122,16 +122,15 @@ extern "C" {
  * is a rollback either way.
  *
  * This second evaluation is therefore defence in depth, not correctness — it
- * catches a fault that skipped, corrupted, or glitched past the first. On by
- * default; set to 0 only on a target that cannot afford one extra device-state
- * read and one 16-byte compare.
+ * catches a fault that skipped, corrupted, or glitched past the first. Set by
+ * `[hardening] recheck_security_version` in the build configuration file; on
+ * by default. Turn it off only on a target that cannot afford one extra
+ * device-state read and one 16-byte compare.
  */
-#ifndef OCA_RECHECK_SECURITY_VERSION
-#define OCA_RECHECK_SECURITY_VERSION  1
-#endif
+#define OCA_RECHECK_SECURITY_VERSION  OCA_CFG_RECHECK_SECURITY_VERSION
 
 /* ------------------------------------------------------------------ */
-/* Result enum                                                        */
+/* Result codes                                                       */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -146,39 +145,69 @@ extern "C" {
  *
  * A non-zero value never means "probably fine". Any code other than OCA_OK
  * means the manifest or payload MUST NOT be booted.
+ *
+ * Every type in this header that names a value from a list is a fixed-width
+ * integer, and a like-named enum lists its values. A compiler chooses an
+ * enum's size — under -fshort-enums, or an ABI that makes it the default, one
+ * byte — so an enum type in a struct, a callback's signature or a pointer a
+ * callback writes through would differ between a library and a callback built
+ * with different settings. Compare a value against the enumerators as usual; a
+ * switch over one gets no -Wswitch check for a missing enumerator. This type
+ * is 32 bits wide, as oca_secure_bool_t is, and the others 16.
  */
-typedef enum oca_result {
-    OCA_OK                              = 0,  /**< Every check in this step passed. */
-    OCA_FAIL_TRUNCATED                  = 1,  /**< Buffer is shorter than the structure being read. */
-    OCA_FAIL_MAGIC                      = 2,  /**< Magic bytes match no known OCA variant. */
-    OCA_FAIL_TRAILER                    = 3,  /**< Trailer closing the signed region is wrong. */
-    OCA_FAIL_FORMAT_VERSION_MISMATCH    = 4,  /**< Manifest major version exceeds this build's. */
-    OCA_FAIL_RESERVED_BITS              = 5,  /**< A reserved bit is set; the manifest uses a feature this build cannot honour. */
+typedef uint32_t oca_result_t;
+
+/** @brief The values of oca_result_t. */
+enum oca_result {
+    /** Every check in this step passed. */
+    OCA_OK                              = 0,
+    /** Buffer is shorter than the structure being read. */
+    OCA_FAIL_TRUNCATED                  = 1,
+    /** Magic bytes match no known OCA variant. */
+    OCA_FAIL_MAGIC                      = 2,
+    /** Trailer closing the signed region is wrong. */
+    OCA_FAIL_TRAILER                    = 3,
+    /** Manifest major version exceeds this build's. */
+    OCA_FAIL_FORMAT_VERSION_MISMATCH    = 4,
+    /** A reserved bit is set; the manifest uses a feature this build cannot honour. */
+    OCA_FAIL_RESERVED_BITS              = 5,
     /** Signing fields left non-zero on a manifest declaring secure_boot = 0.
      *  Not returned by this library, which ignores those fields while secure
      *  boot is disabled; available to a Consumer that enforces a stricter
      *  policy. */
     OCA_FAIL_SECURE_BOOT_INVARIANT      = 6,
-    OCA_FAIL_CHIPLET_ID                 = 7,  /**< Hardware chiplet ID does not satisfy the manifest constraint. */
-    OCA_FAIL_PACKAGE_ID                 = 8,  /**< Hardware package ID does not satisfy the manifest constraint. */
-    OCA_FAIL_SYSTEM_ID                  = 9,  /**< Hardware system ID does not satisfy the manifest constraint. */
-    OCA_FAIL_LIFECYCLE                  = 10, /**< Device lifecycle state is not permitted by the manifest. */
-    OCA_FAIL_VERSION_RANGE              = 11, /**< Hardware version falls outside the manifest's permitted range. */
-    OCA_FAIL_DEMOTION_CONTROL           = 12, /**< Demotion control field is malformed or disallowed. */
-    OCA_FAIL_MANIFEST_HASH              = 13, /**< Recomputed manifest hash does not match the stored digest. */
-    OCA_FAIL_SIGNATURE                  = 14, /**< Signature verification over the signed region failed. */
-    OCA_FAIL_CALLBACK_UNAVAILABLE       = 15, /**< A callback required by this check is NULL or reported unavailable. */
-    OCA_FAIL_INVALID_ARG                = 16, /**< A NULL pointer or otherwise unusable argument was passed. */
+    /** Hardware chiplet ID does not satisfy the manifest constraint. */
+    OCA_FAIL_CHIPLET_ID                 = 7,
+    /** Hardware package ID does not satisfy the manifest constraint. */
+    OCA_FAIL_PACKAGE_ID                 = 8,
+    /** Hardware system ID does not satisfy the manifest constraint. */
+    OCA_FAIL_SYSTEM_ID                  = 9,
+    /** Device lifecycle state is not permitted by the manifest. */
+    OCA_FAIL_LIFECYCLE                  = 10,
+    /** Hardware version falls outside the manifest's permitted range. */
+    OCA_FAIL_VERSION_RANGE              = 11,
+    /** Demotion control field is malformed or disallowed. */
+    OCA_FAIL_DEMOTION_CONTROL           = 12,
+    /** Recomputed manifest hash does not match the stored digest. */
+    OCA_FAIL_MANIFEST_HASH              = 13,
+    /** Signature verification over the signed region failed. */
+    OCA_FAIL_SIGNATURE                  = 14,
+    /** A callback required by this check is NULL or reported unavailable. */
+    OCA_FAIL_CALLBACK_UNAVAILABLE       = 15,
+    /** A NULL pointer or otherwise unusable argument was passed. */
+    OCA_FAIL_INVALID_ARG                = 16,
     /** The manifest's magic names a format variant this build was not compiled
-     *  to support (see the OCA_SUPPORT_* build gates). Distinct from
+     *  to support (see `[variants]` in the build configuration). Distinct from
      *  OCA_FAIL_MAGIC, which means the magic matches no known variant. */
     OCA_FAIL_UNSUPPORTED_VARIANT        = 17,
     /** The hash over the stored payload did not match — the ciphertext when
-     *  encrypted (checked BEFORE decryption), the TOC region when cleartext. */
+     *  encrypted (checked BEFORE decryption), the TOC region when cleartext —
+     *  or payload_hash is not zero past the digest. */
     OCA_FAIL_PAYLOAD_HASH               = 18,
     /** Key derivation, AES-CBC decryption, or PKCS#7 unpadding failed. */
     OCA_FAIL_DECRYPT                    = 19,
-    /** The chained hash over the plaintext payload did not match. Distinct from
+    /** The chained hash over the plaintext payload did not match, or
+     *  payload_hash_chain is not zero past the digest. Distinct from
      *  OCA_FAIL_PAYLOAD_TOC: this is a cryptographic mismatch on a
      *  structurally-valid TOC, not a malformed one. */
     OCA_FAIL_PAYLOAD_HASH_CHAIN         = 20,
@@ -268,14 +297,13 @@ typedef enum oca_result {
      *  and refusing a group disabled class by class keeps a whole-group
      *  disable the explicit act the code records. */
     OCA_FAIL_GROUP_CODE                 = 33,
-    /** An enforced signature class's description — its primitive, encodings,
-     *  and size fields — does not describe a key and signature this library
-     *  accepts.
+    /** An enforced signature class's description — its encodings and size
+     *  fields — does not describe a key and signature of its algorithm.
      *
      *  Each size field bounds how far a Consumer reads into its companion field,
      *  so a value that is zero, overruns the field, or disagrees with the
-     *  algorithm is rejected before any parse relies on it, as is a primitive or
-     *  encoding the library does not accept for that class, and a key or
+     *  algorithm is rejected before any parse relies on it, as is a DER
+     *  encoding the class defines but the algorithm does not, and a key or
      *  signature field whose padding past its size is not zero. Distinct from
      *  OCA_FAIL_SIGNATURE, which reports a signature that was parsed and did not
      *  verify; this one means the manifest never described a parseable value. */
@@ -335,21 +363,33 @@ typedef enum oca_result {
      *  disabled class: the algorithm is no longer trusted at all, whatever key
      *  signed with it. */
     OCA_FAIL_SIGNATURE_ALGORITHM_REVOKED = 38,
-    /** The manifest declares a digest or key-derivation algorithm this library
-     *  cannot compute: a manifest_hash_type or payload_hash_type other than
-     *  SHA2-256, or, for an encrypted payload, an
-     *  encryption_key_derivation_function other than SP 800-108r1 counter mode
-     *  with HMAC-SHA-256 or an input_key_source other than the pre-shared
-     *  secret.
+    /** The manifest names an algorithm the format defines but this build does
+     *  not enable. Which algorithms a build accepts is its security portfolio,
+     *  chosen in the build configuration; everything outside it is refused
+     *  with this code. It covers a signature_type of an enforced class, a DER
+     *  encoding the configuration turns off, an integrator-defined signature or
+     *  public-key encoding, which this library implements none of, a
+     *  manifest_hash_type or payload_hash_type, and, for an encrypted payload,
+     *  an encryption_type, encryption_key_derivation_function or
+     *  input_key_source the build does not enable.
      *
-     *  Refused before the field is acted on. Computing SHA-256 where the
-     *  manifest names another digest would report a well-formed manifest as
-     *  corrupt — OCA_FAIL_MANIFEST_HASH or OCA_FAIL_PAYLOAD_HASH — and an
-     *  unsupported key derivation would surface as OCA_FAIL_DECRYPT. This code
-     *  says instead that the manifest may be valid for a Consumer whose
-     *  portfolio includes the algorithm. */
-    OCA_FAIL_UNSUPPORTED_ALGORITHM      = 39
-} oca_result_t;
+     *  Refused before the field is acted on, so the manifest is not reported as
+     *  corrupt for an algorithm this build never computes: it may be valid for
+     *  a Consumer whose portfolio includes the algorithm. Distinct from
+     *  OCA_FAIL_ALGORITHM_RESERVED, which no Consumer accepts. */
+    OCA_FAIL_ALGORITHM_NOT_ENABLED      = 39,
+    /** The manifest names an algorithm value the format reserves: a
+     *  signature_type, signature encoding or public-key encoding of an
+     *  enforced class, a manifest_hash_type or payload_hash_type, or for an
+     *  encrypted payload an encryption_type, encryption_key_derivation_function
+     *  or input_key_source, that the format assigns to nothing and does not
+     *  leave to integrators. An encryption_shared_secret_select outside the
+     *  eight slots the format names is refused with it too. No Consumer can
+     *  accept it, so unlike
+     *  OCA_FAIL_ALGORITHM_NOT_ENABLED it says the manifest is malformed rather
+     *  than outside this build's portfolio. */
+    OCA_FAIL_ALGORITHM_RESERVED         = 40
+};
 
 /**
  * @brief Human-readable name for a result code.
@@ -363,6 +403,92 @@ typedef enum oca_result {
  * @return A NUL-terminated static string. Never NULL.
  */
 const char *oca_result_str(oca_result_t r);
+
+/** @brief This library's major version: the version of the package that ships it. */
+#define OCA_VALIDATOR_VERSION_MAJOR 0u
+
+/** @brief This library's minor version. At most 255. */
+#define OCA_VALIDATOR_VERSION_MINOR 7u
+
+/** @brief This library's patch version. At most 255. */
+#define OCA_VALIDATOR_VERSION_PATCH 0u
+
+/**
+ * @brief This header's library version as one number.
+ *
+ * The major version in bits 16 and up, the minor in bits 8 to 15 and the patch
+ * in bits 0 to 7, so versions compare in order as numbers.
+ */
+#define OCA_VALIDATOR_VERSION \
+    ((OCA_VALIDATOR_VERSION_MAJOR << 16) | (OCA_VALIDATOR_VERSION_MINOR << 8) \
+     | OCA_VALIDATOR_VERSION_PATCH)
+
+/**
+ * @brief The version of the library this code is linked with.
+ *
+ * OCA_VALIDATOR_VERSION as the library was compiled, which is the version of
+ * the header it was compiled against. Code compiled against another version's
+ * header sees its own OCA_VALIDATOR_VERSION differ from this.
+ *
+ * Two versions of the library built from one configuration report the same
+ * portfolio, and can still decide a manifest differently. A device that
+ * reports what it runs, or a list of approved builds, therefore names the
+ * version as well as oca_build_portfolio_digest().
+ *
+ * Nothing else in the library calls this, so a link that collects unused
+ * sections drops it from an image that does not.
+ *
+ * @return OCA_VALIDATOR_VERSION, as the library was compiled.
+ */
+uint32_t oca_validator_version(void);
+
+/** @brief Size in bytes of the portfolio digest, a SHA-256. */
+#define OCA_PORTFOLIO_DIGEST_SIZE 32u
+
+/**
+ * @brief The SHA-256 naming the build configuration this library was compiled
+ *        from.
+ *
+ * The generator names each build's portfolio: the settings it states, one
+ * name=value line for each that is not zero, which the generated header holds as
+ * OCA_CFG_PORTFOLIO_TEXT, and their SHA-256 as OCA_CFG_PORTFOLIO_DIGEST. This is
+ * the value to attest, or to hold against a list of approved portfolios: a
+ * device can report which portfolio it runs, and a harness can tell which
+ * configuration built the library it is driving.
+ *
+ * The digest depends on the settings alone. Two configuration files that build
+ * the same library share it, whatever their names, comments or order, and a
+ * library upgrade that adds a switch left off does not change it.
+ * `gen_config.py --print-all` lists the settings behind a configuration file.
+ *
+ * The library reports what its generated header states, and the header
+ * cannot state a digest other than its settings': a header edited by hand so
+ * that they disagree does not compile. It names the configuration a header was
+ * generated from; `gen_config.py --check` is what catches a header that no
+ * longer matches its file.
+ *
+ * The digest does not include the library version, so a release that changes
+ * no setting changes no digest. Attest oca_validator_version() beside it.
+ *
+ * Nothing else in the library calls this, so a link that collects unused
+ * sections drops it from an image that does not.
+ *
+ * @return The OCA_PORTFOLIO_DIGEST_SIZE bytes of the digest, held by the library
+ *         for as long as it is loaded. Never NULL.
+ */
+const uint8_t *oca_build_portfolio_digest(void);
+
+/**
+ * @brief A short label for the build configuration this library was compiled
+ *        from.
+ *
+ * The first 32 bits of oca_build_portfolio_digest(), big-endian, for a log line
+ * or a version string. Too short to attest a portfolio: a configuration can be
+ * searched for whose label matches another's. Attest the digest instead.
+ *
+ * @return The portfolio label, OCA_CFG_PORTFOLIO_ID.
+ */
+uint32_t oca_build_portfolio_id(void);
 
 /* ------------------------------------------------------------------ */
 /* Validation context                                                 */
@@ -543,7 +669,8 @@ void oca_validation_context_init(oca_validation_context_t *ctx);
  * @brief Head bytes oca_manifest_peek() requires.
  *
  * Covers magic(0..4), identifier(4..12), version(12..16), and
- * manifest_length(16..20). Pinned to the layout by _Static_assert in parser.c.
+ * manifest_length(16..20). Pinned to the layout by a compile-time check in
+ * parser.c.
  */
 #define OCA_MANIFEST_PEEK_MIN  20u
 
@@ -565,8 +692,9 @@ typedef struct oca_manifest_peek {
     uint16_t    version_major;   /**< Manifest format major version, as read. */
     uint16_t    version_minor;   /**< Manifest format minor version, as read. */
     /** "OCA-Classic" / "OCA-PQC". Static lifetime, never NULL. For logging; a
-     *  consumer that must refuse a variant uses the OCA_SUPPORT_* gates, after
-     *  which this reports OCA_FAIL_UNSUPPORTED_VARIANT instead. */
+     *  consumer that must refuse a variant turns it off in `[variants]` of the
+     *  build configuration, after which this reports
+     *  OCA_FAIL_UNSUPPORTED_VARIANT instead. */
     const char *variant_name;
     /** NUL-terminated, trailing NULs and spaces trimmed, non-printable bytes
      *  replaced with '?' — unauthenticated data headed for a log. */
@@ -601,7 +729,7 @@ oca_result_t oca_peek_manifest(const uint8_t *head, size_t head_len,
                                oca_manifest_peek_t *out);
 
 /* ------------------------------------------------------------------ */
-/* Addressing enums                                                   */
+/* Addressing types                                                   */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -612,11 +740,14 @@ oca_result_t oca_peek_manifest(const uint8_t *head, size_t head_len,
  * sits in a package, a package in a system — and a manifest may constrain any
  * combination of them independently.
  */
-typedef enum oca_id_kind {
+typedef uint16_t oca_id_kind_t;
+
+/** @brief The values of oca_id_kind_t. */
+enum oca_id_kind {
     OCA_ID_CHIPLET = 0,  /**< Per-die identity. */
     OCA_ID_PACKAGE = 1,  /**< Identity of the package the die is assembled into. */
     OCA_ID_SYSTEM  = 2   /**< Identity of the board or system. */
-} oca_id_kind_t;
+};
 
 /**
  * @brief Which level's lifecycle state a check addresses.
@@ -625,23 +756,29 @@ typedef enum oca_id_kind {
  * because the two are read through different callbacks and a mix-up would
  * compare a lifecycle state against an identity constraint.
  */
-typedef enum oca_lifecycle_level {
+typedef uint16_t oca_lifecycle_level_t;
+
+/** @brief The values of oca_lifecycle_level_t. */
+enum oca_lifecycle_level {
     OCA_LIFECYCLE_LEVEL_CHIPLET = 0,  /**< Per-die lifecycle state. */
     OCA_LIFECYCLE_LEVEL_PACKAGE = 1,  /**< Package-level lifecycle state. */
     OCA_LIFECYCLE_LEVEL_SYSTEM  = 2   /**< System-level lifecycle state. */
-} oca_lifecycle_level_t;
+};
 
 /**
  * @brief Which level's version a range check addresses.
  *
  * Mirrors oca_id_kind_t's hierarchy, for the same reason oca_lifecycle_level_t
- * does: a separate type keeps the three level enums from being interchanged.
+ * does: a separate type keeps the three level types from being interchanged.
  */
-typedef enum oca_version_level {
+typedef uint16_t oca_version_level_t;
+
+/** @brief The values of oca_version_level_t. */
+enum oca_version_level {
     OCA_VERSION_LEVEL_CHIPLET = 0,  /**< Per-die version. */
     OCA_VERSION_LEVEL_PACKAGE = 1,  /**< Package-level version. */
     OCA_VERSION_LEVEL_SYSTEM  = 2   /**< System-level version. */
-} oca_version_level_t;
+};
 
 /**
  * @brief Lifecycle state a device reports for a given level.
@@ -649,7 +786,10 @@ typedef enum oca_version_level {
  * The values are the manifest's own lifecycle encoding, so a reported state is
  * compared directly against the manifest's permitted set with no translation.
  */
-typedef enum oca_lifecycle_token {
+typedef uint16_t oca_lifecycle_token_t;
+
+/** @brief The values of oca_lifecycle_token_t. */
+enum oca_lifecycle_token {
     OCA_LIFECYCLE_TEST_DEV    = 0,     /**< Test or development part. */
     OCA_LIFECYCLE_PROD        = 1,     /**< Production. */
     OCA_LIFECYCLE_PROD_END    = 2,     /**< End of production life. */
@@ -661,7 +801,7 @@ typedef enum oca_lifecycle_token {
      *  constraint — an unreadable lifecycle fails the check rather than being
      *  treated as permissive. */
     OCA_LIFECYCLE_UNKNOWN     = 0xFF
-} oca_lifecycle_token_t;
+};
 
 /**
  * @brief Outcome of a hardware-readback callback.
@@ -673,11 +813,14 @@ typedef enum oca_lifecycle_token {
  *       "constraint not applicable". A device that cannot report its identity
  *       must not boot a manifest that constrains it.
  */
-typedef enum oca_hw_result {
+typedef uint16_t oca_hw_result_t;
+
+/** @brief The values of oca_hw_result_t. */
+enum oca_hw_result {
     OCA_HW_OK          = 0,  /**< Value supplied. */
     OCA_HW_UNAVAILABLE = 1,  /**< Caller cannot supply this value (e.g. CLI flag absent). */
     OCA_HW_ERROR       = 2   /**< Read was attempted and failed. */
-} oca_hw_result_t;
+};
 
 /**
  * @brief Signature algorithm family a key, signature, or device state belongs to.
@@ -688,11 +831,15 @@ typedef enum oca_hw_result {
  * backend to consult without interpreting primitive bytes — the classical and
  * PQC signature_type value spaces both reserve 0xF0+ for integrators, so the
  * primitive value alone cannot distinguish the families there.
+
  */
-typedef enum oca_key_algorithm {
+typedef uint16_t oca_key_algorithm_t;
+
+/** @brief The values of oca_key_algorithm_t. */
+enum oca_key_algorithm {
     OCA_KEY_ALGO_CLASSIC = 0,  /**< The RSA / ECDSA family. */
     OCA_KEY_ALGO_PQC     = 1   /**< The post-quantum family (ML-DSA / SLH-DSA). */
-} oca_key_algorithm_t;
+};
 
 /* ------------------------------------------------------------------ */
 /* Crypto blob descriptor                                             */
@@ -704,10 +851,13 @@ typedef enum oca_key_algorithm {
  * Lets one descriptor type carry both operands of a signature check while
  * keeping them distinguishable to the verifying callback.
  */
-typedef enum oca_blob_kind {
+typedef uint16_t oca_blob_kind_t;
+
+/** @brief The values of oca_blob_kind_t. */
+enum oca_blob_kind {
     OCA_BLOB_PUBLIC_KEY = 1,  /**< The public key the signature is checked against. */
     OCA_BLOB_SIGNATURE  = 2   /**< The signature over the signed region. */
-} oca_blob_kind_t;
+};
 
 /**
  * @brief Encoding of a signature or public-key blob.
@@ -715,21 +865,18 @@ typedef enum oca_blob_kind {
  * As recorded in the manifest's signature_encoding_classic /
  * public_key_encoding_classic byte.
  *
- * THE ENUMERATOR VALUES ARE THE ON-DISK BYTE VALUES. A manifest byte is cast
- * straight to this type with no translation, the same convention
+ * THE ENUMERATOR VALUES ARE THE ON-DISK BYTE VALUES. A manifest byte reaches
+ * oca_crypto_blob_t::encoding with no translation, the same convention
  * oca_primitive_type_t follows for signature_type_classic.
  *
  * Two consequences worth keeping in mind before editing this enum:
  *
  *   - 0x00 means the field was never populated — a secure_boot = 0 bundle
- *     zeroes the signing fields. It does NOT mean "raw". An earlier revision
- *     used RAW = 0, which silently aliased "unset" onto a real encoding and
- *     left the format's raw-little-endian value (0x02) unrepresentable.
- *   - Casting a byte outside this set is well-defined in C (the value is
- *     representable in the implementation-chosen underlying type), but is
- *     undefined behaviour if this header is compiled as C++ — which the
- *     extern "C" guard above invites. Every value the packer can emit must
- *     therefore have an enumerator here.
+ *     zeroes the signing fields. It does NOT mean "raw", which is 0x02; a
+ *     raw encoding of 0 would alias "unset" onto a real encoding.
+ *   - oca_encoding_t is a uint16_t, so any byte is a value it can hold. Every
+ *     value the packer can emit has an enumerator here, so a callback can
+ *     name it.
  *
  * @note A drift test fails if these values diverge from the packer's
  *       OcaClassicSignatureEncoding / OcaClassicPublicKeyEncoding. That test
@@ -737,27 +884,34 @@ typedef enum oca_blob_kind {
  *       each enumerator below documents itself on the PRECEDING line rather
  *       than with a trailing comment.
  */
-typedef enum oca_encoding {
+typedef uint16_t oca_encoding_t;
+
+/** @brief The values of oca_encoding_t. */
+enum oca_encoding {
     /** Field never populated. Not an encoding — see the warning above. */
     OCA_ENCODING_UNSET  = 0x00,
     /** ASN.1 DER. */
     OCA_ENCODING_DER    = 0x01,
     /** Raw bytes, in the algorithm's own byte order (big-endian). */
     OCA_ENCODING_RAW    = 0x02
-} oca_encoding_t;
+};
 
 /**
  * @brief Signature primitive named by the manifest's signature_type_classic
  *        or signature_type_pqc byte.
  *
  * As with oca_encoding_t, the enumerator values are the on-disk byte values and
- * a manifest byte is cast straight to this type. The numbering is the format's,
- * which is why it is not contiguous. The classical values (0x01, 0x05) and the
- * PQC values (0x31+) come from two different manifest fields with two different
- * value spaces; the blob's key_algorithm says which space a value is from,
- * which matters because both spaces reserve 0xF0+ for integrators.
+ * a manifest byte reaches oca_crypto_blob_t::primitive_type untranslated. The
+ * numbering is the format's, which is why it is not contiguous. The classical
+ * values (0x01, 0x05) and the PQC values (0x31+) come from two different
+ * manifest fields with two different value spaces; the blob's key_algorithm
+ * says which space a value is from, which matters because both spaces reserve
+ * 0xF0+ for integrators.
  */
-typedef enum oca_primitive_type {
+typedef uint16_t oca_primitive_type_t;
+
+/** @brief The values of oca_primitive_type_t. */
+enum oca_primitive_type {
     /** No primitive — the signing fields are unpopulated. */
     OCA_PRIMITIVE_NONE                     = 0x00,
     OCA_PRIMITIVE_RSA_3072_PKCS1V15_SHA256 = 0x01,  /**< RSA-3072, PKCS#1 v1.5, SHA-256. */
@@ -771,7 +925,7 @@ typedef enum oca_primitive_type {
     OCA_PRIMITIVE_SLH_DSA_SHAKE_128S       = 0x54,  /**< FIPS 205 SLH-DSA-SHAKE-128s. */
     OCA_PRIMITIVE_SLH_DSA_SHAKE_192S       = 0x55,  /**< FIPS 205 SLH-DSA-SHAKE-192s. */
     OCA_PRIMITIVE_SLH_DSA_SHAKE_256S       = 0x56   /**< FIPS 205 SLH-DSA-SHAKE-256s. */
-} oca_primitive_type_t;
+};
 
 /**
  * @brief A signature or public-key blob, with everything needed to interpret it.
@@ -786,9 +940,10 @@ typedef struct oca_crypto_blob {
      *  value is generally larger than the encoded content. */
     size_t               field_length;
     /** Valid bytes at the start of @c bytes: the manifest's own size field for
-     *  this blob (signature_size_* or public_key_size_*), which
-     *  oca_check_signing_description() has held to the declared algorithm and
-     *  encoding ahead of both callbacks in the composed pipeline. Exact for
+     *  this blob (signature_size_* or public_key_size_*), held to the declared
+     *  algorithm and encoding as oca_check_signing_description() holds it. The
+     *  blob is built from that same read of the field, so this is the length
+     *  that was checked even if the body has changed since. Exact for
      *  every raw value and for a DER public key, whose DER must occupy all of
      *  it; for a DER ECDSA signature it is the algorithm's maximum DER length,
      *  and the DER framing gives the encoded length within it. Read no further
@@ -806,19 +961,68 @@ typedef struct oca_crypto_blob {
 } oca_crypto_blob_t;
 
 /* ------------------------------------------------------------------ */
+/* Digest algorithm                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Digest algorithm named by manifest_hash_type or payload_hash_type.
+ *
+ * As with the other on-disk types here, the values ARE the field's values. Only
+ * the algorithms a build can enable are listed; the hash callback is never asked
+ * for any other.
+ */
+typedef uint16_t oca_hash_type_t;
+
+/** @brief The values of oca_hash_type_t. */
+enum oca_hash_type {
+    OCA_HASH_TYPE_SHA2_256 = 0x01  /**< SHA2-256, a 32-byte digest. */
+};
+
+/* ------------------------------------------------------------------ */
 /* Payload decryption descriptor                                      */
 /* ------------------------------------------------------------------ */
 
 /**
  * @brief Cipher named by the manifest's encryption_type byte.
  *
- * As with the other on-disk enums here, the values ARE the byte values.
+ * As with the other on-disk types here, the values ARE the byte values.
  */
-typedef enum oca_encryption_type {
+typedef uint16_t oca_encryption_type_t;
+
+/** @brief The values of oca_encryption_type_t. */
+enum oca_encryption_type {
     OCA_ENCRYPTION_TYPE_NONE        = 0x00,  /**< No encryption. */
     OCA_ENCRYPTION_TYPE_AES_128_CBC = 0x01,  /**< AES-128-CBC. */
     OCA_ENCRYPTION_TYPE_AES_256_CBC = 0x02   /**< AES-256-CBC. */
-} oca_encryption_type_t;
+};
+
+/**
+ * @brief Key derivation function named by encryption_key_derivation_function.
+ *
+ * As with the other on-disk types here, the values ARE the field's values. Only
+ * the functions a build can enable are listed; the decryption callback is never
+ * handed any other.
+ */
+typedef uint16_t oca_kdf_t;
+
+/** @brief The values of oca_kdf_t. */
+enum oca_kdf {
+    OCA_KDF_SP800_108_HMAC_SHA256 = 0x0001  /**< NIST SP 800-108r1 counter mode, HMAC-SHA-256. */
+};
+
+/**
+ * @brief Where a payload's input key comes from, as input_key_source names it.
+ *
+ * The values ARE the three-bit field's values. Only the sources a build can
+ * enable are listed; the decryption callback is never handed any other.
+ */
+typedef uint16_t oca_key_source_t;
+
+/** @brief The values of oca_key_source_t. */
+enum oca_key_source {
+    /** A provisioned secret, chosen by encryption_shared_secret_select. */
+    OCA_KEY_SOURCE_PRESHARED = 0x1
+};
 
 /**
  * @brief Everything the payload-decryption callback reads, in one place.
@@ -842,8 +1046,8 @@ typedef struct oca_decrypt_input {
      *  before this callback is reached. */
     const uint8_t         *ciphertext;
     /** Length of @c ciphertext. Guaranteed non-zero and a whole number of
-     *  16-byte blocks: the library enforces that shared block-mode invariant so
-     *  each backend does not have to re-check it. */
+     *  the cipher's blocks: the library enforces that shared block-mode
+     *  invariant so each backend does not have to re-check it. */
     size_t                 ciphertext_len;
     /** 16-byte AES-CBC initialisation vector. Points into the MANIFEST BODY,
      *  never the payload, which is what makes decrypting in place over the
@@ -851,11 +1055,18 @@ typedef struct oca_decrypt_input {
     const uint8_t         *iv;
     /** 64-byte KDF context. Also in the manifest body, same reasoning. */
     const uint8_t         *kdf_input;
-    /** Which cipher the manifest names. A value outside oca_encryption_type_t
-     *  cannot reach here: the library rejects an unsupported cipher before
-     *  invoking the callback. */
+    /** Which cipher the manifest names. Only a cipher the build enables reaches
+     *  here: the library refuses any other before invoking the callback. */
     oca_encryption_type_t  cipher;
-    /** Which provisioned secret the manifest selects, 1-based.
+    /** How the manifest says to derive the payload key from the input key.
+     *  Only a function the build enables reaches here. */
+    oca_kdf_t              kdf;
+    /** Where the manifest says the input key comes from. Only a source the
+     *  build enables reaches here. */
+    oca_key_source_t       key_source;
+    /** Which provisioned secret the manifest selects, 1 to 8. The library
+     *  refuses every other value, which the format reserves, before invoking
+     *  the callback.
      *
      *  An INDEX, never a secret. Resolving it against the part's key store is
      *  the callback's job, which is precisely why no key material crosses this
@@ -919,22 +1130,33 @@ typedef struct oca_callbacks oca_callbacks_t;
  */
 struct oca_callbacks {
     /**
-     * @brief Compute SHA-256 over a message.
+     * @brief Compute a digest with the algorithm the manifest names.
      *
-     * Called for the manifest hash, the payload hash, the payload hash chain,
-     * and every TOC entry hash, so it is by far the hottest callback in the
+     * Called for the manifest hash (manifest_hash_type), and for the payload
+     * hash, the payload hash chain and every TOC entry hash
+     * (payload_hash_type), so it is by far the hottest callback in the
      * library. It must be re-entrant with respect to the library, which keeps
      * no state between calls.
      *
+     * The library asks only for a hash its build enables, and @p digest_len is
+     * always that algorithm's digest size. A backend that implements fewer
+     * hashes than the build enables reports the rest with
+     * OCA_FAIL_CALLBACK_UNAVAILABLE.
+     *
+     * @param[in]  type        Which digest to compute: the manifest's
+     *                         manifest_hash_type or payload_hash_type.
      * @param[in]  msg         Bytes to digest.
      * @param[in]  msg_len     Length of @p msg. May be zero.
-     * @param[out] out_digest  Receives the 32-byte digest.
+     * @param[out] out_digest  Receives exactly @p digest_len bytes.
+     * @param[in]  digest_len  The digest size of @p type.
      * @retval OCA_OK                        Digest written.
-     * @retval OCA_FAIL_CALLBACK_UNAVAILABLE No real implementation is wired.
+     * @retval OCA_FAIL_CALLBACK_UNAVAILABLE No implementation is wired for
+     *                                       @p type.
      */
-    oca_result_t (*sha256)(
+    oca_result_t (*hash)(
+        oca_hash_type_t type,
         const uint8_t *msg, size_t msg_len,
-        uint8_t out_digest[32]);
+        uint8_t *out_digest, size_t digest_len);
 
     /**
      * @brief Verify a signature over the manifest's signed region.
@@ -969,11 +1191,15 @@ struct oca_callbacks {
     /**
      * @brief Derive the payload key and decrypt the payload.
      *
-     * Resolve @c in->secret_select against the part's provisioned secrets,
-     * derive the AES payload key from that secret and @c in->kdf_input via
-     * SP 800-108r1 Counter Mode over the expanded input block, then
-     * AES-CBC-decrypt @c in->ciphertext with @c in->iv, removing PKCS#7 padding.
-     * The cipher and key length follow @c in->cipher.
+     * Obtain the input key from @c in->key_source — for the pre-shared source,
+     * resolve @c in->secret_select against the part's provisioned secrets —
+     * derive the payload key from it and @c in->kdf_input with @c in->kdf, then
+     * decrypt @c in->ciphertext with @c in->cipher and @c in->iv. The library
+     * hands over only what the build configuration enables: today SP 800-108r1
+     * counter mode with HMAC-SHA-256 over the expanded input block, the
+     * pre-shared source, and AES-CBC with PKCS#7 padding removed, the key length
+     * following @c in->cipher. A backend that implements fewer reports the rest
+     * with OCA_FAIL_CALLBACK_UNAVAILABLE.
      *
      * Everything the operation reads is a named field on @p in, so the callback
      * never re-reads the manifest and never needs state handed to it from
@@ -1584,7 +1810,9 @@ oca_result_t oca_check_signature_class_variant(const uint8_t *body);
  * value and zero-padded beyond. They bound how far a Consumer reads, so a size
  * that is zero, overruns its field, or disagrees with what the declared
  * algorithm and encoding can produce is rejected before any parse uses it, as
- * is a primitive or encoding this library does not accept for the class.
+ * is a primitive or encoding this library does not accept for the class. The
+ * primitive and both encodings are resolved before any size, so a value the
+ * format reserves, or one it leaves to integrators, is reported as that.
  *
  * Every size is an exact byte count except one: a DER ECDSA signature carries
  * the algorithm's MAXIMUM DER length instead. That field lies inside the region
@@ -1613,8 +1841,8 @@ oca_result_t oca_check_signature_class_variant(const uint8_t *body);
  * anchor.
  *
  * The PQC class accepts ML-DSA-87 only, with both encodings raw: FIPS 204
- * defines no bare ASN.1 structure for an ML-DSA key or signature, so DER is
- * undefined for PQC. The raw sizes are exact — a 2592-byte public key and a
+ * defines no bare ASN.1 structure for an ML-DSA key or signature, so the
+ * format reserves DER for PQC. The raw sizes are exact — a 2592-byte public key and a
  * 4627-byte signature.
  *
  * Structural validation of the DER itself belongs to the crypto backend, the
@@ -1633,13 +1861,22 @@ oca_result_t oca_check_signature_class_variant(const uint8_t *body);
  *                                      consistent, or secure boot is not in
  *                                      force.
  * @retval OCA_FAIL_INVALID_ARG         @p body was NULL.
- * @retval OCA_FAIL_CRYPTO_FIELD_SIZE   An enforced class names a primitive or
- *                                      encoding it does not accept, a size
- *                                      field is zero, overruns its field, or
- *                                      disagrees with the declared algorithm
- *                                      and encoding, or a key or signature
- *                                      field holds a non-zero byte past its
- *                                      declared size.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An enforced class names a
+ *                                      signature algorithm the format defines
+ *                                      but this build does not enable, an
+ *                                      integrator-defined encoding, or a DER
+ *                                      encoding the build configuration turns
+ *                                      off.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED  An enforced class's signature_type or
+ *                                      an encoding is a value the format
+ *                                      reserves.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE   An enforced class names a DER encoding
+ *                                      the format does not define for its
+ *                                      algorithm, a size field is zero,
+ *                                      overruns its field, or disagrees with
+ *                                      the declared algorithm and encoding, or
+ *                                      a key or signature field holds a
+ *                                      non-zero byte past its declared size.
  * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED  @p ctx holds no determination.
  * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination, or the
  *                                      recorded class enforcement, no longer
@@ -1915,15 +2152,16 @@ oca_result_t oca_check_demotion_control(const uint8_t *body);
  * not spent on it.
  *
  * @param[in] body  Whole variant body. See the length contract above.
- * @param[in] cb    Callback table; cb->sha256 is required.
+ * @param[in] cb    Callback table; cb->hash is required.
  * @retval OCA_OK                          Recomputed digest matches.
  * @retval OCA_FAIL_INVALID_ARG            @p body or @p cb was NULL.
- * @retval OCA_FAIL_UNSUPPORTED_ALGORITHM  manifest_hash_type names a digest
- *                                         other than SHA2-256, the one this
- *                                         library computes. Refused before
- *                                         hashing.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  manifest_hash_type names a digest
+ *                                         this build does not enable. Refused
+ *                                         before hashing.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     manifest_hash_type holds a value the
+ *                                         format reserves, refused likewise.
  * @retval OCA_FAIL_MANIFEST_HASH          Digest mismatch.
- * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   cb->sha256 is NULL or unavailable.
+ * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   cb->hash is NULL or unavailable.
  * @return Otherwise the magic or variant failure from resolving @p body.
  *
  * @warning NOT a trust boundary. The expected digest lives in the manifest's
@@ -1950,7 +2188,9 @@ oca_result_t oca_check_manifest_hash(
  * oca_check_root_key_authorized() recorded that class's OWN anchor vouching for
  * its key; a classical vouching never unlocks a PQC verify. The recorded
  * enforcement is confirmed against the manifest's class bits before it is
- * acted on, the same time-of-use rule the secure-boot determination gets.
+ * acted on, the same time-of-use rule the secure-boot determination gets, and
+ * each class's signing description is held to this build again, as
+ * oca_check_signing_description() holds it, before that class's verifier runs.
  *
  * @param[in]     body  Whole variant body. See the length contract above.
  * @param[in]     cb    Callback table; cb->verify_signature is required under
@@ -1982,6 +2222,17 @@ oca_result_t oca_check_manifest_hash(
  *                                         variant with no PQC fields — both
  *                                         only reachable around the checks
  *                                         that reject them earlier.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An enforced class's algorithm, an
+ *                                         integrator encoding, or a DER
+ *                                         encoding it uses is not enabled in
+ *                                         this build.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     An enforced class's signature_type
+ *                                         or an encoding is reserved.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE      An enforced class's size or encoding
+ *                                         does not fit its algorithm, or its
+ *                                         padding is not zero. This and the
+ *                                         two above are only reachable around
+ *                                         oca_check_signing_description().
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   Verify callback missing under secure boot.
  * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED  @p ctx holds no determination.
  * @retval OCA_FAIL_SECURE_BOOT_STATE_CHANGED The live determination — or the
@@ -2041,9 +2292,9 @@ oca_result_t oca_check_signature(
  *                                             disabled on this device.
  * @retval OCA_FAIL_SIGNATURE_COHORT_REQUIRED  The device demands a cohort the
  *                                             manifest does not enforce.
- * @retval OCA_FAIL_CRYPTO_FIELD_SIZE          An enforced class names a
- *                                             signature_type the format does
- *                                             not define — only reachable around
+ * @retval OCA_FAIL_ALGORITHM_RESERVED         An enforced class names a
+ *                                             signature_type the format
+ *                                             reserves — only reachable around
  *                                             oca_check_signing_description().
  * @retval OCA_FAIL_SIGNATURE_CLASS_CONTROL    No class is enforced in an engaged
  *                                             context, or PQC is enforced on a
@@ -2070,7 +2321,10 @@ oca_result_t oca_check_signature_posture(
  * to cb->is_key_authorized — the classical key when secure_boot_classic is set,
  * the PQC key when secure_boot_pqc is, both for a hybrid manifest, each blob
  * carrying its key_algorithm so the implementation knows which anchor family to
- * consult — and rejects unless the device claims every one of them.
+ * consult — and rejects unless the device claims every one of them. Each
+ * class's signing description is held to this build first, as
+ * oca_check_signing_description() holds it, so the anchor is only ever shown a
+ * key of an enabled algorithm whose length is held to its field.
  *
  * Compose this FIRST of the key checks, before oca_check_root_key_revocation()
  * and oca_check_signature(). Verifying a signature establishes only that some
@@ -2109,6 +2363,17 @@ oca_result_t oca_check_signature_posture(
  *                                         variant with no PQC fields — both
  *                                         only reachable around the checks
  *                                         that reject them earlier.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An enforced class's algorithm, an
+ *                                         integrator encoding, or a DER
+ *                                         encoding it uses is not enabled in
+ *                                         this build.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     An enforced class's signature_type
+ *                                         or an encoding is reserved.
+ * @retval OCA_FAIL_CRYPTO_FIELD_SIZE      An enforced class's size or encoding
+ *                                         does not fit its algorithm, or its
+ *                                         padding is not zero. This and the
+ *                                         two above are only reachable around
+ *                                         oca_check_signing_description().
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   Callback missing under secure boot, or
  *                                         the anchor could not be read.
  * @retval OCA_FAIL_SECURE_BOOT_UNDETERMINED  @p ctx holds no determination.
@@ -2260,6 +2525,35 @@ oca_result_t oca_check_payload_encryption_precondition(
     const oca_validation_context_t *ctx);
 
 /**
+ * @brief Refuse a manifest whose payload uses an algorithm this build does not
+ *        enable.
+ *
+ * Checks payload_hash_type and, for an encrypted payload, encryption_type,
+ * input_key_source, encryption_kdf, and for the pre-shared source
+ * encryption_shared_secret_select. These are manifest fields, so the check
+ * needs only the manifest: no callbacks and no payload. oca_validate_manifest()
+ * runs it before any device read or signature check. A manifest whose payload
+ * can never be checked is therefore rejected cheaply, and before the caller
+ * commits device state for it.
+ *
+ * oca_check_payload_at() runs the same check again when the payload is
+ * verified, so a caller that skips the manifest stage gets the same result.
+ *
+ * A cleartext manifest with no payload is not checked. For a cleartext payload
+ * only the hash type is checked, because the key fields are not used.
+ *
+ * @param[in] body  Whole variant body. See the length contract above.
+ * @retval OCA_OK                          No payload is declared, or every
+ *                                         algorithm it names is enabled.
+ * @retval OCA_FAIL_INVALID_ARG            @p body was NULL.
+ * @retval OCA_FAIL_ALGORITHM_NOT_ENABLED  An algorithm the format defines and
+ *                                         this build does not enable.
+ * @retval OCA_FAIL_ALGORITHM_RESERVED     A value the format reserves.
+ * @return Otherwise the magic or variant failure from resolving @p body.
+ */
+oca_result_t oca_check_payload_algorithms(const uint8_t *body);
+
+/**
  * @brief Refuse an encrypted payload without CONFIRMED authentication.
  *
  * Reads ctx->secure_boot_authenticated rather than re-deriving anything, so a
@@ -2332,7 +2626,7 @@ oca_result_t oca_check_payload_encryption_policy(
  * @param[in] body         Manifest body with its payload immediately after it,
  *                         in one buffer.
  * @param[in] body_length  Total size of @p body, validated internally.
- * @param[in] cb           Callback table; cb->sha256 always, cb->decrypt_payload
+ * @param[in] cb           Callback table; cb->hash always, cb->decrypt_payload
  *                         when the payload is encrypted.
  * @param[in] ctx          Validation context, read for the encryption policy.
  * @param[out] out_plaintext     Receives the validated plaintext location and
@@ -2353,9 +2647,10 @@ oca_result_t oca_check_payload_encryption_policy(
  *                                           oca_locate_payload() with
  *                                           oca_check_payload_at() instead.
  * @return Otherwise the result of the payload checks it composes —
- *         OCA_FAIL_UNSUPPORTED_ALGORITHM for a payload_hash_type, or an
- *         encrypted payload's key derivation or input-key source, this library
- *         does not implement, checked before any digest or decryption;
+ *         OCA_FAIL_ALGORITHM_NOT_ENABLED or OCA_FAIL_ALGORITHM_RESERVED for a
+ *         payload_hash_type, or an encrypted payload's cipher, key derivation
+ *         or input-key source, this build does not enable, checked before any
+ *         digest or decryption;
  *         OCA_FAIL_PAYLOAD_HASH, OCA_FAIL_DECRYPT, OCA_FAIL_PAYLOAD_TOC,
  *         OCA_FAIL_PAYLOAD_TOO_MANY_IMAGES, OCA_FAIL_PAYLOAD_HASH_CHAIN,
  *         OCA_FAIL_PAYLOAD_ENTRY_HASH — or the magic or variant failure from
@@ -2384,16 +2679,18 @@ oca_result_t oca_check_payload(
 typedef struct oca_payload_encryption {
     /** payload_encryption_control bit 0. The sole trigger for the encryption
      *  policy check. */
-    bool     encrypted;
-    /** An oca_encryption_type_t value, reported verbatim rather than validated.
-     *  OCA_ENCRYPTION_TYPE_NONE unless @c encrypted. A value outside the enum
-     *  means the manifest names a cipher this build does not implement, which
-     *  oca_check_payload() rejects when it gets there — deciding it here would
-     *  duplicate that check in a second place. */
-    uint8_t  type;
-    /** Provisioned-secret index, 1-based. Zero unless @c encrypted. Resolving
-     *  this to an actual secret is the ingestor's job, done before validation. */
-    uint16_t secret_select;
+    bool                  encrypted;
+    /** The manifest's encryption_type, reported verbatim rather than validated.
+     *  OCA_ENCRYPTION_TYPE_NONE unless @c encrypted. A cipher this build does
+     *  not enable, enumerated or not, is refused by oca_check_payload() when it
+     *  gets there — deciding it here would duplicate that check in a second
+     *  place. */
+    oca_encryption_type_t type;
+    /** Provisioned-secret index, 1-based. Zero unless @c encrypted. Reported
+     *  verbatim, like @c type: a value outside 1 to 8 is refused by
+     *  oca_check_payload_algorithms(). Resolving this to an actual secret is
+     *  the ingestor's job, done before validation. */
+    uint16_t              secret_select;
 } oca_payload_encryption_t;
 
 /**
@@ -2500,7 +2797,7 @@ typedef struct oca_image_info {
      *  check guarantees the stored uint64 fits. */
     size_t         length;
     /** The entry's 64-byte hash field. Its leading
-     *  OCA_MANIFEST_HASH_DIGEST_SIZE bytes are the digest, the remainder
+     *  bytes, the payload_hash_type's digest size, are the digest, the remainder
      *  padding. oca_check_payload() has ALREADY verified this digest against
      *  @c bytes, so a Consumer re-checking it gains nothing. */
     const uint8_t *hash;
@@ -2639,7 +2936,7 @@ oca_result_t oca_locate_payload(const uint8_t *body,
  * @param[in] body         Whole variant body, already authenticated.
  * @param[in] payload      The staged payload bytes. Need not adjoin @p body.
  * @param[in] payload_len  Length of @p payload.
- * @param[in] cb           Callback table; cb->sha256 always,
+ * @param[in] cb           Callback table; cb->hash always,
  *                         cb->decrypt_payload when the payload is encrypted.
  * @param[in] ctx          Validation context, read for the encryption policy.
  * @param[out] out_plaintext  Receives the validated plaintext location and
@@ -2652,6 +2949,12 @@ oca_result_t oca_locate_payload(const uint8_t *body,
  * @retval OCA_FAIL_TRUNCATED              @p payload_len is short of what the
  *                                         manifest declares.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   A required callback is unavailable.
+ * @retval OCA_FAIL_ENCRYPTION_REQUIRES_SECURE_BOOT
+ *                                         The payload is encrypted and no
+ *                                         signature authenticated its manifest,
+ *                                         as in every build that declares
+ *                                         `[secure_boot] disabled`, which
+ *                                         compiles out decryption.
  * @return Otherwise the result of the payload checks it composes, as
  *         oca_check_payload() documents, or the magic or variant failure from
  *         resolving @p body.
@@ -2857,6 +3160,10 @@ oca_result_t oca_commit_security_state(
  *     determination: it is the only gated check that spends no hardware read at
  *     all, so an encrypted payload on a non-secure part is rejected before any
  *     identity callback and long before a public-key operation;
+ *   - oca_check_payload_algorithms() runs next. It reads only the manifest,
+ *     and rejects a payload whose hash, cipher, key source or KDF this build
+ *     does not enable before the signature check, and before the caller
+ *     commits device state for a manifest that can never boot;
  *   - oca_check_signature_posture() runs after oca_check_signing_description(),
  *     whose checks make the signature_type bytes meaningful, and before any key
  *     is authorized or used: a manifest relying on an algorithm the device has

@@ -4,10 +4,10 @@
  * @file
  * @brief Secure-boot ROOT-key authorization check.
  *
- * The secure boot trust anchor reference. A manifest carries the public key its 
- * own signature is checked against, so verifying that signature establishes only 
- * that the holder of some private key produced this manifest: not that the 
- * Consumer trusts that key. Without this check, a key that signs its own manifest 
+ * The secure boot trust anchor reference. A manifest carries the public key its
+ * own signature is checked against, so verifying that signature establishes only
+ * that the holder of some private key produced this manifest: not that the
+ * Consumer trusts that key. Without this check, a key that signs its own manifest
  * verifies, and secure boot decides nothing.
  *
  * Runs first of the key checks, before revocation and before any public-key
@@ -30,17 +30,14 @@
 #include "parser.h"
 #include "secure_boot.h"
 
+#if !OCA_CFG_SECURE_BOOT_DISABLED
 /**
  * @brief Present one class's ROOT key to the Consumer's trust anchor.
  *
- * Builds the key blob exactly as oca_check_signature() will present it — the
- * same offsets, the same encoding and primitive bytes, the same algorithm
- * family — so an implementation cannot end up authorizing one reading of a
+ * Shows the anchor the public key blob oca_check_class_description() returns,
+ * built from the values it checked, as oca_check_signature() shows the
+ * verifier, so an implementation cannot end up authorizing one reading of a
  * field and verifying another.
- *
- * Every operand is at a fixed offset for its class: the classical key family
- * sits at shared offsets, and the PQC family exists in exactly one variant —
- * both arms of each selection are compile-time constants.
  *
  * @param[in] body  Whole variant body.
  * @param[in] cb    Callback table. cb->is_key_authorized is checked here as
@@ -59,39 +56,26 @@
  *                                         verdict.
  * @retval OCA_FAIL_CALLBACK_UNAVAILABLE   The anchor is not wired, or could
  *                                         not be read.
- * @return Otherwise cb->is_key_authorized's verdict, normalized to the three
- *         codes above.
+ * @return Otherwise oca_check_class_description()'s refusal, checked here so
+ *         the anchor is only ever shown a key of an algorithm the build
+ *         enables, its length held to its field; else cb->is_key_authorized's
+ *         verdict, normalized to the three codes above.
  */
 static oca_result_t authorize_key_by_class(const uint8_t *body,
                                         const oca_callbacks_t *cb,
                                         oca_key_algorithm_t algo)
 {
+    oca_class_blobs_t blobs;
+    oca_result_t described = oca_check_class_description(body, algo, &blobs);
+    if (described != OCA_OK) {
+        return described;
+    }
     if (cb == 0 || cb->is_key_authorized == 0) {
         return OCA_FAIL_CALLBACK_UNAVAILABLE;
     }
-    const int is_pqc  = algo == OCA_KEY_ALGO_PQC;
-    size_t off_type   = is_pqc ? (size_t)OCA_PQC_OFF_SIGNATURE_TYPE
-                               : (size_t)OCA_OFF_SIGNATURE_TYPE;
-    size_t off_enc    = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_ENCODING
-                               : (size_t)OCA_OFF_PUBLIC_KEY_ENCODING;
-    size_t off_key    = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY
-                               : (size_t)OCA_OFF_PUBLIC_KEY;
-    size_t len_key    = is_pqc ? (size_t)OCA_PQC_LEN_PUBLIC_KEY
-                               : (size_t)OCA_LEN_PUBLIC_KEY;
-    size_t off_select = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SELECT
-                               : (size_t)OCA_OFF_PUBLIC_KEY_SELECT;
-    size_t off_size   = is_pqc ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SIZE
-                               : (size_t)OCA_OFF_PUBLIC_KEY_SIZE;
-
-    oca_crypto_blob_t public_key = {
-        .bytes          = body + off_key,
-        .field_length   = len_key,
-        .length         = oca_le_u16(body + off_size),
-        .kind           = OCA_BLOB_PUBLIC_KEY,
-        .encoding       = (oca_encoding_t)body[off_enc],
-        .primitive_type = (oca_primitive_type_t)body[off_type],
-        .key_algorithm  = algo,
-    };
+    const size_t off_select = (algo == OCA_KEY_ALGO_PQC)
+                              ? (size_t)OCA_PQC_OFF_PUBLIC_KEY_SELECT
+                              : (size_t)OCA_OFF_PUBLIC_KEY_SELECT;
 
     /* A class that selects no key authorizes nothing: with secure boot in
      * force that fails (spec: no authorized key fails secure boot), and it
@@ -102,17 +86,21 @@ static oca_result_t authorize_key_by_class(const uint8_t *body,
         return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
     }
 
-    oca_result_t r = cb->is_key_authorized(&public_key, body + off_select);
+    oca_result_t r = cb->is_key_authorized(&blobs.public_key, body + off_select);
     if (r == OCA_OK || r == OCA_FAIL_CALLBACK_UNAVAILABLE) {
         return r;
     }
     return OCA_FAIL_ROOT_KEY_UNAUTHORIZED;
 }
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 
 oca_result_t oca_check_root_key_authorized(const uint8_t *body,
                                            const oca_callbacks_t *cb,
                                            oca_validation_context_t *ctx)
 {
+#if OCA_CFG_SECURE_BOOT_DISABLED
+    return oca_secure_boot_not_built(body, cb, ctx);
+#else
     /* Engage only when secure boot is in force, and only once the device still
      * agrees with the determination this validation recorded. Same prologue as
      * the revocation, anti-rollback and signature checks. */
@@ -169,4 +157,5 @@ oca_result_t oca_check_root_key_authorized(const uint8_t *body,
         ctx->secure_boot_key_authorized_pqc = OCA_SECURE_TRUE;
     }
     return OCA_OK;
+#endif /* !OCA_CFG_SECURE_BOOT_DISABLED */
 }

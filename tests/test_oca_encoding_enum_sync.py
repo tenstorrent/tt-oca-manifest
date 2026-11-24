@@ -35,7 +35,9 @@ import re
 
 import pytest
 
-from oca_fixtures.validator_source import size_check_class_blocks
+from oca_fixtures.validator_source import (cipher_table_types,
+                                            encodings_required_size_accepts,
+                                            signature_table_rows)
 from tt_boot_manifest.oca import constants as oca_consts
 
 
@@ -60,16 +62,16 @@ _EXPECTED_MEMBERS = {
 
 
 def _parse_oca_encoding_enum() -> dict[str, int]:
-    """Return {enumerator: value} for the `oca_encoding_t` enum body."""
+    """Return {enumerator: value} for the enum listing the `oca_encoding_t` values."""
     with open(VALIDATOR_HEADER) as handle:
         text = handle.read()
 
     match = re.search(
-        r"typedef\s+enum\s+oca_encoding\s*\{(?P<body>.*?)\}\s*oca_encoding_t\s*;",
+        r"\benum\s+oca_encoding\s*\{(?P<body>.*?)\}\s*;",
         text,
         re.DOTALL,
     )
-    assert match, f"oca_encoding_t enum not found in {VALIDATOR_HEADER}"
+    assert match, f"enum oca_encoding not found in {VALIDATOR_HEADER}"
 
     found: dict[str, int] = {}
     for line in match.group("body").splitlines():
@@ -172,14 +174,26 @@ def test_selectable_encodings_are_accepted_by_the_validator_config_path(encoding
     assert normalized["public_key_encoding"] == encoding
 
 
+def _accepted_encodings(signature_class: str) -> set[int]:
+    """The encodings the validator accepts for a class: raw for every algorithm,
+    and DER where some algorithm row of the class defines it."""
+    c_enum = _parse_oca_encoding_enum()
+    named = encodings_required_size_accepts()
+    accepted = {c_enum["OCA_ENCODING_RAW"]} if "OCA_ENCODING_RAW" in named else set()
+    defines_der = any(row["public_key_der"] != "OCA_DER_UNDEFINED"
+                      or row["signature_der"] != "OCA_DER_UNDEFINED"
+                      for row in signature_table_rows()[signature_class])
+    if defines_der and "OCA_ENCODING_DER" in named:
+        accepted.add(c_enum["OCA_ENCODING_DER"])
+    return accepted
+
+
 def test_c_classic_encoding_gate_matches_the_packer_classic_encodings():
     """The classical class's encodings the validator accepts equal the ones the
-    packer lets a config select. The block names each encoding it accepts and
-    refuses everything else, so an encoding read under another's rule would
-    have to be added here by name."""
-    c_enum = _parse_oca_encoding_enum()
-    classic_block = size_check_class_blocks()["classic"]
-    accepted = {c_enum[name] for name in re.findall(r"OCA_ENCODING_\w+", classic_block)}
+    packer lets a config select. required_size() names each encoding it accepts
+    and refuses everything else, so an encoding read under another's rule would
+    have to be added there by name."""
+    accepted = _accepted_encodings("classic")
     assert accepted == set(oca_consts.OCA_SELECTABLE_ENCODINGS), (
         f"the validator accepts classical encodings {sorted(hex(v) for v in accepted)} "
         f"but the packer's OCA_SELECTABLE_ENCODINGS is "
@@ -189,9 +203,7 @@ def test_c_classic_encoding_gate_matches_the_packer_classic_encodings():
 def test_c_pqc_encoding_gate_matches_the_packer_pqc_encodings():
     """The PQC class's encodings the validator accepts equal the ones the packer
     lets a config select: raw only, since DER is reserved for PQC."""
-    c_enum = _parse_oca_encoding_enum()
-    pqc_block = size_check_class_blocks()["pqc"]
-    accepted = {c_enum[name] for name in re.findall(r"OCA_ENCODING_\w+", pqc_block)}
+    accepted = _accepted_encodings("pqc")
     assert accepted == set(oca_consts.PQC_SELECTABLE_ENCODINGS), (
         f"the validator accepts PQC encodings {sorted(hex(v) for v in accepted)} but "
         f"the packer's PQC_SELECTABLE_ENCODINGS is "
@@ -201,12 +213,11 @@ def test_c_pqc_encoding_gate_matches_the_packer_pqc_encodings():
 # ---------------------------------------------------------------------------
 # oca_encryption_type_t <-> OcaEncryptionType
 #
-# The same class of gate, for the other on-disk enum the validator casts a
-# manifest byte to. `check_encrypted_payload()` compares
-# `body[OFF_ENCRYPTION_TYPE]` against these enumerators to decide whether the
-# cipher is one it implements, and passes the value on to the decryption callback
-# as a typed `oca_decrypt_input_t::cipher` — so a divergence would both misjudge
-# the support gate and mislead the callback.
+# The same class of gate, for the other on-disk enum whose value the validator
+# passes on untranslated. The cipher table in `algorithms.c` decides whether the
+# cipher is one this build enables, and the payload path passes the value on to
+# the decryption callback in `oca_decrypt_input_t::cipher` — so a
+# divergence would both misjudge the support gate and mislead the callback.
 #
 # The encoding gate above does not cover this enum. Nothing about it had gone
 # wrong; it was simply missed.
@@ -232,17 +243,16 @@ _UNENCRYPTED_BYTE = 0x00
 
 
 def _parse_oca_encryption_type_enum() -> dict[str, int]:
-    """Return {enumerator: value} for the `oca_encryption_type_t` enum body."""
+    """Return {enumerator: value} for the enum listing the `oca_encryption_type_t` values."""
     with open(VALIDATOR_HEADER) as handle:
         text = handle.read()
 
     match = re.search(
-        r"typedef\s+enum\s+oca_encryption_type\s*\{(?P<body>.*?)\}"
-        r"\s*oca_encryption_type_t\s*;",
+        r"\benum\s+oca_encryption_type\s*\{(?P<body>.*?)\}\s*;",
         text,
         re.DOTALL,
     )
-    assert match, f"oca_encryption_type_t enum not found in {VALIDATOR_HEADER}"
+    assert match, f"enum oca_encryption_type not found in {VALIDATOR_HEADER}"
 
     found: dict[str, int] = {}
     for line in match.group("body").splitlines():
@@ -250,31 +260,6 @@ def _parse_oca_encryption_type_enum() -> dict[str, int]:
         if enumerator:
             found[enumerator.group("name")] = int(enumerator.group("value"), 0)
     return found
-
-
-def _parse_c_supported_ciphers() -> set[str]:
-    """Enumerator names the C cipher gate accepts.
-
-    Reads the rejection in `check_encrypted_payload()` rather than trusting a
-    comment: the gate is written as "not this and not that -> refuse", so the
-    names appearing in it are exactly the ciphers the validator implements.
-    """
-    with open(VALIDATOR_PAYLOAD) as handle:
-        text = handle.read()
-
-    match = re.search(
-        r"uint8_t enc_type = body\[OCA_OFF_ENCRYPTION_TYPE\];\s*"
-        r"if\s*\((?P<cond>.*?)\)\s*\{",
-        text,
-        re.DOTALL,
-    )
-    assert match, (
-        f"the encryption_type support gate was not found in {VALIDATOR_PAYLOAD}; "
-        f"if it moved or changed shape, update this parser rather than deleting "
-        f"the test — the gate is what keeps an unimplemented cipher away from the "
-        f"ciphertext"
-    )
-    return set(re.findall(r"OCA_ENCRYPTION_TYPE_\w+", match.group("cond")))
 
 
 def test_c_encryption_type_values_match_the_packer():
@@ -285,8 +270,8 @@ def test_c_encryption_type_values_match_the_packer():
         assert member.value in by_value, (
             f"the packer can write encryption_type = {member.value:#04x} "
             f"({member.name}) but oca_encryption_type_t has no enumerator for "
-            f"it; the validator casts that byte straight to the enum and hands "
-            f"it to the decryption callback"
+            f"it; the validator hands that byte to the decryption callback "
+            f"untranslated"
         )
 
 
@@ -323,15 +308,15 @@ def test_c_cipher_gate_matches_the_packer_supported_set():
     """The set of ciphers the validator implements must equal the set the packer
     considers supported.
 
-    Two independent statements of one fact — the C gate in
-    `check_encrypted_payload()` and `ENCRYPTION_TYPES_SUPPORTED` — and a
+    Two independent statements of one fact — the cipher table in
+    `algorithms.c` and `ENCRYPTION_TYPES_SUPPORTED` — and a
     divergence is silent in both directions: a cipher the packer will happily
     encrypt with but the validator refuses, or one the validator would accept
     that no producer can make.
     """
     c_enum = _parse_oca_encryption_type_enum()
-    gate_names = _parse_c_supported_ciphers()
-    c_supported = {c_enum[name] for name in gate_names}
+    c_supported = cipher_table_types()
+    assert c_supported <= set(c_enum.values()), "a cipher row has no oca_encryption_type_t enumerator"
     assert c_supported == set(oca_consts.ENCRYPTION_TYPES_SUPPORTED), (
         f"the C validator implements ciphers "
         f"{sorted(hex(v) for v in c_supported)} but the packer's "
@@ -345,9 +330,53 @@ def test_unencrypted_byte_is_not_a_supported_cipher():
     it, so that a manifest with the encrypted bit set but the type left zero is
     rejected rather than routed to a decryption backend with no cipher."""
     assert _UNENCRYPTED_BYTE not in oca_consts.ENCRYPTION_TYPES_SUPPORTED
-    c_enum = _parse_oca_encryption_type_enum()
-    gate = {c_enum[name] for name in _parse_c_supported_ciphers()}
+    gate = cipher_table_types()
     assert _UNENCRYPTED_BYTE not in gate, (
         "the C cipher gate accepts 0x00; an encrypted-bit manifest with "
         "encryption_type = 0 would reach the decryption callback"
     )
+
+
+# ---------------------------------------------------------------------------
+# oca_kdf_t / oca_key_source_t <-> the packer's KDF and key-source values
+#
+# The decryption callback receives both as typed fields of oca_decrypt_input_t
+# and dispatches on them, so each enumerator must be the value the packer
+# writes into the manifest.
+# ---------------------------------------------------------------------------
+
+
+def _parse_header_enum(enum_name: str) -> dict[str, int]:
+    """Return {enumerator: value} for an `enum <enum_name> {...};` body."""
+    with open(VALIDATOR_HEADER) as handle:
+        text = handle.read()
+    match = re.search(rf"\benum\s+{enum_name}\s*\{{(?P<body>.*?)\}}\s*;", text, re.DOTALL)
+    assert match, f"enum {enum_name} not found in {VALIDATOR_HEADER}"
+    return {name: int(value, 0) for name, value in re.findall(
+        r"^\s*(OCA_\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)", match.group("body"), re.M)}
+
+
+def test_c_kdf_enum_matches_the_packer():
+    c_values = set(_parse_header_enum("oca_kdf").values())
+    packer = {kdf.value for kdf in oca_consts.OcaEncryptionKdf}
+    assert c_values == packer, (
+        f"oca_kdf_t holds {sorted(hex(v) for v in c_values)} but the packer "
+        f"writes {sorted(hex(v) for v in packer)}")
+
+
+def test_c_key_source_enum_matches_the_packer():
+    c_values = set(_parse_header_enum("oca_key_source").values())
+    packer = {oca_consts.ENCRYPTION_INPUT_KEY_SOURCE_PRESHARED}
+    assert c_values == packer, (
+        f"oca_key_source_t holds {sorted(hex(v) for v in c_values)} but the "
+        f"packer writes {sorted(hex(v) for v in packer)}")
+
+
+def test_c_hash_type_enum_matches_the_packer():
+    """The hash callback receives manifest_hash_type and payload_hash_type typed
+    as oca_hash_type_t, so each enumerator must be a value the packer writes."""
+    c_values = set(_parse_header_enum("oca_hash_type").values())
+    packer = {hash_type.value for hash_type in oca_consts.OcaClassicHashType}
+    assert c_values == packer, (
+        f"oca_hash_type_t holds {sorted(hex(v) for v in c_values)} but the packer "
+        f"writes {sorted(hex(v) for v in packer)}")

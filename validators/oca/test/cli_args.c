@@ -10,6 +10,7 @@
 
 #include <ctype.h>
 #include <getopt.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -206,6 +207,21 @@ static int parse_lifecycle(const char *s, oca_lifecycle_token_t *out)
     return -1;
 }
 
+void cli_print_build_info(void)
+{
+    /* The version, label and digest come from the library, the text from the
+     * header it was compiled against, so a mismatch between the two shows here. */
+    const uint32_t version = oca_validator_version();
+    const uint8_t *digest = oca_build_portfolio_digest();
+    printf("library %" PRIu32 ".%" PRIu32 ".%" PRIu32 "\n", version >> 16,
+           (version >> 8) & 0xffu, version & 0xffu);
+    printf("portfolio 0x%08" PRIx32 "\nsha256 ", oca_build_portfolio_id());
+    for (unsigned i = 0u; i < OCA_PORTFOLIO_DIGEST_SIZE; ++i) {
+        printf("%02x", digest[i]);
+    }
+    printf("\n%s", OCA_CFG_PORTFOLIO_TEXT);
+}
+
 void cli_print_help(void)
 {
     fputs(
@@ -293,6 +309,10 @@ void cli_print_help(void)
         "                              each image entry (type, offset, length,\n"
         "                              load_addr, entry_point, version)\n"
         "  --quiet                     suppress the PASS line on stdout\n"
+        "  --build-info                print the version of this binary's\n"
+        "                              library and the build configuration it\n"
+        "                              was compiled from (its portfolio), and\n"
+        "                              exit 0\n"
         "  --help                      print this help and exit 0\n"
         "\n"
         "Exit codes: 0 = PASS, 1 = FAIL, 2 = usage error,\n"
@@ -313,7 +333,7 @@ enum {
     LO_REVOKED_ROOT_KEYS, LO_REVOKED_ROOT_KEYS_PQC,
     LO_SIGNATURE_COHORT_ENFORCE, LO_SIGNATURE_CLASS_REVOKE,
     LO_MANIFEST_ADDR, LO_REGION_BASE, LO_REGION_LIMIT,
-    LO_QUIET, LO_HELP,
+    LO_QUIET, LO_BUILD_INFO, LO_HELP,
 };
 
 static struct option long_opts[] = {
@@ -343,6 +363,7 @@ static struct option long_opts[] = {
     {"region-base",      required_argument, NULL, LO_REGION_BASE},
     {"region-limit",     required_argument, NULL, LO_REGION_LIMIT},
     {"quiet",            no_argument,       NULL, LO_QUIET},
+    {"build-info",       no_argument,       NULL, LO_BUILD_INFO},
     {"help",             no_argument,       NULL, LO_HELP},
     {0, 0, 0, 0},
 };
@@ -526,6 +547,9 @@ int cli_parse_args(int argc, char **argv, cli_options_t *opt)
             case LO_QUIET:
                 opt->quiet = true;
                 break;
+            case LO_BUILD_INFO:
+                cli_print_build_info();
+                exit(0);
             case LO_HELP:
                 cli_print_help();
                 exit(0);
